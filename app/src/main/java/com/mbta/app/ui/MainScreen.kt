@@ -114,26 +114,18 @@ fun MainScreen(
 
     val enabledConnections = connections.filter { it.enabled }
     val activeProject = projects.find { it.id == activeProjectId } ?: projects.first()
-    val projectSessions = sessions.filter { it.projectId == activeProject.id }
-    val primarySession = projectSessions.find { it.id == activeSessionId }
-        ?: projectSessions.firstOrNull()
-        ?: run {
-            val created = AgentSession(
-                id = "sess_${UUID.randomUUID()}",
-                projectId = activeProject.id,
-                title = "세션 1",
-                connectionId = enabledConnections.firstOrNull()?.id
-            )
-            sessions = sessions + created
-            store.saveSessions(sessions)
-            activeSessionId = created.id
-            store.saveActiveSessionId(created.id)
-            created
-        }
+    val validProjectSessions = sessions.filter { sess ->
+        sess.projectId == activeProject.id &&
+            sess.connectionId != null &&
+            enabledConnections.any { c -> c.id == sess.connectionId }
+    }
+    val primarySession: AgentSession? =
+        validProjectSessions.find { it.id == activeSessionId } ?: validProjectSessions.firstOrNull()
 
-    val secondarySession = projectSessions.find { it.id == secondarySessionId }
-        ?: projectSessions.firstOrNull { it.id != primarySession.id }
-        ?: primarySession
+    val secondarySession: AgentSession? =
+        validProjectSessions.find { it.id == secondarySessionId }
+            ?: validProjectSessions.firstOrNull { it.id != primarySession?.id }
+            ?: primarySession
 
     val totalTokensAll = tokenUsageMap.values.sumOf { it.totalTokens }
 
@@ -255,20 +247,10 @@ fun MainScreen(
     }
 
     fun deleteSession(session: AgentSession) {
-        val remainingInProject = projectSessions.filterNot { it.id == session.id }
+        val remainingInProject = validProjectSessions.filterNot { it.id == session.id }
         sessions = sessions.filterNot { it.id == session.id }
-        if (remainingInProject.isEmpty()) {
-            val replacement = AgentSession(
-                id = "sess_${UUID.randomUUID()}",
-                projectId = activeProject.id,
-                title = "세션 1",
-                connectionId = enabledConnections.firstOrNull()?.id
-            )
-            sessions = sessions + replacement
-            activeSessionId = replacement.id
-            store.saveActiveSessionId(replacement.id)
-        } else if (activeSessionId == session.id) {
-            activeSessionId = remainingInProject.first().id
+        if (activeSessionId == session.id) {
+            activeSessionId = remainingInProject.firstOrNull()?.id ?: ""
             store.saveActiveSessionId(activeSessionId)
         }
         store.saveSessions(sessions)
@@ -285,7 +267,7 @@ fun MainScreen(
         if (next == SplitMode.SINGLE) focusedPane = 0
     }
 
-    val activeWebSessions = listOf(primarySession, secondarySession).distinctBy { it.id }.mapNotNull { sess ->
+    val activeWebSessions = listOfNotNull(primarySession, secondarySession).distinctBy { it.id }.mapNotNull { sess ->
         val conn = enabledConnections.find { it.id == sess.connectionId }
         if (conn != null && conn.kind.isHiddenWebBridge()) {
             Triple("${sess.id}:${conn.id}", conn.endpointUrl, sess)
@@ -334,7 +316,9 @@ fun MainScreen(
                     },
                     onDeleteConnection = { connId ->
                         connections = connections.filterNot { it.id == connId }
+                        sessions = sessions.filterNot { it.connectionId == connId }
                         store.saveConnections(connections)
+                        store.saveSessions(sessions)
                     },
                     onLoginConnection = { conn -> loginConnection = conn },
                     onBack = { showSettings = false }
@@ -445,12 +429,12 @@ fun MainScreen(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    items(projectSessions, key = { it.id }) { sess ->
+                    items(validProjectSessions, key = { it.id }) { sess ->
                         val connName = enabledConnections.find { it.id == sess.connectionId }?.name
                         val isSelected = if (splitMode == SplitMode.SINGLE) {
-                            sess.id == primarySession.id
+                            sess.id == primarySession?.id
                         } else {
-                            sess.id == primarySession.id || sess.id == secondarySession.id
+                            sess.id == primarySession?.id || sess.id == secondarySession?.id
                         }
                         FilterChip(
                             selected = isSelected,
@@ -487,8 +471,54 @@ fun MainScreen(
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
+            if (primarySession == null) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(24.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)),
+                        color = MaterialTheme.colorScheme.surface
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(20.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            if (enabledConnections.isEmpty()) {
+                                Text("등록된 AI 연결이 없습니다", fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+                                Text(
+                                    text = "설정에서 먼저 AI(Claude, ChatGPT, Gemini 등)를 연결하세요.",
+                                    fontSize = 13.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Button(onClick = { showSettings = true }) {
+                                    Icon(Icons.Default.Settings, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.size(6.dp))
+                                    Text("연결 설정 열기")
+                                }
+                            } else {
+                                Text("열려 있는 세션이 없습니다", fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+                                Text(
+                                    text = "연결할 AI를 선택해 새 세션을 만들어 주세요.",
+                                    fontSize = 13.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Button(onClick = { showNewSessionDialog = true }) {
+                                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.size(6.dp))
+                                    Text("+ 새 세션 만들기")
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
             val primaryConn = enabledConnections.find { it.id == primarySession.connectionId }
-            val secondaryConn = enabledConnections.find { it.id == secondarySession.connectionId }
+            val secondaryConn = secondarySession?.let { s -> enabledConnections.find { it.id == s.connectionId } }
 
             when (splitMode) {
                 SplitMode.SINGLE -> {
@@ -537,19 +567,20 @@ fun MainScreen(
                         )
                         HorizontalDivider(thickness = 2.dp, color = MaterialTheme.colorScheme.outline)
                         SessionPane(
-                            session = secondarySession,
+                            session = secondarySession ?: primarySession,
                             connection = secondaryConn,
                             enabledConnections = enabledConnections,
                             tokenUsage = secondaryConn?.let { tokenUsageMap[it.id] },
-                            isSending = sendingMap[secondarySession.id] == true,
+                            isSending = sendingMap[(secondarySession ?: primarySession).id] == true,
                             isFocused = focusedPane == 1,
                             showFocusBorder = true,
                             onFocus = { focusedPane = 1 },
                             onSendMessage = { text ->
-                                if (secondaryConn != null) sendMessageInSession(secondarySession, secondaryConn, text)
+                                val targetSess = secondarySession ?: primarySession
+                                if (secondaryConn != null) sendMessageInSession(targetSess, secondaryConn, text)
                             },
-                            onHandoffTo = { target -> handoffSession(secondarySession, target) },
-                            onDeleteSession = { deleteSession(secondarySession) },
+                            onHandoffTo = { target -> handoffSession(secondarySession ?: primarySession, target) },
+                            onDeleteSession = { deleteSession(secondarySession ?: primarySession) },
                             onOpenTokenDashboard = { showTokenDashboard = true },
                             onOpenSettings = { showSettings = true },
                             onLoginConnection = { conn -> loginConnection = conn },
@@ -584,19 +615,20 @@ fun MainScreen(
                         )
                         VerticalDivider(thickness = 2.dp, color = MaterialTheme.colorScheme.outline)
                         SessionPane(
-                            session = secondarySession,
+                            session = secondarySession ?: primarySession,
                             connection = secondaryConn,
                             enabledConnections = enabledConnections,
                             tokenUsage = secondaryConn?.let { tokenUsageMap[it.id] },
-                            isSending = sendingMap[secondarySession.id] == true,
+                            isSending = sendingMap[(secondarySession ?: primarySession).id] == true,
                             isFocused = focusedPane == 1,
                             showFocusBorder = true,
                             onFocus = { focusedPane = 1 },
                             onSendMessage = { text ->
-                                if (secondaryConn != null) sendMessageInSession(secondarySession, secondaryConn, text)
+                                val targetSess = secondarySession ?: primarySession
+                                if (secondaryConn != null) sendMessageInSession(targetSess, secondaryConn, text)
                             },
-                            onHandoffTo = { target -> handoffSession(secondarySession, target) },
-                            onDeleteSession = { deleteSession(secondarySession) },
+                            onHandoffTo = { target -> handoffSession(secondarySession ?: primarySession, target) },
+                            onDeleteSession = { deleteSession(secondarySession ?: primarySession) },
                             onOpenTokenDashboard = { showTokenDashboard = true },
                             onOpenSettings = { showSettings = true },
                             onLoginConnection = { conn -> loginConnection = conn },
@@ -606,6 +638,7 @@ fun MainScreen(
                         )
                     }
                 }
+            }
             }
         }
             }
@@ -627,7 +660,7 @@ fun MainScreen(
                     )
                 }
             ) { pad ->
-                val loginKey = "${primarySession.id}:${activeLoginConn.id}"
+                val loginKey = "${primarySession?.id ?: "login"}:${activeLoginConn.id}"
                 AndroidView(
                     modifier = Modifier
                         .fillMaxSize()
@@ -694,19 +727,23 @@ fun MainScreen(
     if (showNewSessionDialog) {
         NewSessionDialog(
             enabledConnections = enabledConnections,
-            defaultIndex = projectSessions.size + 1,
+            defaultIndex = validProjectSessions.size + 1,
             onDismiss = { showNewSessionDialog = false },
             onOpenSettings = {
                 showNewSessionDialog = false
                 showSettings = true
             },
             onCreate = { title, connId ->
+                val conn = enabledConnections.find { it.id == connId } ?: return@NewSessionDialog
                 val newSess = AgentSession(
                     id = "sess_${UUID.randomUUID()}",
                     projectId = activeProject.id,
                     title = title,
-                    connectionId = connId
+                    connectionId = conn.id
                 )
+                if (conn.kind.isHiddenWebBridge()) {
+                    headlessWebBridge.getOrCreateWebView("${newSess.id}:${conn.id}", conn.endpointUrl)
+                }
                 sessions = sessions + newSess
                 store.saveSessions(sessions)
                 activeSessionId = newSess.id

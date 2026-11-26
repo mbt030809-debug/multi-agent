@@ -36,10 +36,10 @@ class WorkspaceStore(context: Context) {
     }
 
     fun loadSessions(): List<AgentSession> {
-        val raw = prefs.getString(KEY_SESSIONS, null) ?: return defaultSessions
+        val raw = prefs.getString(KEY_SESSIONS, null) ?: return emptyList()
         return runCatching { json.decodeFromString<List<AgentSession>>(raw) }
-            .getOrElse { defaultSessions }
-            .ifEmpty { defaultSessions }
+            .getOrElse { emptyList() }
+            .filter { it.connectionId != null }
     }
 
     fun saveSessions(sessions: List<AgentSession>) {
@@ -54,7 +54,7 @@ class WorkspaceStore(context: Context) {
     }
 
     fun loadActiveSessionId(): String =
-        prefs.getString(KEY_ACTIVE_SESSION, "sess_default") ?: "sess_default"
+        prefs.getString(KEY_ACTIVE_SESSION, "") ?: ""
 
     fun saveActiveSessionId(id: String) {
         prefs.edit().putString(KEY_ACTIVE_SESSION, id).apply()
