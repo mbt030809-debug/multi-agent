@@ -71,10 +71,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.mbta.app.data.WorkspaceStore
+import com.mbta.app.model.AgentTokenUsage
 import com.mbta.app.model.AiPanel
 import com.mbta.app.model.PanelType
 import com.mbta.app.model.SplitMode
+import com.mbta.app.model.TokenSource
 import com.mbta.app.model.WorkspacePreset
+import com.mbta.app.model.formatTokens
 import com.mbta.app.webview.WebViewManager
 import java.util.UUID
 
@@ -83,6 +86,9 @@ import java.util.UUID
 fun MainScreen(
     store: WorkspaceStore,
     webViewManager: WebViewManager,
+    tokenUsageMap: Map<String, AgentTokenUsage>,
+    onResetAgentTokens: (String) -> Unit,
+    onResetAllTokens: () -> Unit,
     onFocusedPanelChanged: (String) -> Unit
 ) {
     var panels by remember { mutableStateOf(store.loadPanels()) }
@@ -93,8 +99,10 @@ fun MainScreen(
     var focusedPane by remember { mutableIntStateOf(0) }
 
     var showPresetDialog by remember { mutableStateOf(false) }
+    var showTokenDashboard by remember { mutableStateOf(false) }
     var editingPanel by remember { mutableStateOf<AiPanel?>(null) }
     var showAddPanelDialog by remember { mutableStateOf(false) }
+    val totalTokensAll = tokenUsageMap.values.sumOf { it.totalTokens }
 
     val primaryPanel = panels.find { it.id == primaryPanelId } ?: panels.first()
     val secondaryPanel = panels.find { it.id == secondaryPanelId }
@@ -168,6 +176,21 @@ fun MainScreen(
                         titleContentColor = MaterialTheme.colorScheme.onSurface
                     ),
                     actions = {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.primaryContainer,
+                            modifier = Modifier
+                                .padding(end = 4.dp)
+                                .clickable { showTokenDashboard = true }
+                        ) {
+                            Text(
+                                text = "Tokens ${formatTokens(totalTokensAll)}",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
+                        }
                         if (splitMode != SplitMode.SINGLE) {
                             IconButton(onClick = { swapPanes() }) {
                                 Icon(Icons.Default.SwapHoriz, contentDescription = "화면 교체")
@@ -235,10 +258,12 @@ fun MainScreen(
                 SplitMode.SINGLE -> {
                     WebViewPane(
                         panel = primaryPanel,
+                        tokenUsage = tokenUsageMap[primaryPanel.id],
                         isFocused = true,
                         showFocusBorder = false,
                         webViewManager = webViewManager,
                         onFocus = { focusedPane = 0 },
+                        onTokenClick = { showTokenDashboard = true },
                         onEdit = { editingPanel = primaryPanel },
                         onToggleDesktop = { updated ->
                             panels = panels.map { if (it.id == updated.id) updated else it }
@@ -252,10 +277,12 @@ fun MainScreen(
                     Column(modifier = Modifier.fillMaxSize()) {
                         WebViewPane(
                             panel = primaryPanel,
+                            tokenUsage = tokenUsageMap[primaryPanel.id],
                             isFocused = focusedPane == 0,
                             showFocusBorder = true,
                             webViewManager = webViewManager,
                             onFocus = { focusedPane = 0 },
+                            onTokenClick = { showTokenDashboard = true },
                             onEdit = { editingPanel = primaryPanel },
                             onToggleDesktop = { updated ->
                                 panels = panels.map { if (it.id == updated.id) updated else it }
@@ -272,10 +299,12 @@ fun MainScreen(
                         )
                         WebViewPane(
                             panel = secondaryPanel,
+                            tokenUsage = tokenUsageMap[secondaryPanel.id],
                             isFocused = focusedPane == 1,
                             showFocusBorder = true,
                             webViewManager = webViewManager,
                             onFocus = { focusedPane = 1 },
+                            onTokenClick = { showTokenDashboard = true },
                             onEdit = { editingPanel = secondaryPanel },
                             onToggleDesktop = { updated ->
                                 panels = panels.map { if (it.id == updated.id) updated else it }
@@ -292,10 +321,12 @@ fun MainScreen(
                     Row(modifier = Modifier.fillMaxSize()) {
                         WebViewPane(
                             panel = primaryPanel,
+                            tokenUsage = tokenUsageMap[primaryPanel.id],
                             isFocused = focusedPane == 0,
                             showFocusBorder = true,
                             webViewManager = webViewManager,
                             onFocus = { focusedPane = 0 },
+                            onTokenClick = { showTokenDashboard = true },
                             onEdit = { editingPanel = primaryPanel },
                             onToggleDesktop = { updated ->
                                 panels = panels.map { if (it.id == updated.id) updated else it }
@@ -312,10 +343,12 @@ fun MainScreen(
                         )
                         WebViewPane(
                             panel = secondaryPanel,
+                            tokenUsage = tokenUsageMap[secondaryPanel.id],
                             isFocused = focusedPane == 1,
                             showFocusBorder = true,
                             webViewManager = webViewManager,
                             onFocus = { focusedPane = 1 },
+                            onTokenClick = { showTokenDashboard = true },
                             onEdit = { editingPanel = secondaryPanel },
                             onToggleDesktop = { updated ->
                                 panels = panels.map { if (it.id == updated.id) updated else it }
@@ -405,15 +438,26 @@ fun MainScreen(
             }
         )
     }
+    if (showTokenDashboard) {
+        TokenDashboardDialog(
+            panels = panels,
+            tokenUsageMap = tokenUsageMap,
+            onResetAgent = onResetAgentTokens,
+            onResetAll = onResetAllTokens,
+            onDismiss = { showTokenDashboard = false }
+        )
+    }
 }
 
 @Composable
 private fun WebViewPane(
     panel: AiPanel,
+    tokenUsage: AgentTokenUsage?,
     isFocused: Boolean,
     showFocusBorder: Boolean,
     webViewManager: WebViewManager,
     onFocus: () -> Unit,
+    onTokenClick: () -> Unit,
     onEdit: () -> Unit,
     onToggleDesktop: (AiPanel) -> Unit,
     modifier: Modifier = Modifier
@@ -453,6 +497,22 @@ private fun WebViewPane(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f)
             )
+            val total = tokenUsage?.totalTokens ?: 0L
+            val prefix = if (tokenUsage == null || tokenUsage.source == TokenSource.ESTIMATED_WEB) "~" else ""
+            Surface(
+                shape = RoundedCornerShape(6.dp),
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f),
+                modifier = Modifier
+                    .padding(end = 4.dp)
+                    .clickable { onTokenClick() }
+            ) {
+                Text(
+                    text = "$prefix${formatTokens(total)}",
+                    fontSize = 10.sp,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                )
+            }
             IconButton(
                 onClick = { webViewManager.goBack(panel.id) },
                 modifier = Modifier.size(28.dp)

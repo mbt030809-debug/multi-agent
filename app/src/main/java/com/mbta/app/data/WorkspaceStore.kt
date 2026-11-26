@@ -1,6 +1,7 @@
 package com.mbta.app.data
 
 import android.content.Context
+import com.mbta.app.model.AgentTokenUsage
 import com.mbta.app.model.AiPanel
 import com.mbta.app.model.DefaultData
 import com.mbta.app.model.SplitMode
@@ -55,11 +56,22 @@ class WorkspaceStore(context: Context) {
         prefs.edit().putString(KEY_SPLIT_MODE, mode.name).apply()
     }
 
+    fun loadTokenUsage(): Map<String, AgentTokenUsage> {
+        val raw = prefs.getString(KEY_TOKEN_USAGE, null) ?: return emptyMap()
+        return runCatching { json.decodeFromString<Map<String, AgentTokenUsage>>(raw) }
+            .getOrElse { emptyMap() }
+    }
+
+    fun saveTokenUsage(map: Map<String, AgentTokenUsage>) {
+        prefs.edit().putString(KEY_TOKEN_USAGE, json.encodeToString(map)).apply()
+    }
+
     companion object {
         private const val KEY_PANELS = "panels"
         private const val KEY_PRESETS = "presets"
         private const val KEY_PRIMARY_PANEL = "primary_panel_id"
         private const val KEY_SECONDARY_PANEL = "secondary_panel_id"
         private const val KEY_SPLIT_MODE = "split_mode"
+        private const val KEY_TOKEN_USAGE = "token_usage"
     }
 }

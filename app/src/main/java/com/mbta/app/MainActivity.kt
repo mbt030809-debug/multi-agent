@@ -7,7 +7,10 @@ import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.mutableStateMapOf
 import com.mbta.app.data.WorkspaceStore
+import com.mbta.app.model.AgentTokenUsage
+import com.mbta.app.model.defaultContextLimit
 import com.mbta.app.ui.MainScreen
 import com.mbta.app.ui.theme.MbtATheme
 import com.mbta.app.webview.WebViewManager
@@ -18,6 +21,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var webViewManager: WebViewManager
     private var focusedPanelId: String = "claude"
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
+    private val tokenUsageMap = mutableStateMapOf<String, AgentTokenUsage>()
 
     private val fileChooserLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -44,11 +48,28 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         store = WorkspaceStore(this)
-        webViewManager = WebViewManager(this) { intent, callback ->
-            filePathCallback?.onReceiveValue(null)
-            filePathCallback = callback
-            fileChooserLauncher.launch(intent)
-        }
+        tokenUsageMap.putAll(store.loadTokenUsage())
+        webViewManager = WebViewManager(
+            context = this,
+            onFileChooserRequested = { intent, callback ->
+                filePathCallback?.onReceiveValue(null)
+                filePathCallback = callback
+                fileChooserLauncher.launch(intent)
+            },
+            onTokenDelta = { panelId, inputDelta, outputDelta ->
+                val current = tokenUsageMap[panelId] ?: AgentTokenUsage(
+                    panelId = panelId,
+                    contextLimit = defaultContextLimit(panelId)
+                )
+                val updated = current.copy(
+                    inputTokens = current.inputTokens + inputDelta,
+                    outputTokens = current.outputTokens + outputDelta,
+                    updatedAt = System.currentTimeMillis()
+                )
+                tokenUsageMap[panelId] = updated
+                store.saveTokenUsage(tokenUsageMap.toMap())
+            }
+        )
 
         onBackPressedDispatcher.addCallback(
             this,
@@ -69,6 +90,15 @@ class MainActivity : ComponentActivity() {
                 MainScreen(
                     store = store,
                     webViewManager = webViewManager,
+                    tokenUsageMap = tokenUsageMap,
+                    onResetAgentTokens = { panelId ->
+                        tokenUsageMap.remove(panelId)
+                        store.saveTokenUsage(tokenUsageMap.toMap())
+                    },
+                    onResetAllTokens = {
+                        tokenUsageMap.clear()
+                        store.saveTokenUsage(emptyMap())
+                    },
                     onFocusedPanelChanged = { focusedPanelId = it }
                 )
             }
