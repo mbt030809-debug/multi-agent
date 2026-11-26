@@ -369,11 +369,26 @@ private fun ConnectionEditorDialog(
                     modifier = Modifier.fillMaxWidth()
                 )
                 if (isRemoteKind) {
-                    Text("동작 모드", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        "웹 URL 대신 로컬 브릿지(127.0.0.1:8765/agy 또는 /claude)를 사용하면 웹페이지 없이 100% MbtA 네이티브 테마로 대화할 수 있습니다.",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        TextButton(onClick = {
+                            name = "Antigravity"
+                            endpointUrl = "http://127.0.0.1:8765/agy"
+                            remoteMode = RemoteMode.BRIDGE_API
+                        }) { Text("Agy 로컬", fontSize = 11.sp) }
+                        TextButton(onClick = {
+                            name = "Claude Code"
+                            endpointUrl = "http://127.0.0.1:8765/claude"
+                            remoteMode = RemoteMode.BRIDGE_API
+                        }) { Text("Claude 로컬", fontSize = 11.sp) }
+                    }
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         listOf(
-                            RemoteMode.AUTO to "자동",
-                            RemoteMode.BRIDGE_API to "브릿지 API",
+                            RemoteMode.BRIDGE_API to "네이티브 브릿지",
                             RemoteMode.WEB_EMBED to "웹 원격"
                         ).forEach { (mode, label) ->
                             FilterChip(
@@ -382,18 +397,6 @@ private fun ConnectionEditorDialog(
                                 label = { Text(label, fontSize = 11.sp) }
                             )
                         }
-                    }
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        TextButton(onClick = {
-                            name = "Claude Code"
-                            endpointUrl = "http://127.0.0.1:8765/claude"
-                            remoteMode = RemoteMode.BRIDGE_API
-                        }) { Text("Claude 로컬", fontSize = 11.sp) }
-                        TextButton(onClick = {
-                            name = "Antigravity"
-                            endpointUrl = "http://127.0.0.1:8765/agy"
-                            remoteMode = RemoteMode.BRIDGE_API
-                        }) { Text("Agy 로컬", fontSize = 11.sp) }
                     }
                 }
             }

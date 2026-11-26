@@ -34,26 +34,13 @@ data class AiConnection(
     val model: String = "",
     val endpointUrl: String = "",
     val desktopMode: Boolean = false,
-    val remoteMode: RemoteMode = RemoteMode.AUTO,
+    val remoteMode: RemoteMode = RemoteMode.BRIDGE_API,
     val enabled: Boolean = true
 )
 
 fun AiConnection.shouldUseWebEmbed(): Boolean {
     if (kind != ConnectionKind.REMOTE_CONTROL) return false
-    return when (remoteMode) {
-        RemoteMode.WEB_EMBED -> true
-        RemoteMode.BRIDGE_API -> false
-        RemoteMode.AUTO -> {
-            val u = endpointUrl.trim().lowercase()
-            val isLocalBridge = u.contains("127.0.0.1") ||
-                u.contains("localhost") ||
-                u.endsWith("/prompt") ||
-                u.endsWith("/claude") ||
-                u.endsWith("/agy") ||
-                u.endsWith("/exec")
-            !isLocalBridge
-        }
-    }
+    return remoteMode == RemoteMode.WEB_EMBED
 }
 
 fun ConnectionKind.isNativeChat(): Boolean =

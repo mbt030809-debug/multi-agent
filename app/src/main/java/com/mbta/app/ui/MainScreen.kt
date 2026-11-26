@@ -169,7 +169,7 @@ fun MainScreen(
         sendingMap[session.id] = true
 
         scope.launch {
-            val reply = AiApiClient.send(conn, historyBefore, text)
+            val reply = AiApiClient.send(conn, historyBefore, text, session.id)
             val assistantMsg = ChatMessage(
                 id = "msg_${UUID.randomUUID()}",
                 role = MessageRole.ASSISTANT,
