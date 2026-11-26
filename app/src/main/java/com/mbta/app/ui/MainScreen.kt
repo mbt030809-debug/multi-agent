@@ -27,6 +27,8 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AccountTree
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Code
+import androidx.compose.material.icons.filled.CompareArrows
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
@@ -84,6 +86,7 @@ import com.mbta.app.model.displayLabel
 import com.mbta.app.model.formatTokens
 import com.mbta.app.model.isHiddenWebBridge
 import com.mbta.app.network.AiApiClient
+import com.mbta.app.network.GitBridgeClient
 import com.mbta.app.webview.HeadlessWebBridge
 import kotlinx.coroutines.launch
 import java.util.UUID
@@ -119,12 +122,15 @@ fun MainScreen(
     var loginConnection by remember { mutableStateOf<AiConnection?>(null) }
     var showTokenDashboard by remember { mutableStateOf(false) }
     var showOrchestrationDialog by remember { mutableStateOf(false) }
+    var showGitDialog by remember { mutableStateOf(false) }
+    var showFanOutDialog by remember { mutableStateOf(false) }
     var showProjectMenu by remember { mutableStateOf(false) }
     var showNewProjectDialog by remember { mutableStateOf(false) }
     var editingProject by remember { mutableStateOf<Project?>(null) }
     var showNewSessionDialog by remember { mutableStateOf(false) }
 
     val sendingMap = remember { mutableStateMapOf<String, Boolean>() }
+    val unreadDoneSessions = remember { mutableStateMapOf<String, Boolean>() }
     val loginStatusMap = remember { mutableStateMapOf<String, Boolean>() }
 
     fun refreshLoginStatuses() {
@@ -169,13 +175,14 @@ fun MainScreen(
         } else {
             text
         }
-        val effectivePrompt = if (useProjectContext && (activeProject.workDir.isNotBlank() || activeProject.memoryText.isNotBlank())) {
-            if (targetConn.kind == ConnectionKind.TERMUX_CLI && activeProject.workDir.isNotBlank()) {
-                "cd ${activeProject.workDir} && $cleanPrompt"
+        val effectiveDir = session.worktreePath.ifBlank { activeProject.workDir }
+        val effectivePrompt = if (useProjectContext && (effectiveDir.isNotBlank() || activeProject.memoryText.isNotBlank())) {
+            if (targetConn.kind == ConnectionKind.TERMUX_CLI && effectiveDir.isNotBlank()) {
+                "cd $effectiveDir && $cleanPrompt"
             } else {
                 buildString {
                     append("[프로젝트 컨텍스트]\n")
-                    if (activeProject.workDir.isNotBlank()) append("- 작업 경로: ${activeProject.workDir}\n")
+                    if (effectiveDir.isNotBlank()) append("- 작업 경로: $effectiveDir\n")
                     if (activeProject.memoryText.isNotBlank()) append("- 공용 지침: ${activeProject.memoryText}\n")
                     append("\n").append(cleanPrompt)
                 }
@@ -232,6 +239,7 @@ fun MainScreen(
                     store.saveSessions(sessions)
                     onRecordTokens(targetConn.id, targetConn.kind, inTok, outTok)
                     sendingMap[session.id] = false
+                    if (activeSessionId != session.id) unreadDoneSessions[session.id] = true
                     onNotifyIfBackground("${targetConn.name} 응답 완료", finalText.take(120))
                 },
                 onError = { errMsg ->
@@ -274,6 +282,7 @@ fun MainScreen(
                 onRecordTokens(targetConn.id, targetConn.kind, reply.inputTokens, reply.outputTokens)
             }
             sendingMap[session.id] = false
+            if (activeSessionId != session.id) unreadDoneSessions[session.id] = true
             if (reply.error == null) {
                 onNotifyIfBackground("${targetConn.name} 응답 완료", assistantMsg.content.take(120))
             }
@@ -611,6 +620,16 @@ fun MainScreen(
                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                             )
                         }
+                        if (activeProject.workDir.isNotBlank()) {
+                            IconButton(onClick = { showGitDialog = true }) {
+                                Icon(Icons.Default.Code, contentDescription = "Git · Diff · CI")
+                            }
+                        }
+                        if (enabledConnections.size >= 2) {
+                            IconButton(onClick = { showFanOutDialog = true }) {
+                                Icon(Icons.Default.CompareArrows, contentDescription = "동시 비교")
+                            }
+                        }
                         if (enabledConnections.isNotEmpty()) {
                             IconButton(onClick = { showOrchestrationDialog = true }) {
                                 Icon(Icons.Default.AccountTree, contentDescription = "오케스트레이션")
@@ -648,6 +667,7 @@ fun MainScreen(
                         FilterChip(
                             selected = isSelected,
                             onClick = {
+                                unreadDoneSessions.remove(sess.id)
                                 if (splitMode == SplitMode.SINGLE || focusedPane == 0) {
                                     activeSessionId = sess.id
                                     store.saveActiveSessionId(sess.id)
@@ -657,7 +677,13 @@ fun MainScreen(
                                 }
                             },
                             label = {
-                                val label = if (connName != null) "${sess.title} · $connName" else sess.title
+                                val statusDot = when {
+                                    sendingMap[sess.id] == true -> "🟡 "
+                                    sess.messages.lastOrNull()?.isError == true -> "🔴 "
+                                    unreadDoneSessions[sess.id] == true -> "🟢 "
+                                    else -> ""
+                                }
+                                val label = if (connName != null) "$statusDot${sess.title} · $connName" else "$statusDot${sess.title}"
                                 Text(label, maxLines = 1)
                             }
                         )
@@ -1018,31 +1044,88 @@ fun MainScreen(
         )
     }
 
+    if (showGitDialog && activeProject.workDir.isNotBlank()) {
+        GitWorkspaceDialog(
+            workDir = primarySession?.worktreePath?.ifBlank { activeProject.workDir } ?: activeProject.workDir,
+            onDismiss = { showGitDialog = false },
+            onSendDiffFeedback = { diffPrompt ->
+                showGitDialog = false
+                val sess = primarySession
+                val conn = sess?.let { s -> enabledConnections.find { it.id == s.connectionId } }
+                if (sess != null && conn != null) {
+                    sendMessageInSession(sess, conn, diffPrompt)
+                }
+            }
+        )
+    }
+
+    if (showFanOutDialog) {
+        FanOutDialog(
+            enabledConnections = enabledConnections,
+            headlessWebBridge = headlessWebBridge,
+            onDismiss = { showFanOutDialog = false },
+            onAdopt = { prompt, winner ->
+                showFanOutDialog = false
+                val newSess = AgentSession(
+                    id = "sess_${UUID.randomUUID()}",
+                    projectId = activeProject.id,
+                    title = "${winner.connection.name} 채택",
+                    connectionId = winner.connection.id,
+                    messages = listOf(
+                        ChatMessage(id = "msg_${UUID.randomUUID()}", role = MessageRole.USER, content = prompt),
+                        ChatMessage(
+                            id = "msg_${UUID.randomUUID()}",
+                            role = MessageRole.ASSISTANT,
+                            content = winner.text,
+                            inputTokens = winner.inTok,
+                            outputTokens = winner.outTok,
+                            agentName = winner.connection.name
+                        )
+                    )
+                )
+                sessions = sessions + newSess
+                store.saveSessions(sessions)
+                activeSessionId = newSess.id
+                store.saveActiveSessionId(newSess.id)
+                if (winner.inTok > 0L || winner.outTok > 0L) {
+                    onRecordTokens(winner.connection.id, winner.connection.kind, winner.inTok, winner.outTok)
+                }
+            }
+        )
+    }
+
     if (showNewSessionDialog) {
         NewSessionDialog(
             enabledConnections = enabledConnections,
+            hasWorkDir = activeProject.workDir.isNotBlank(),
             defaultIndex = validProjectSessions.size + 1,
             onDismiss = { showNewSessionDialog = false },
             onOpenSettings = {
                 showNewSessionDialog = false
                 showSettings = true
             },
-            onCreate = { title, connId ->
+            onCreate = { title, connId, useWorktree ->
                 val conn = enabledConnections.find { it.id == connId } ?: return@NewSessionDialog
-                val newSess = AgentSession(
-                    id = "sess_${UUID.randomUUID()}",
-                    projectId = activeProject.id,
-                    title = title,
-                    connectionId = conn.id
-                )
-                if (conn.kind.isHiddenWebBridge()) {
-                    headlessWebBridge.getOrCreateWebView(conn.id, conn.endpointUrl)
-                }
-                sessions = sessions + newSess
-                store.saveSessions(sessions)
-                activeSessionId = newSess.id
-                store.saveActiveSessionId(newSess.id)
                 showNewSessionDialog = false
+                scope.launch {
+                    val wtPath = if (useWorktree && activeProject.workDir.isNotBlank()) {
+                        GitBridgeClient.createWorktree(activeProject.workDir, title) ?: ""
+                    } else ""
+                    val newSess = AgentSession(
+                        id = "sess_${UUID.randomUUID()}",
+                        projectId = activeProject.id,
+                        title = title,
+                        connectionId = conn.id,
+                        worktreePath = wtPath
+                    )
+                    if (conn.kind.isHiddenWebBridge()) {
+                        headlessWebBridge.getOrCreateWebView(conn.id, conn.endpointUrl)
+                    }
+                    sessions = sessions + newSess
+                    store.saveSessions(sessions)
+                    activeSessionId = newSess.id
+                    store.saveActiveSessionId(newSess.id)
+                }
             }
         )
     }
@@ -1116,13 +1199,15 @@ private fun ProjectEditorDialog(
 @Composable
 private fun NewSessionDialog(
     enabledConnections: List<AiConnection>,
+    hasWorkDir: Boolean,
     defaultIndex: Int,
     onDismiss: () -> Unit,
     onOpenSettings: () -> Unit,
-    onCreate: (title: String, connectionId: String) -> Unit
+    onCreate: (title: String, connectionId: String, useWorktree: Boolean) -> Unit
 ) {
     var title by remember { mutableStateOf("세션 $defaultIndex") }
     var selectedConnId by remember { mutableStateOf(enabledConnections.firstOrNull()?.id) }
+    var useWorktree by remember { mutableStateOf(false) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1167,6 +1252,19 @@ private fun NewSessionDialog(
                             }
                         }
                     }
+                    if (hasWorkDir) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text("독립 Git Worktree 격리 (가능 시)", fontSize = 12.sp)
+                            androidx.compose.material3.Switch(
+                                checked = useWorktree,
+                                onCheckedChange = { useWorktree = it }
+                            )
+                        }
+                    }
                 }
             }
         },
@@ -1180,7 +1278,7 @@ private fun NewSessionDialog(
                     enabled = selectedConnId != null,
                     onClick = {
                         selectedConnId?.let { id ->
-                            onCreate(title.trim().ifEmpty { "세션 $defaultIndex" }, id)
+                            onCreate(title.trim().ifEmpty { "세션 $defaultIndex" }, id, useWorktree)
                         }
                     }
                 ) {

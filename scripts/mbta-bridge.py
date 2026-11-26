@@ -8,6 +8,7 @@ Usage: python3 ~/multi-agent/scripts/mbta-bridge.py
 import http.server
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -79,6 +80,78 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
             command = data.get("command", "")
             proc = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=120)
             self._send_json(200, {"output": proc.stdout + proc.stderr, "exitCode": proc.returncode})
+            return
+
+        if self.path == "/git/status":
+            cwd = os.path.expanduser(data.get("cwd", "~"))
+            if not os.path.isdir(cwd):
+                self._send_json(200, {"isGit": False, "error": f"디렉토리를 찾을 수 없습니다: {cwd}"})
+                return
+            branch_p = subprocess.run(["git", "-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"], capture_output=True, text=True)
+            if branch_p.returncode != 0:
+                self._send_json(200, {"isGit": False, "error": "Git 저장소가 아닙니다."})
+                return
+            status_p = subprocess.run(["git", "-C", cwd, "status", "--short"], capture_output=True, text=True)
+            diff_p = subprocess.run(["git", "-C", cwd, "diff"], capture_output=True, text=True)
+            files = [l for l in status_p.stdout.splitlines() if l.strip()]
+            ci_summary = ""
+            try:
+                env = os.environ.copy()
+                env.pop("GITHUB_TOKEN", None)
+                gh_p = subprocess.run(
+                    ["gh", "run", "list", "--limit", "1", "--json", "status,conclusion,displayTitle"],
+                    cwd=cwd, env=env, capture_output=True, text=True, timeout=10
+                )
+                if gh_p.returncode == 0:
+                    runs = json.loads(gh_p.stdout)
+                    if runs:
+                        r = runs[0]
+                        st = r.get("conclusion") or r.get("status") or ""
+                        ci_summary = f"{st}: {r.get('displayTitle', '')}"
+            except Exception:
+                pass
+            self._send_json(200, {
+                "isGit": True,
+                "branch": branch_p.stdout.strip(),
+                "files": files,
+                "diff": diff_p.stdout[:30000],
+                "ciSummary": ci_summary
+            })
+            return
+
+        if self.path == "/git/worktree/create":
+            cwd = os.path.expanduser(data.get("cwd", "~"))
+            raw_name = data.get("name", "session")
+            safe = re.sub(r"[^a-zA-Z0-9_-]", "-", raw_name).strip("-") or "session"
+            wt_root = os.path.expanduser("~/.cache/mbta-worktrees")
+            os.makedirs(wt_root, exist_ok=True)
+            wt_path = os.path.join(wt_root, f"{safe}-{os.getpid()}")
+            branch_name = f"mbta/{safe}-{os.getpid()}"
+            p = subprocess.run(
+                ["git", "-C", cwd, "worktree", "add", "-b", branch_name, wt_path],
+                capture_output=True, text=True
+            )
+            if p.returncode != 0:
+                self._send_json(200, {"ok": False, "error": p.stderr.strip()})
+            else:
+                self._send_json(200, {"ok": True, "worktreePath": wt_path, "branch": branch_name})
+            return
+
+        if self.path == "/git/commit":
+            cwd = os.path.expanduser(data.get("cwd", "~"))
+            msg = data.get("message", "chore: update via MbtA")
+            p1 = subprocess.run(["git", "-C", cwd, "add", "-A"], capture_output=True, text=True)
+            p2 = subprocess.run(["git", "-C", cwd, "commit", "-m", msg], capture_output=True, text=True)
+            ok = p1.returncode == 0 and p2.returncode == 0
+            self._send_json(200, {"ok": ok, "output": (p2.stdout + p2.stderr).strip()})
+            return
+
+        if self.path == "/git/push":
+            cwd = os.path.expanduser(data.get("cwd", "~"))
+            env = os.environ.copy()
+            env.pop("GITHUB_TOKEN", None)
+            p = subprocess.run(["git", "-C", cwd, "push"], env=env, capture_output=True, text=True, timeout=60)
+            self._send_json(200, {"ok": p.returncode == 0, "output": (p.stdout + p.stderr).strip()})
             return
 
         prompt = data.get("prompt", "")
