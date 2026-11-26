@@ -48,6 +48,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -65,6 +66,7 @@ import com.mbta.app.model.defaultEndpointFor
 import com.mbta.app.model.defaultModelFor
 import com.mbta.app.model.displayLabel
 import com.mbta.app.model.isHiddenWebBridge
+import com.mbta.app.util.AppUpdater
 import java.util.UUID
 
 private const val TERMUX_BRIDGE_CMD = "python3 ~/multi-agent/scripts/mbta-bridge.py"
@@ -82,8 +84,10 @@ fun SettingsScreen(
     onSaveSkill: (CustomSkill) -> Unit,
     onDeleteSkill: (String) -> Unit,
     onLoginConnection: (AiConnection) -> Unit,
+    onCheckUpdate: () -> Unit,
     onBack: () -> Unit
 ) {
+    val context = LocalContext.current
     var editingConnection by remember { mutableStateOf<AiConnection?>(null) }
     var addingKind by remember { mutableStateOf<ConnectionKind?>(null) }
     var showSmartAdd by remember { mutableStateOf(false) }
@@ -115,7 +119,16 @@ fun SettingsScreen(
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             item {
-                Text("앱 테마", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("앱 테마", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                    OutlinedButton(onClick = onCheckUpdate) {
+                        Text("업데이트 확인 (v${AppUpdater.getCurrentVersionName(context)})", fontSize = 11.sp)
+                    }
+                }
                 Spacer(modifier = Modifier.height(6.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf(

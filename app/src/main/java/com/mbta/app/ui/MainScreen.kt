@@ -44,6 +44,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -87,6 +88,8 @@ import com.mbta.app.model.formatTokens
 import com.mbta.app.model.isHiddenWebBridge
 import com.mbta.app.network.AiApiClient
 import com.mbta.app.network.GitBridgeClient
+import com.mbta.app.util.AppUpdater
+import com.mbta.app.util.UpdateInfo
 import com.mbta.app.webview.HeadlessWebBridge
 import kotlinx.coroutines.launch
 import java.util.UUID
@@ -125,6 +128,10 @@ fun MainScreen(
     var showGitDialog by remember { mutableStateOf(false) }
     var showFanOutDialog by remember { mutableStateOf(false) }
     var showProjectMenu by remember { mutableStateOf(false) }
+    var availableUpdate by remember { mutableStateOf<UpdateInfo?>(null) }
+    var updateDownloading by remember { mutableStateOf(false) }
+    var updateProgress by remember { mutableStateOf(0f) }
+    var updateStatusMsg by remember { mutableStateOf<String?>(null) }
     var showNewProjectDialog by remember { mutableStateOf(false) }
     var editingProject by remember { mutableStateOf<Project?>(null) }
     var showNewSessionDialog by remember { mutableStateOf(false) }
@@ -143,6 +150,10 @@ fun MainScreen(
 
     LaunchedEffect(connections, showSettings, loginConnection) {
         refreshLoginStatuses()
+    }
+
+    LaunchedEffect(Unit) {
+        availableUpdate = AppUpdater.checkLatestRelease(context)
     }
 
     val enabledConnections = connections.filter { it.enabled }
@@ -534,6 +545,16 @@ fun MainScreen(
                         store.saveCustomSkills(customSkills)
                     },
                     onLoginConnection = { conn -> loginConnection = conn },
+                    onCheckUpdate = {
+                        scope.launch {
+                            val info = AppUpdater.checkLatestRelease(context)
+                            if (info != null) {
+                                availableUpdate = info
+                            } else {
+                                updateStatusMsg = "최신 버전입니다."
+                            }
+                        }
+                    },
                     onBack = { showSettings = false }
                 )
             } else {
@@ -1041,6 +1062,78 @@ fun MainScreen(
             onRun = { goal, steps ->
                 showOrchestrationDialog = false
                 runOrchestration(goal, steps)
+            }
+        )
+    }
+
+    val upd = availableUpdate
+    if (upd != null) {
+        AlertDialog(
+            onDismissRequest = { if (!updateDownloading) availableUpdate = null },
+            title = { Text("새 업데이트 (${upd.tagName})") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (upd.notes.isNotBlank()) {
+                        Text(upd.notes, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    if (updateDownloading) {
+                        LinearProgressIndicator(
+                            progress = { updateProgress },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Text("다운로드 중... ${(updateProgress * 100).toInt()}%", fontSize = 11.sp)
+                    }
+                    if (!updateStatusMsg.isNullOrBlank()) {
+                        Text(updateStatusMsg.orEmpty(), fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    enabled = !updateDownloading,
+                    onClick = {
+                        updateDownloading = true
+                        updateProgress = 0f
+                        updateStatusMsg = null
+                        scope.launch {
+                            val file = AppUpdater.downloadApk(context, upd.apkUrl) { p ->
+                                updateProgress = p
+                            }
+                            updateDownloading = false
+                            if (file == null) {
+                                updateStatusMsg = "APK 다운로드에 실패했습니다."
+                            } else {
+                                val started = AppUpdater.installApk(context, file)
+                                if (!started) {
+                                    updateStatusMsg = "출처를 알 수 없는 앱 설치 권한을 허용한 뒤 다시 '지금 업데이트'를 눌러주세요."
+                                } else {
+                                    availableUpdate = null
+                                }
+                            }
+                        }
+                    }
+                ) {
+                    Text("지금 업데이트")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    enabled = !updateDownloading,
+                    onClick = { availableUpdate = null }
+                ) {
+                    Text("나중에")
+                }
+            }
+        )
+    }
+
+    if (updateStatusMsg != null && availableUpdate == null) {
+        AlertDialog(
+            onDismissRequest = { updateStatusMsg = null },
+            title = { Text("업데이트 확인") },
+            text = { Text(updateStatusMsg.orEmpty()) },
+            confirmButton = {
+                TextButton(onClick = { updateStatusMsg = null }) { Text("확인") }
             }
         )
     }
