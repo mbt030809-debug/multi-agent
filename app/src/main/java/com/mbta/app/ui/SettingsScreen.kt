@@ -523,6 +523,9 @@ private fun SkillEditorDialog(
         }
     )
 }
+
+@Composable
+private fun SmartAddConnectionDialog(
     onDismiss: () -> Unit,
     onAdd: (AiConnection, Boolean) -> Unit
 ) {
