@@ -954,6 +954,7 @@ fun MainScreen(
                                 Icon(Icons.Default.Refresh, contentDescription = "새로고침")
                             }
                             TextButton(onClick = {
+                                headlessWebBridge.flushCookies()
                                 loginConnection = null
                                 refreshLoginStatuses()
                             }) {

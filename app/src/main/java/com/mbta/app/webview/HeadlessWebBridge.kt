@@ -100,6 +100,7 @@ class HeadlessWebBridge(
                 override fun onPageFinished(view: WebView?, loadedUrl: String?) {
                     super.onPageFinished(view, loadedUrl)
                     loadedUrls[key] = true
+                    CookieManager.getInstance().flush()
                 }
 
                 override fun shouldOverrideUrlLoading(
@@ -202,6 +203,10 @@ class HeadlessWebBridge(
         pool[key]?.let { if (it.canGoBack()) it.goBack() }
     }
 
+    fun flushCookies() {
+        CookieManager.getInstance().flush()
+    }
+
     fun checkLoginStatus(
         key: String,
         kind: ConnectionKind,
@@ -209,13 +214,37 @@ class HeadlessWebBridge(
         onResult: (Boolean) -> Unit
     ) {
         val wv = pool[key]
+        val cookieMgr = CookieManager.getInstance()
+        val cookies = listOfNotNull(
+            cookieMgr.getCookie(url),
+            wv?.url?.let { cookieMgr.getCookie(it) },
+            if (kind == ConnectionKind.GEMINI_WEB || kind == ConnectionKind.REMOTE_WEB) {
+                cookieMgr.getCookie("https://accounts.google.com")
+            } else null
+        ).joinToString(";")
+
+        val hasAuthCookie = when (kind) {
+            ConnectionKind.CLAUDE_WEB -> cookies.contains("sessionKey") || cookies.contains("__cf_bm")
+            ConnectionKind.CHATGPT_WEB -> cookies.contains("__Secure-next-auth.session-token") || cookies.contains("oai-did")
+            ConnectionKind.GEMINI_WEB -> cookies.contains("SID=") || cookies.contains("__Secure-1PSID")
+            ConnectionKind.REMOTE_WEB -> cookies.isNotBlank()
+            else -> false
+        }
+
         if (wv != null && loadedUrls[key] == true) {
             val js = """
                 (function() {
-                    var href = (location.href || '').toLowerCase();
-                    if (/login|signin|auth|accounts\.google/.test(href)) return 'false';
-                    var el = document.querySelector('#prompt-textarea, div.ProseMirror[contenteditable="true"], rich-textarea div[contenteditable="true"], div[contenteditable="true"], textarea');
-                    return el ? 'true' : 'false';
+                    $DEEP_QUERY_JS
+                    var host = (location.hostname || '').toLowerCase();
+                    var path = (location.pathname || '').toLowerCase();
+                    if (host === 'accounts.google.com' || /^\/(login|signin|auth|oauth)/.test(path)) return 'false';
+                    var els = queryAllDeep('#prompt-textarea, div.ProseMirror[contenteditable="true"], rich-textarea div[contenteditable="true"], [contenteditable="true"], textarea, [role="textbox"]');
+                    for (var i = 0; i < els.length; i++) {
+                        if (els[i].offsetParent !== null) return 'true';
+                    }
+                    var bodyLen = (document.body && document.body.innerText) ? document.body.innerText.trim().length : 0;
+                    if (bodyLen > 30 && ${if (hasAuthCookie) "true" else "false"}) return 'true';
+                    return 'false';
                 })();
             """.trimIndent()
             wv.evaluateJavascript(js) { res ->
@@ -225,14 +254,6 @@ class HeadlessWebBridge(
             return
         }
 
-        val cookies = CookieManager.getInstance().getCookie(url).orEmpty()
-        val hasAuthCookie = when (kind) {
-            ConnectionKind.CLAUDE_WEB -> cookies.contains("sessionKey") || cookies.contains("__cf_bm")
-            ConnectionKind.CHATGPT_WEB -> cookies.contains("__Secure-next-auth.session-token") || cookies.contains("oai-did")
-            ConnectionKind.GEMINI_WEB -> cookies.contains("SID=") || cookies.contains("__Secure-1PSID")
-            ConnectionKind.REMOTE_WEB -> cookies.isNotBlank()
-            else -> false
-        }
         onResult(hasAuthCookie)
     }
 
@@ -256,11 +277,15 @@ class HeadlessWebBridge(
                 var kind = $quotedKind;
                 var promptText = $quotedPrompt;
 
+                $DEEP_QUERY_JS
+
                 function findFirst(selectors) {
                     for (var i = 0; i < selectors.length; i++) {
                         try {
-                            var el = document.querySelector(selectors[i]);
-                            if (el && el.offsetParent !== null) return el;
+                            var els = queryAllDeep(selectors[i]);
+                            for (var j = 0; j < els.length; j++) {
+                                if (els[j] && els[j].offsetParent !== null) return els[j];
+                            }
                         } catch(e) {}
                     }
                     return null;
@@ -294,7 +319,7 @@ class HeadlessWebBridge(
                 function getLatestMsgText() {
                     for (var i = 0; i < msgSelectors.length; i++) {
                         try {
-                            var nodes = document.querySelectorAll(msgSelectors[i]);
+                            var nodes = queryAllDeep(msgSelectors[i]);
                             if (nodes && nodes.length > 0) {
                                 return { count: nodes.length, text: (nodes[nodes.length - 1].innerText || '').trim() };
                             }
@@ -392,5 +417,30 @@ class HeadlessWebBridge(
     companion object {
         private const val MOBILE_UA =
             "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
+        private const val DEEP_QUERY_JS = """
+            function queryAllDeep(selector) {
+                var results = [];
+                function walk(root) {
+                    if (!root || !root.querySelectorAll) return;
+                    try {
+                        var found = root.querySelectorAll(selector);
+                        for (var i = 0; i < found.length; i++) results.push(found[i]);
+                    } catch(e) {}
+                    try {
+                        var all = root.querySelectorAll('*');
+                        for (var j = 0; j < all.length; j++) {
+                            if (all[j].shadowRoot) walk(all[j].shadowRoot);
+                            if (all[j].tagName === 'IFRAME') {
+                                try {
+                                    if (all[j].contentDocument) walk(all[j].contentDocument);
+                                } catch(e) {}
+                            }
+                        }
+                    } catch(e) {}
+                }
+                walk(document);
+                return results;
+            }
+        """
     }
 }
