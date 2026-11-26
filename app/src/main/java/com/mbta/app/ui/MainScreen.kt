@@ -610,6 +610,7 @@ fun MainScreen(
         }
             }
         }
+        }
 
         // Layer 2: Full-screen Login Overlay when user taps "로그인"
         val activeLoginConn = loginConnection

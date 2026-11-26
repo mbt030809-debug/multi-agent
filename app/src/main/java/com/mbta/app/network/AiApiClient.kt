@@ -65,6 +65,7 @@ object AiApiClient {
                 ConnectionKind.GEMINI_API -> sendGemini(connection, history, userMessage)
                 ConnectionKind.TERMUX_CLI -> sendTermuxCli(connection, userMessage)
                 ConnectionKind.REMOTE_CONTROL -> sendRemoteControl(connection, history, userMessage, sessionId)
+                else -> AiReply(text = "", error = "지원하지 않는 연결 형식입니다.")
             }
         } catch (e: Exception) {
             AiReply(text = "", error = "요청 오류: ${e.message ?: "알 수 없는 오류"}")
