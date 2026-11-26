@@ -1,8 +1,11 @@
 package com.mbta.app
 
+import android.net.Uri
 import android.os.Bundle
+import android.webkit.ValueCallback
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -15,12 +18,36 @@ import com.mbta.app.model.TokenSource
 import com.mbta.app.model.defaultContextLimitForKind
 import com.mbta.app.ui.MainScreen
 import com.mbta.app.ui.theme.MbtATheme
+import com.mbta.app.webview.WebViewManager
 
 class MainActivity : ComponentActivity() {
 
     private lateinit var store: WorkspaceStore
+    private lateinit var webViewManager: WebViewManager
+    private var filePathCallback: ValueCallback<Array<Uri>>? = null
     private val tokenUsageMap = mutableStateMapOf<String, AgentTokenUsage>()
     private var themeMode by mutableStateOf(AppThemeMode.DARK)
+
+    private val fileChooserLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val uris = if (result.resultCode == RESULT_OK) {
+            val data = result.data
+            when {
+                data?.clipData != null -> {
+                    Array(data.clipData!!.itemCount) { idx ->
+                        data.clipData!!.getItemAt(idx).uri
+                    }
+                }
+                data?.data != null -> arrayOf(data.data!!)
+                else -> null
+            }
+        } else {
+            null
+        }
+        filePathCallback?.onReceiveValue(uris)
+        filePathCallback = null
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -28,11 +55,20 @@ class MainActivity : ComponentActivity() {
         store = WorkspaceStore(this)
         themeMode = store.loadThemeMode()
         tokenUsageMap.putAll(store.loadTokenUsage())
+        webViewManager = WebViewManager(
+            context = this,
+            onFileChooserRequested = { intent, callback ->
+                filePathCallback?.onReceiveValue(null)
+                filePathCallback = callback
+                fileChooserLauncher.launch(intent)
+            }
+        )
 
         setContent {
             MbtATheme(themeMode = themeMode) {
                 MainScreen(
                     store = store,
+                    webViewManager = webViewManager,
                     themeMode = themeMode,
                     tokenUsageMap = tokenUsageMap,
                     onThemeModeChanged = { newMode ->
@@ -68,5 +104,10 @@ class MainActivity : ComponentActivity() {
                 )
             }
         }
+    }
+
+    override fun onDestroy() {
+        webViewManager.destroyAll()
+        super.onDestroy()
     }
 }

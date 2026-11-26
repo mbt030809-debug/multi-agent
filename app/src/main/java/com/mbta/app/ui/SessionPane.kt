@@ -1,5 +1,7 @@
 package com.mbta.app.ui
 
+import android.view.ViewGroup
+import android.widget.FrameLayout
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -21,9 +23,11 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.CallSplit
 import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -48,6 +52,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
 import com.mbta.app.model.AgentSession
 import com.mbta.app.model.AgentTokenUsage
 import com.mbta.app.model.AiConnection
@@ -56,6 +61,8 @@ import com.mbta.app.model.ConnectionKind
 import com.mbta.app.model.MessageRole
 import com.mbta.app.model.displayLabel
 import com.mbta.app.model.formatTokens
+import com.mbta.app.model.shouldUseWebEmbed
+import com.mbta.app.webview.WebViewManager
 
 @Composable
 fun SessionPane(
@@ -63,6 +70,7 @@ fun SessionPane(
     connection: AiConnection?,
     enabledConnections: List<AiConnection>,
     tokenUsage: AgentTokenUsage?,
+    webViewManager: WebViewManager,
     isSending: Boolean,
     isFocused: Boolean,
     showFocusBorder: Boolean,
@@ -153,6 +161,30 @@ fun SessionPane(
                 }
             }
 
+            if (connection != null && connection.shouldUseWebEmbed()) {
+                val sessionKey = "${session.id}:${connection.id}"
+                IconButton(
+                    onClick = { webViewManager.goBack(sessionKey) },
+                    modifier = Modifier.size(28.dp)
+                ) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = "뒤로",
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+                IconButton(
+                    onClick = { webViewManager.reload(sessionKey) },
+                    modifier = Modifier.size(28.dp)
+                ) {
+                    Icon(
+                        Icons.Default.Refresh,
+                        contentDescription = "새로고침",
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+            }
+
             if (session.messages.isNotEmpty() && enabledConnections.size > 1) {
                 IconButton(
                     onClick = { showHandoffDialog = true },
@@ -213,6 +245,46 @@ fun SessionPane(
                         }
                     }
                 }
+            }
+        } else if (connection.shouldUseWebEmbed()) {
+            val sessionKey = "${session.id}:${connection.id}"
+            androidx.compose.runtime.key(sessionKey) {
+                AndroidView(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    factory = { ctx ->
+                        val wv = webViewManager.getOrCreateWebView(
+                            sessionKey = sessionKey,
+                            connectionId = connection.id,
+                            url = connection.endpointUrl,
+                            desktopMode = connection.desktopMode,
+                            trackWebTokens = false
+                        )
+                        (wv.parent as? ViewGroup)?.removeView(wv)
+                        FrameLayout(ctx).apply {
+                            layoutParams = ViewGroup.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                                ViewGroup.LayoutParams.MATCH_PARENT
+                            )
+                            addView(wv)
+                        }
+                    },
+                    update = { container ->
+                        val wv = webViewManager.getOrCreateWebView(
+                            sessionKey = sessionKey,
+                            connectionId = connection.id,
+                            url = connection.endpointUrl,
+                            desktopMode = connection.desktopMode,
+                            trackWebTokens = false
+                        )
+                        if (wv.parent !== container) {
+                            (wv.parent as? ViewGroup)?.removeView(wv)
+                            container.removeAllViews()
+                            container.addView(wv)
+                        }
+                    }
+                )
             }
         } else {
             LazyColumn(

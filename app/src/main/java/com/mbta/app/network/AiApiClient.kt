@@ -313,6 +313,12 @@ object AiApiClient {
             client.newCall(reqBuilder.build()).execute().use { response ->
                 val bodyStr = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
+                    if (response.code == 405) {
+                        return AiReply(
+                            text = "",
+                            error = "Remote Control 오류 (405): 입력하신 URL($url)은 웹페이지 주소로 보입니다.\n설정 > 해당 연결 편집에서 모드를 '웹 원격'으로 변경하거나, 로컬 브릿지 URL(http://127.0.0.1:8765/claude 또는 /agy)을 사용하세요."
+                        )
+                    }
                     return AiReply(text = "", error = "Remote Control 오류 (${response.code}): ${extractError(bodyStr)}")
                 }
                 val parsed = runCatching {

@@ -19,6 +19,13 @@ enum class ConnectionKind {
 }
 
 @Serializable
+enum class RemoteMode {
+    AUTO,
+    BRIDGE_API,
+    WEB_EMBED
+}
+
+@Serializable
 data class AiConnection(
     val id: String,
     val name: String,
@@ -27,8 +34,27 @@ data class AiConnection(
     val model: String = "",
     val endpointUrl: String = "",
     val desktopMode: Boolean = false,
+    val remoteMode: RemoteMode = RemoteMode.AUTO,
     val enabled: Boolean = true
 )
+
+fun AiConnection.shouldUseWebEmbed(): Boolean {
+    if (kind != ConnectionKind.REMOTE_CONTROL) return false
+    return when (remoteMode) {
+        RemoteMode.WEB_EMBED -> true
+        RemoteMode.BRIDGE_API -> false
+        RemoteMode.AUTO -> {
+            val u = endpointUrl.trim().lowercase()
+            val isLocalBridge = u.contains("127.0.0.1") ||
+                u.contains("localhost") ||
+                u.endsWith("/prompt") ||
+                u.endsWith("/claude") ||
+                u.endsWith("/agy") ||
+                u.endsWith("/exec")
+            !isLocalBridge
+        }
+    }
+}
 
 fun ConnectionKind.isNativeChat(): Boolean =
     this == ConnectionKind.CLAUDE_API ||
@@ -54,8 +80,8 @@ fun defaultEndpointFor(kind: ConnectionKind): String = when (kind) {
     ConnectionKind.CLAUDE_API -> "https://api.anthropic.com/v1/messages"
     ConnectionKind.OPENAI_API -> "https://api.openai.com/v1/chat/completions"
     ConnectionKind.GEMINI_API -> "https://generativelanguage.googleapis.com/v1beta"
-    ConnectionKind.TERMUX_CLI -> "http://127.0.0.1:7681/exec"
-    ConnectionKind.REMOTE_CONTROL -> "http://127.0.0.1:8765/prompt"
+    ConnectionKind.TERMUX_CLI -> "http://127.0.0.1:8765/exec"
+    ConnectionKind.REMOTE_CONTROL -> "http://127.0.0.1:8765/claude"
 }
 
 fun defaultContextLimitForKind(kind: ConnectionKind): Long? = when (kind) {

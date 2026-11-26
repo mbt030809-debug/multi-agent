@@ -71,6 +71,7 @@ import com.mbta.app.model.defaultContextLimitForKind
 import com.mbta.app.model.displayLabel
 import com.mbta.app.model.formatTokens
 import com.mbta.app.network.AiApiClient
+import com.mbta.app.webview.WebViewManager
 import kotlinx.coroutines.launch
 import java.util.UUID
 
@@ -78,6 +79,7 @@ import java.util.UUID
 @Composable
 fun MainScreen(
     store: WorkspaceStore,
+    webViewManager: WebViewManager,
     themeMode: AppThemeMode,
     tokenUsageMap: Map<String, AgentTokenUsage>,
     onThemeModeChanged: (AppThemeMode) -> Unit,
@@ -400,6 +402,7 @@ fun MainScreen(
                         connection = primaryConn,
                         enabledConnections = enabledConnections,
                         tokenUsage = primaryConn?.let { tokenUsageMap[it.id] },
+                        webViewManager = webViewManager,
                         isSending = sendingMap[primarySession.id] == true,
                         isFocused = true,
                         showFocusBorder = false,
@@ -421,6 +424,7 @@ fun MainScreen(
                             connection = primaryConn,
                             enabledConnections = enabledConnections,
                             tokenUsage = primaryConn?.let { tokenUsageMap[it.id] },
+                            webViewManager = webViewManager,
                             isSending = sendingMap[primarySession.id] == true,
                             isFocused = focusedPane == 0,
                             showFocusBorder = true,
@@ -442,6 +446,7 @@ fun MainScreen(
                             connection = secondaryConn,
                             enabledConnections = enabledConnections,
                             tokenUsage = secondaryConn?.let { tokenUsageMap[it.id] },
+                            webViewManager = webViewManager,
                             isSending = sendingMap[secondarySession.id] == true,
                             isFocused = focusedPane == 1,
                             showFocusBorder = true,
@@ -466,6 +471,7 @@ fun MainScreen(
                             connection = primaryConn,
                             enabledConnections = enabledConnections,
                             tokenUsage = primaryConn?.let { tokenUsageMap[it.id] },
+                            webViewManager = webViewManager,
                             isSending = sendingMap[primarySession.id] == true,
                             isFocused = focusedPane == 0,
                             showFocusBorder = true,
@@ -487,6 +493,7 @@ fun MainScreen(
                             connection = secondaryConn,
                             enabledConnections = enabledConnections,
                             tokenUsage = secondaryConn?.let { tokenUsageMap[it.id] },
+                            webViewManager = webViewManager,
                             isSending = sendingMap[secondarySession.id] == true,
                             isFocused = focusedPane == 1,
                             showFocusBorder = true,

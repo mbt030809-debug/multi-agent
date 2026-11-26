@@ -58,13 +58,13 @@ import androidx.compose.ui.unit.sp
 import com.mbta.app.model.AiConnection
 import com.mbta.app.model.AppThemeMode
 import com.mbta.app.model.ConnectionKind
+import com.mbta.app.model.RemoteMode
 import com.mbta.app.model.defaultEndpointFor
 import com.mbta.app.model.defaultModelFor
 import com.mbta.app.model.displayLabel
 import java.util.UUID
 
-private const val TERMUX_BRIDGE_CMD =
-    "python3 -c \"import http.server,json,subprocess;H=http.server.BaseHTTPRequestHandler;\nclass R(H):\n def do_POST(s):\n  d=json.loads(s.rfile.read(int(s.headers['Content-Length'])));p=subprocess.run(d['command'],shell=True,capture_output=True,text=True);s.send_response(200);s.end_headers();s.wfile.write(json.dumps({'output':p.stdout+p.stderr,'exitCode':p.returncode}).encode())\nhttp.server.HTTPServer(('127.0.0.1',7681),R).serve_forever()\""
+private const val TERMUX_BRIDGE_CMD = "python3 ~/multi-agent/scripts/mbta-bridge.py"
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
@@ -316,11 +316,13 @@ private fun ConnectionEditorDialog(
     var apiKey by remember { mutableStateOf(initial.apiKey) }
     var model by remember { mutableStateOf(initial.model) }
     var endpointUrl by remember { mutableStateOf(initial.endpointUrl) }
+    var remoteMode by remember { mutableStateOf(initial.remoteMode) }
     var showKey by remember { mutableStateOf(false) }
 
     val isApiKind = initial.kind == ConnectionKind.CLAUDE_API ||
         initial.kind == ConnectionKind.OPENAI_API ||
         initial.kind == ConnectionKind.GEMINI_API
+    val isRemoteKind = initial.kind == ConnectionKind.REMOTE_CONTROL
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -362,10 +364,38 @@ private fun ConnectionEditorDialog(
                 OutlinedTextField(
                     value = endpointUrl,
                     onValueChange = { endpointUrl = it },
-                    label = { Text(if (isApiKind) "엔드포인트 URL (기본값 사용 가능)" else "서버 URL") },
+                    label = { Text(if (isApiKind) "엔드포인트 URL (기본값 사용 가능)" else "서버 / 원격 URL") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
+                if (isRemoteKind) {
+                    Text("동작 모드", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        listOf(
+                            RemoteMode.AUTO to "자동",
+                            RemoteMode.BRIDGE_API to "브릿지 API",
+                            RemoteMode.WEB_EMBED to "웹 원격"
+                        ).forEach { (mode, label) ->
+                            FilterChip(
+                                selected = remoteMode == mode,
+                                onClick = { remoteMode = mode },
+                                label = { Text(label, fontSize = 11.sp) }
+                            )
+                        }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        TextButton(onClick = {
+                            name = "Claude Code"
+                            endpointUrl = "http://127.0.0.1:8765/claude"
+                            remoteMode = RemoteMode.BRIDGE_API
+                        }) { Text("Claude 로컬", fontSize = 11.sp) }
+                        TextButton(onClick = {
+                            name = "Antigravity"
+                            endpointUrl = "http://127.0.0.1:8765/agy"
+                            remoteMode = RemoteMode.BRIDGE_API
+                        }) { Text("Agy 로컬", fontSize = 11.sp) }
+                    }
+                }
             }
         },
         confirmButton = {
@@ -376,7 +406,8 @@ private fun ConnectionEditorDialog(
                             name = name.trim().ifEmpty { initial.kind.displayLabel() },
                             apiKey = apiKey.trim(),
                             model = model.trim(),
-                            endpointUrl = endpointUrl.trim().ifEmpty { defaultEndpointFor(initial.kind) }
+                            endpointUrl = endpointUrl.trim().ifEmpty { defaultEndpointFor(initial.kind) },
+                            remoteMode = remoteMode
                         )
                     )
                 }
