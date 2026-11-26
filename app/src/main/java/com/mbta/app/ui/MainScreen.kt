@@ -138,12 +138,24 @@ fun MainScreen(
 
     val sendingMap = remember { mutableStateMapOf<String, Boolean>() }
     val unreadDoneSessions = remember { mutableStateMapOf<String, Boolean>() }
-    val loginStatusMap = remember { mutableStateMapOf<String, Boolean>() }
+    val loginStatusMap = remember {
+        mutableStateMapOf<String, Boolean>().apply {
+            store.loadConfirmedLogins().forEach { id -> put(id, true) }
+        }
+    }
+
+    fun persistConfirmedLogins() {
+        val confirmed = loginStatusMap.filterValues { it }.keys.toSet()
+        store.saveConfirmedLogins(confirmed)
+    }
 
     fun refreshLoginStatuses() {
         connections.filter { it.kind.isHiddenWebBridge() }.forEach { conn ->
             headlessWebBridge.checkLoginStatus(conn.id, conn.kind, conn.endpointUrl) { ok ->
-                loginStatusMap[conn.id] = ok
+                if (ok) {
+                    loginStatusMap[conn.id] = true
+                    persistConfirmedLogins()
+                }
             }
         }
     }
@@ -494,8 +506,8 @@ fun MainScreen(
             },
             update = { host ->
                 if (loginConnection == null) {
-                    activeWebSessions.forEach { (key, url, _) ->
-                        headlessWebBridge.attachToHiddenHost(host, key, url)
+                    connections.filter { it.enabled && it.kind.isHiddenWebBridge() }.forEach { conn ->
+                        headlessWebBridge.attachToHiddenHost(host, conn.id, conn.endpointUrl)
                     }
                 }
             }
@@ -976,6 +988,14 @@ fun MainScreen(
                             }
                             TextButton(onClick = {
                                 headlessWebBridge.flushCookies()
+                                val curUrl = headlessWebBridge.currentUrl(loginKey).orEmpty().lowercase()
+                                if (!curUrl.contains("accounts.google.com") &&
+                                    !curUrl.contains("/login") &&
+                                    !curUrl.contains("/signin")
+                                ) {
+                                    loginStatusMap[activeLoginConn.id] = true
+                                    persistConfirmedLogins()
+                                }
                                 loginConnection = null
                                 refreshLoginStatuses()
                             }) {

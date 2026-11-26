@@ -207,6 +207,8 @@ class HeadlessWebBridge(
         CookieManager.getInstance().flush()
     }
 
+    fun currentUrl(key: String): String? = pool[key]?.url
+
     fun checkLoginStatus(
         key: String,
         kind: ConnectionKind,
@@ -218,6 +220,9 @@ class HeadlessWebBridge(
         val cookies = listOfNotNull(
             cookieMgr.getCookie(url),
             wv?.url?.let { cookieMgr.getCookie(it) },
+            if (kind == ConnectionKind.GEMINI_WEB || kind == ConnectionKind.REMOTE_WEB) {
+                cookieMgr.getCookie("https://google.com")
+            } else null,
             if (kind == ConnectionKind.GEMINI_WEB || kind == ConnectionKind.REMOTE_WEB) {
                 cookieMgr.getCookie("https://accounts.google.com")
             } else null
@@ -237,13 +242,15 @@ class HeadlessWebBridge(
                     $DEEP_QUERY_JS
                     var host = (location.hostname || '').toLowerCase();
                     var path = (location.pathname || '').toLowerCase();
-                    if (host === 'accounts.google.com' || /^\/(login|signin|auth|oauth)/.test(path)) return 'false';
+                    if (host === 'accounts.google.com' || host === 'auth0.com' || /^\/(login|signin|oauth|account-chooser)/.test(path)) return 'false';
                     var els = queryAllDeep('#prompt-textarea, div.ProseMirror[contenteditable="true"], rich-textarea div[contenteditable="true"], [contenteditable="true"], textarea, [role="textbox"]');
-                    for (var i = 0; i < els.length; i++) {
-                        if (els[i].offsetParent !== null) return 'true';
-                    }
+                    if (els.length > 0) return 'true';
+                    try {
+                        if (window.localStorage && window.localStorage.length > 0) return 'true';
+                    } catch(e) {}
+                    if (${if (hasAuthCookie) "true" else "false"}) return 'true';
                     var bodyLen = (document.body && document.body.innerText) ? document.body.innerText.trim().length : 0;
-                    if (bodyLen > 30 && ${if (hasAuthCookie) "true" else "false"}) return 'true';
+                    if (bodyLen > 40) return 'true';
                     return 'false';
                 })();
             """.trimIndent()

@@ -106,6 +106,13 @@ class WorkspaceStore(context: Context) {
         prefs.edit().putString(KEY_CUSTOM_SKILLS, json.encodeToString(skills)).apply()
     }
 
+    fun loadConfirmedLogins(): Set<String> =
+        prefs.getStringSet(KEY_CONFIRMED_LOGINS, emptySet())?.toSet() ?: emptySet()
+
+    fun saveConfirmedLogins(ids: Set<String>) {
+        prefs.edit().putStringSet(KEY_CONFIRMED_LOGINS, ids).apply()
+    }
+
     companion object {
         private val defaultProjects = listOf(Project(id = "proj_default", name = "기본 프로젝트"))
         private val defaultSessions = listOf(
@@ -127,5 +134,6 @@ class WorkspaceStore(context: Context) {
         private const val KEY_TOKEN_USAGE = "token_usage"
         private const val KEY_THEME_MODE = "theme_mode"
         private const val KEY_CUSTOM_SKILLS = "custom_skills"
+        private const val KEY_CONFIRMED_LOGINS = "confirmed_logins"
     }
 }
