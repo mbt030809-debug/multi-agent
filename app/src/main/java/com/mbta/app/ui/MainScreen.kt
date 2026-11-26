@@ -22,6 +22,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.AccountTree
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Edit
@@ -110,6 +111,7 @@ fun MainScreen(
     var showSettings by remember { mutableStateOf(false) }
     var loginConnection by remember { mutableStateOf<AiConnection?>(null) }
     var showTokenDashboard by remember { mutableStateOf(false) }
+    var showOrchestrationDialog by remember { mutableStateOf(false) }
     var showProjectMenu by remember { mutableStateOf(false) }
     var showNewProjectDialog by remember { mutableStateOf(false) }
     var editingProject by remember { mutableStateOf<Project?>(null) }
@@ -120,8 +122,7 @@ fun MainScreen(
 
     fun refreshLoginStatuses() {
         connections.filter { it.kind.isHiddenWebBridge() }.forEach { conn ->
-            val key = "${activeSessionId.ifBlank { "login" }}:${conn.id}"
-            headlessWebBridge.checkLoginStatus(key, conn.kind, conn.endpointUrl) { ok ->
+            headlessWebBridge.checkLoginStatus(conn.id, conn.kind, conn.endpointUrl) { ok ->
                 loginStatusMap[conn.id] = ok
             }
         }
@@ -169,7 +170,7 @@ fun MainScreen(
             store.saveSessions(sessions)
             sendingMap[session.id] = true
 
-            val key = "${session.id}:${conn.id}"
+            val key = conn.id
             headlessWebBridge.sendPrompt(
                 key = key,
                 kind = conn.kind,
@@ -202,7 +203,7 @@ fun MainScreen(
                     sessions = sessions.map { s ->
                         if (s.id == session.id) {
                             s.copy(messages = s.messages.map { m ->
-                                if (m.id == placeholderId) m.copy(content = errMsg) else m
+                                if (m.id == placeholderId) m.copy(content = errMsg, isError = true) else m
                             })
                         } else s
                     }
@@ -227,7 +228,8 @@ fun MainScreen(
                 content = reply.error ?: reply.text.ifBlank { "(응답 없음)" },
                 inputTokens = reply.inputTokens,
                 outputTokens = reply.outputTokens,
-                agentName = conn.name
+                agentName = conn.name,
+                isError = reply.error != null
             )
             sessions = sessions.map {
                 if (it.id == session.id) it.copy(messages = it.messages + assistantMsg) else it
@@ -275,6 +277,133 @@ fun MainScreen(
         store.saveSessions(sessions)
     }
 
+    fun clearSessionMessages(session: AgentSession) {
+        sessions = sessions.map { if (it.id == session.id) it.copy(messages = emptyList()) else it }
+        store.saveSessions(sessions)
+    }
+
+    fun retryLastInSession(session: AgentSession, conn: AiConnection) {
+        val lastUserIdx = session.messages.indexOfLast { it.role == MessageRole.USER }
+        if (lastUserIdx == -1) return
+        val lastPrompt = session.messages[lastUserIdx].content
+        val trimmed = session.messages.take(lastUserIdx)
+        val cleaned = session.copy(messages = trimmed)
+        sessions = sessions.map { if (it.id == session.id) cleaned else it }
+        store.saveSessions(sessions)
+        sendMessageInSession(cleaned, conn, lastPrompt)
+    }
+
+    fun runOrchestration(goal: String, steps: List<OrchestrationStep>) {
+        val firstConnId = steps.firstOrNull()?.connectionId ?: return
+        val orchSess = AgentSession(
+            id = "sess_${UUID.randomUUID()}",
+            projectId = activeProject.id,
+            title = "오케스트레이션",
+            connectionId = firstConnId,
+            messages = listOf(
+                ChatMessage(
+                    id = "msg_${UUID.randomUUID()}",
+                    role = MessageRole.USER,
+                    content = goal
+                )
+            )
+        )
+        sessions = sessions + orchSess
+        store.saveSessions(sessions)
+        activeSessionId = orchSess.id
+        store.saveActiveSessionId(orchSess.id)
+        sendingMap[orchSess.id] = true
+
+        scope.launch {
+            var prevOutput = ""
+            for ((idx, step) in steps.withIndex()) {
+                val conn = enabledConnections.find { it.id == step.connectionId } ?: continue
+                val stepPrompt = buildString {
+                    append("목표: ").append(goal).append("\n")
+                    if (step.roleInstruction.isNotBlank()) {
+                        append("역할: ").append(step.roleInstruction).append("\n")
+                    }
+                    if (prevOutput.isNotBlank()) {
+                        append("\n이전 단계 결과:\n").append(prevOutput)
+                    }
+                }
+
+                val (text, inTok, outTok, err) = if (conn.kind.isHiddenWebBridge()) {
+                    val (triple, errMsg) = headlessWebBridge.sendPromptSuspend(
+                        key = conn.id,
+                        kind = conn.kind,
+                        url = conn.endpointUrl,
+                        prompt = stepPrompt
+                    )
+                    listOf(triple.first, triple.second, triple.third, errMsg)
+                    val out = triple.first
+                    if (errMsg != null) {
+                        val errBubble = ChatMessage(
+                            id = "msg_${UUID.randomUUID()}",
+                            role = MessageRole.ASSISTANT,
+                            content = errMsg,
+                            agentName = "${idx + 1}단계 · ${conn.name}",
+                            isError = true
+                        )
+                        sessions = sessions.map {
+                            if (it.id == orchSess.id) it.copy(messages = it.messages + errBubble) else it
+                        }
+                        store.saveSessions(sessions)
+                        break
+                    }
+                    prevOutput = out
+                    onRecordTokens(conn.id, conn.kind, triple.second, triple.third)
+                    val msg = ChatMessage(
+                        id = "msg_${UUID.randomUUID()}",
+                        role = MessageRole.ASSISTANT,
+                        content = out,
+                        inputTokens = triple.second,
+                        outputTokens = triple.third,
+                        agentName = "${idx + 1}단계 · ${conn.name} (${step.roleInstruction})"
+                    )
+                    sessions = sessions.map {
+                        if (it.id == orchSess.id) it.copy(messages = it.messages + msg) else it
+                    }
+                    store.saveSessions(sessions)
+                    continue
+                } else {
+                    val reply = AiApiClient.send(conn, emptyList(), stepPrompt, orchSess.id)
+                    if (reply.error != null) {
+                        val errBubble = ChatMessage(
+                            id = "msg_${UUID.randomUUID()}",
+                            role = MessageRole.ASSISTANT,
+                            content = reply.error,
+                            agentName = "${idx + 1}단계 · ${conn.name}",
+                            isError = true
+                        )
+                        sessions = sessions.map {
+                            if (it.id == orchSess.id) it.copy(messages = it.messages + errBubble) else it
+                        }
+                        store.saveSessions(sessions)
+                        break
+                    }
+                    prevOutput = reply.text
+                    if (reply.inputTokens > 0L || reply.outputTokens > 0L) {
+                        onRecordTokens(conn.id, conn.kind, reply.inputTokens, reply.outputTokens)
+                    }
+                    val msg = ChatMessage(
+                        id = "msg_${UUID.randomUUID()}",
+                        role = MessageRole.ASSISTANT,
+                        content = reply.text,
+                        inputTokens = reply.inputTokens,
+                        outputTokens = reply.outputTokens,
+                        agentName = "${idx + 1}단계 · ${conn.name} (${step.roleInstruction})"
+                    )
+                    sessions = sessions.map {
+                        if (it.id == orchSess.id) it.copy(messages = it.messages + msg) else it
+                    }
+                    store.saveSessions(sessions)
+                }
+            }
+            sendingMap[orchSess.id] = false
+        }
+    }
+
     fun cycleSplitMode() {
         val next = when (splitMode) {
             SplitMode.SINGLE -> SplitMode.SPLIT_VERTICAL
@@ -289,9 +418,9 @@ fun MainScreen(
     val activeWebSessions = listOfNotNull(primarySession, secondarySession).distinctBy { it.id }.mapNotNull { sess ->
         val conn = enabledConnections.find { it.id == sess.connectionId }
         if (conn != null && conn.kind.isHiddenWebBridge()) {
-            Triple("${sess.id}:${conn.id}", conn.endpointUrl, sess)
+            Triple(conn.id, conn.endpointUrl, sess)
         } else null
-    }
+    }.distinctBy { it.first }
 
     Box(modifier = Modifier.fillMaxSize()) {
         // Layer 0: Hidden full-viewport host for active WebView bridges
@@ -430,6 +559,11 @@ fun MainScreen(
                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                             )
                         }
+                        if (enabledConnections.isNotEmpty()) {
+                            IconButton(onClick = { showOrchestrationDialog = true }) {
+                                Icon(Icons.Default.AccountTree, contentDescription = "오케스트레이션")
+                            }
+                        }
                         IconButton(onClick = { cycleSplitMode() }) {
                             val icon = when (splitMode) {
                                 SplitMode.SINGLE -> Icons.Default.ViewAgenda
@@ -558,6 +692,11 @@ fun MainScreen(
                         onSendMessage = { text ->
                             if (primaryConn != null) sendMessageInSession(primarySession, primaryConn, text)
                         },
+                        onRetryLast = {
+                            if (primaryConn != null) retryLastInSession(primarySession, primaryConn)
+                        },
+                        onClearSession = { clearSessionMessages(primarySession) },
+                        onOpenOrchestration = { showOrchestrationDialog = true },
                         onHandoffTo = { target -> handoffSession(primarySession, target) },
                         onDeleteSession = { deleteSession(primarySession) },
                         onOpenTokenDashboard = { showTokenDashboard = true },
@@ -581,6 +720,11 @@ fun MainScreen(
                             onSendMessage = { text ->
                                 if (primaryConn != null) sendMessageInSession(primarySession, primaryConn, text)
                             },
+                            onRetryLast = {
+                                if (primaryConn != null) retryLastInSession(primarySession, primaryConn)
+                            },
+                            onClearSession = { clearSessionMessages(primarySession) },
+                            onOpenOrchestration = { showOrchestrationDialog = true },
                             onHandoffTo = { target -> handoffSession(primarySession, target) },
                             onDeleteSession = { deleteSession(primarySession) },
                             onOpenTokenDashboard = { showTokenDashboard = true },
@@ -605,6 +749,12 @@ fun MainScreen(
                                 val targetSess = secondarySession ?: primarySession
                                 if (secondaryConn != null) sendMessageInSession(targetSess, secondaryConn, text)
                             },
+                            onRetryLast = {
+                                val targetSess = secondarySession ?: primarySession
+                                if (secondaryConn != null) retryLastInSession(targetSess, secondaryConn)
+                            },
+                            onClearSession = { clearSessionMessages(secondarySession ?: primarySession) },
+                            onOpenOrchestration = { showOrchestrationDialog = true },
                             onHandoffTo = { target -> handoffSession(secondarySession ?: primarySession, target) },
                             onDeleteSession = { deleteSession(secondarySession ?: primarySession) },
                             onOpenTokenDashboard = { showTokenDashboard = true },
@@ -631,6 +781,11 @@ fun MainScreen(
                             onSendMessage = { text ->
                                 if (primaryConn != null) sendMessageInSession(primarySession, primaryConn, text)
                             },
+                            onRetryLast = {
+                                if (primaryConn != null) retryLastInSession(primarySession, primaryConn)
+                            },
+                            onClearSession = { clearSessionMessages(primarySession) },
+                            onOpenOrchestration = { showOrchestrationDialog = true },
                             onHandoffTo = { target -> handoffSession(primarySession, target) },
                             onDeleteSession = { deleteSession(primarySession) },
                             onOpenTokenDashboard = { showTokenDashboard = true },
@@ -655,6 +810,12 @@ fun MainScreen(
                                 val targetSess = secondarySession ?: primarySession
                                 if (secondaryConn != null) sendMessageInSession(targetSess, secondaryConn, text)
                             },
+                            onRetryLast = {
+                                val targetSess = secondarySession ?: primarySession
+                                if (secondaryConn != null) retryLastInSession(targetSess, secondaryConn)
+                            },
+                            onClearSession = { clearSessionMessages(secondarySession ?: primarySession) },
+                            onOpenOrchestration = { showOrchestrationDialog = true },
                             onHandoffTo = { target -> handoffSession(secondarySession ?: primarySession, target) },
                             onDeleteSession = { deleteSession(secondarySession ?: primarySession) },
                             onOpenTokenDashboard = { showTokenDashboard = true },
@@ -676,7 +837,7 @@ fun MainScreen(
         // Layer 2: Full-screen Login Overlay when user taps "로그인"
         val activeLoginConn = loginConnection
         if (activeLoginConn != null) {
-            val loginKey = "${primarySession?.id ?: "login"}:${activeLoginConn.id}"
+            val loginKey = activeLoginConn.id
             Scaffold(
                 modifier = Modifier.navigationBarsPadding().imePadding(),
                 topBar = {
@@ -762,6 +923,17 @@ fun MainScreen(
         )
     }
 
+    if (showOrchestrationDialog) {
+        OrchestrationDialog(
+            enabledConnections = enabledConnections,
+            onDismiss = { showOrchestrationDialog = false },
+            onRun = { goal, steps ->
+                showOrchestrationDialog = false
+                runOrchestration(goal, steps)
+            }
+        )
+    }
+
     if (showNewSessionDialog) {
         NewSessionDialog(
             enabledConnections = enabledConnections,
@@ -780,7 +952,7 @@ fun MainScreen(
                     connectionId = conn.id
                 )
                 if (conn.kind.isHiddenWebBridge()) {
-                    headlessWebBridge.getOrCreateWebView("${newSess.id}:${conn.id}", conn.endpointUrl)
+                    headlessWebBridge.getOrCreateWebView(conn.id, conn.endpointUrl)
                 }
                 sessions = sessions + newSess
                 store.saveSessions(sessions)

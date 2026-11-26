@@ -6,6 +6,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,20 +16,23 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.CallSplit
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DeleteOutline
-import androidx.compose.material.icons.filled.Login
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
@@ -65,6 +69,26 @@ import com.mbta.app.model.displayLabel
 import com.mbta.app.model.formatTokens
 import com.mbta.app.model.isHiddenWebBridge
 
+private data class SlashSkill(
+    val command: String,
+    val title: String,
+    val description: String,
+    val promptTemplate: String = "",
+    val isAction: Boolean = false
+)
+
+private val builtInSkills = listOf(
+    SlashSkill("/plan", "플랜 작성", "단계별 구현 계획 수립", "다음 작업의 단계별 구현 플랜을 작성해줘:\n"),
+    SlashSkill("/review", "코드·문서 리뷰", "버그, 보안, 개선점 점검", "다음 내용을 리뷰하고 문제점과 개선안을 알려줘:\n"),
+    SlashSkill("/fix", "오류 분석·해결", "원인 파악 및 수정 코드 제안", "다음 오류의 원인을 분석하고 해결 방법을 알려줘:\n"),
+    SlashSkill("/summary", "핵심 요약", "3줄 요약 및 액션 아이템", "다음 내용을 핵심 3줄과 액션 아이템으로 요약해줘:\n"),
+    SlashSkill("/refactor", "리팩토링", "가독성·성능 개선", "다음 코드를 더 깔끔하고 효율적으로 리팩토링해줘:\n"),
+    SlashSkill("/translate", "번역", "자연스러운 한/영 번역", "다음 내용을 자연스럽게 번역해줘:\n"),
+    SlashSkill("/handoff", "세션 전달 요약", "다른 AI에게 넘길 컨텍스트 정리", "지금까지의 대화 핵심과 현재 상태를 다른 AI가 바로 이어서 작업할 수 있게 요약해줘."),
+    SlashSkill("/orchestrate", "멀티 AI 오케스트레이션", "여러 AI 파이프라인 실행 창 열기", isAction = true),
+    SlashSkill("/clear", "대화 초기화", "현재 세션 메시지 비우기", isAction = true)
+)
+
 @Composable
 fun SessionPane(
     session: AgentSession,
@@ -77,6 +101,9 @@ fun SessionPane(
     showFocusBorder: Boolean,
     onFocus: () -> Unit,
     onSendMessage: (String) -> Unit,
+    onRetryLast: () -> Unit,
+    onClearSession: () -> Unit,
+    onOpenOrchestration: () -> Unit,
     onHandoffTo: (AiConnection) -> Unit,
     onDeleteSession: () -> Unit,
     onOpenTokenDashboard: () -> Unit,
@@ -178,6 +205,16 @@ fun SessionPane(
                         modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                     )
                 }
+                IconButton(
+                    onClick = { onLoginConnection(connection) },
+                    modifier = Modifier.size(28.dp)
+                ) {
+                    Icon(
+                        Icons.Default.Visibility,
+                        contentDescription = "숨김 화면 보기",
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
             }
 
             if (session.messages.isNotEmpty() && enabledConnections.size > 1) {
@@ -253,8 +290,69 @@ fun SessionPane(
                 items(session.messages, key = { it.id }) { msg ->
                     ChatBubble(
                         message = msg,
-                        isCli = connection.kind == ConnectionKind.TERMUX_CLI
+                        isCli = connection.kind == ConnectionKind.TERMUX_CLI,
+                        onRetryLast = onRetryLast
                     )
+                }
+            }
+
+            if (inputText.startsWith("/") && !inputText.contains("\n")) {
+                val query = inputText.lowercase()
+                val matched = builtInSkills.filter {
+                    it.command.contains(query) || it.title.lowercase().contains(query.removePrefix("/"))
+                }
+                if (matched.isNotEmpty()) {
+                    Surface(
+                        shape = RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 10.dp)
+                            .heightIn(max = 190.dp)
+                    ) {
+                        LazyColumn(contentPadding = PaddingValues(6.dp)) {
+                            items(matched, key = { it.command }) { skill ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            if (skill.isAction) {
+                                                inputText = ""
+                                                when (skill.command) {
+                                                    "/orchestrate" -> onOpenOrchestration()
+                                                    "/clear" -> onClearSession()
+                                                }
+                                            } else {
+                                                inputText = skill.promptTemplate
+                                            }
+                                        }
+                                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = skill.command,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 13.sp,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                    Text(
+                                        text = skill.title,
+                                        fontWeight = FontWeight.SemiBold,
+                                        fontSize = 12.sp
+                                    )
+                                    Text(
+                                        text = skill.description,
+                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
@@ -343,7 +441,11 @@ fun SessionPane(
 }
 
 @Composable
-private fun ChatBubble(message: ChatMessage, isCli: Boolean) {
+private fun ChatBubble(
+    message: ChatMessage,
+    isCli: Boolean,
+    onRetryLast: () -> Unit
+) {
     when (message.role) {
         MessageRole.SYSTEM -> {
             Surface(
@@ -378,10 +480,15 @@ private fun ChatBubble(message: ChatMessage, isCli: Boolean) {
         }
         MessageRole.ASSISTANT -> {
             val clipboard = LocalClipboardManager.current
+            val bubbleColor = if (message.isError) {
+                MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.45f)
+            } else {
+                MaterialTheme.colorScheme.surfaceVariant
+            }
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
                 Surface(
                     shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    color = bubbleColor,
                     modifier = Modifier.widthIn(max = 320.dp)
                 ) {
                     Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
@@ -395,7 +502,7 @@ private fun ChatBubble(message: ChatMessage, isCli: Boolean) {
                                     text = message.agentName,
                                     fontSize = 11.sp,
                                     fontWeight = FontWeight.SemiBold,
-                                    color = MaterialTheme.colorScheme.primary
+                                    color = if (message.isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
                                 )
                             } else {
                                 Spacer(modifier = Modifier.size(1.dp))
@@ -413,18 +520,98 @@ private fun ChatBubble(message: ChatMessage, isCli: Boolean) {
                             }
                         }
                         Spacer(modifier = Modifier.height(2.dp))
-                        Text(
-                            text = message.content,
-                            fontSize = 14.sp,
-                            fontFamily = if (isCli) FontFamily.Monospace else FontFamily.Default,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                        FormattedMessageContent(text = message.content, isCli = isCli)
+                        if (message.isError) {
+                            TextButton(
+                                onClick = onRetryLast,
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                                modifier = Modifier.height(28.dp)
+                            ) {
+                                Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(14.dp))
+                                Spacer(modifier = Modifier.size(4.dp))
+                                Text("다시 시도", fontSize = 11.sp)
+                            }
+                        }
                         if (message.inputTokens > 0L || message.outputTokens > 0L) {
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
                                 text = "입력 ${formatTokens(message.inputTokens)} · 출력 ${formatTokens(message.outputTokens)}",
                                 fontSize = 10.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun FormattedMessageContent(text: String, isCli: Boolean) {
+    val clipboard = LocalClipboardManager.current
+    val segments = remember(text) {
+        val result = mutableListOf<Triple<Boolean, String, String>>()
+        val regex = Regex("```([a-zA-Z0-9_+-]*)\\n([\\s\\S]*?)```")
+        var lastIdx = 0
+        for (match in regex.findAll(text)) {
+            if (match.range.first > lastIdx) {
+                val plain = text.substring(lastIdx, match.range.first).trim()
+                if (plain.isNotEmpty()) result.add(Triple(false, "", plain))
+            }
+            val lang = match.groupValues[1].ifBlank { "code" }
+            val code = match.groupValues[2].trimEnd()
+            result.add(Triple(true, lang, code))
+            lastIdx = match.range.last + 1
+        }
+        if (lastIdx < text.length) {
+            val tail = text.substring(lastIdx).trim()
+            if (tail.isNotEmpty()) result.add(Triple(false, "", tail))
+        }
+        if (result.isEmpty()) result.add(Triple(false, "", text))
+        result
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        segments.forEach { (isCode, lang, body) ->
+            if (!isCode) {
+                Text(
+                    text = body,
+                    fontSize = 14.sp,
+                    fontFamily = if (isCli) FontFamily.Monospace else FontFamily.Default,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(8.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(lang, fontSize = 10.sp, color = MaterialTheme.colorScheme.primary)
+                            IconButton(
+                                onClick = { clipboard.setText(AnnotatedString(body)) },
+                                modifier = Modifier.size(20.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.ContentCopy,
+                                    contentDescription = "코드 복사",
+                                    modifier = Modifier.size(12.dp)
+                                )
+                            }
+                        }
+                        Box(modifier = Modifier.horizontalScroll(rememberScrollState())) {
+                            Text(
+                                text = body,
+                                fontSize = 12.sp,
+                                fontFamily = FontFamily.Monospace,
+                                color = MaterialTheme.colorScheme.onSurface
                             )
                         }
                     }

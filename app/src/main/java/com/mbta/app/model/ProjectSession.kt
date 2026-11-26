@@ -24,7 +24,8 @@ data class ChatMessage(
     val timestamp: Long = System.currentTimeMillis(),
     val inputTokens: Long = 0L,
     val outputTokens: Long = 0L,
-    val agentName: String = ""
+    val agentName: String = "",
+    val isError: Boolean = false
 )
 
 @Serializable

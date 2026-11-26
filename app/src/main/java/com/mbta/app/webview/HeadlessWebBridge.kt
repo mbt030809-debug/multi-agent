@@ -18,8 +18,10 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import com.mbta.app.model.ConnectionKind
+import kotlinx.coroutines.suspendCancellableCoroutine
 import org.json.JSONObject
 import java.util.UUID
+import kotlin.coroutines.resume
 import kotlin.math.ceil
 
 class HeadlessWebBridge(
@@ -171,6 +173,27 @@ class HeadlessWebBridge(
         }, delayMs)
     }
 
+    suspend fun sendPromptSuspend(
+        key: String,
+        kind: ConnectionKind,
+        url: String,
+        prompt: String
+    ): Pair<Triple<String, Long, Long>, String?> = suspendCancellableCoroutine { cont ->
+        sendPrompt(
+            key = key,
+            kind = kind,
+            url = url,
+            prompt = prompt,
+            onChunk = {},
+            onDone = { finalText, inTok, outTok ->
+                if (cont.isActive) cont.resume(Triple(finalText, inTok, outTok) to null)
+            },
+            onError = { err ->
+                if (cont.isActive) cont.resume(Triple("", 0L, 0L) to err)
+            }
+        )
+    }
+
     fun reload(key: String) {
         pool[key]?.reload()
     }
@@ -247,16 +270,16 @@ class HeadlessWebBridge(
                 var msgSelectors = [];
                 if (kind === 'CHATGPT_WEB') {
                     inputSelectors = ['#prompt-textarea', 'div[contenteditable="true"][id="prompt-textarea"]', 'textarea'];
-                    msgSelectors = ['[data-message-author-role="assistant"]'];
+                    msgSelectors = ['[data-message-author-role="assistant"] .markdown', '[data-message-author-role="assistant"]'];
                 } else if (kind === 'CLAUDE_WEB') {
-                    inputSelectors = ['div.ProseMirror[contenteditable="true"]', 'div[contenteditable="true"]', 'textarea'];
-                    msgSelectors = ['div.font-claude-message', '[data-testid="assistant-message"]', '.prose'];
+                    inputSelectors = ['div.ProseMirror[contenteditable="true"]', 'fieldset div[contenteditable="true"]', 'div[contenteditable="true"]', 'textarea'];
+                    msgSelectors = ['.font-claude-response', '.font-claude-message', '[data-testid="assistant-message"]', '[data-is-streaming]', '.prose'];
                 } else if (kind === 'GEMINI_WEB') {
                     inputSelectors = ['rich-textarea div[contenteditable="true"]', 'div.ql-editor[contenteditable="true"]', 'div[contenteditable="true"]', 'textarea'];
-                    msgSelectors = ['model-response message-content', 'message-content', '.model-response-text'];
+                    msgSelectors = ['model-response .markdown', 'model-response message-content', 'message-content', '.model-response-text'];
                 } else {
                     inputSelectors = ['textarea', 'div[contenteditable="true"]', 'input[type="text"]'];
-                    msgSelectors = ['[data-message-author-role="assistant"]', '.prose', 'article', 'pre'];
+                    msgSelectors = ['[data-message-author-role="assistant"]', '.font-claude-response', '.prose', 'article', 'pre'];
                 }
 
                 var inputEl = findFirst(inputSelectors);
@@ -310,6 +333,12 @@ class HeadlessWebBridge(
                     ]);
                     if (sendBtn && !sendBtn.disabled) {
                         sendBtn.click();
+                        setTimeout(function() {
+                            var rem = (inputEl.value !== undefined ? inputEl.value : inputEl.innerText) || '';
+                            if (rem.trim().length > 0) {
+                                inputEl.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+                            }
+                        }, 350);
                     } else {
                         inputEl.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
                     }
@@ -345,7 +374,7 @@ class HeadlessWebBridge(
                             stableTicks = 0;
                             if (window.MbtABridge) window.MbtABridge.onChunk(reqId, lastText);
                         } else if (lastText) {
-                            var streaming = !!document.querySelector('button[aria-label*="Stop"], button[aria-label*="중지"], [data-is-streaming="true"]');
+                            var streaming = !!document.querySelector('button[aria-label*="Stop"], button[aria-label*="중지"], button[data-testid="stop-button"], [data-is-streaming="true"]');
                             if (!streaming) {
                                 stableTicks++;
                                 if (stableTicks >= 5) {
