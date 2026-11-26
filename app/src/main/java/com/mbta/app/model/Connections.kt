@@ -11,6 +11,10 @@ enum class AppThemeMode {
 
 @Serializable
 enum class ConnectionKind {
+    CLAUDE_WEB,
+    CHATGPT_WEB,
+    GEMINI_WEB,
+    REMOTE_WEB,
     CLAUDE_API,
     OPENAI_API,
     GEMINI_API,
@@ -38,10 +42,11 @@ data class AiConnection(
     val enabled: Boolean = true
 )
 
-fun AiConnection.shouldUseWebEmbed(): Boolean {
-    if (kind != ConnectionKind.REMOTE_CONTROL) return false
-    return remoteMode == RemoteMode.WEB_EMBED
-}
+fun ConnectionKind.isHiddenWebBridge(): Boolean =
+    this == ConnectionKind.CLAUDE_WEB ||
+        this == ConnectionKind.CHATGPT_WEB ||
+        this == ConnectionKind.GEMINI_WEB ||
+        this == ConnectionKind.REMOTE_WEB
 
 fun ConnectionKind.isNativeChat(): Boolean =
     this == ConnectionKind.CLAUDE_API ||
@@ -49,11 +54,15 @@ fun ConnectionKind.isNativeChat(): Boolean =
         this == ConnectionKind.GEMINI_API
 
 fun ConnectionKind.displayLabel(): String = when (this) {
+    ConnectionKind.CLAUDE_WEB -> "Claude (계정)"
+    ConnectionKind.CHATGPT_WEB -> "ChatGPT (계정)"
+    ConnectionKind.GEMINI_WEB -> "Gemini (계정)"
+    ConnectionKind.REMOTE_WEB -> "Remote (계정)"
     ConnectionKind.CLAUDE_API -> "Claude API"
     ConnectionKind.OPENAI_API -> "ChatGPT API"
     ConnectionKind.GEMINI_API -> "Gemini API"
     ConnectionKind.TERMUX_CLI -> "Termux CLI"
-    ConnectionKind.REMOTE_CONTROL -> "Remote Control"
+    ConnectionKind.REMOTE_CONTROL -> "로컬 브릿지"
 }
 
 fun defaultModelFor(kind: ConnectionKind): String = when (kind) {
@@ -64,6 +73,10 @@ fun defaultModelFor(kind: ConnectionKind): String = when (kind) {
 }
 
 fun defaultEndpointFor(kind: ConnectionKind): String = when (kind) {
+    ConnectionKind.CLAUDE_WEB -> "https://claude.ai"
+    ConnectionKind.CHATGPT_WEB -> "https://chatgpt.com"
+    ConnectionKind.GEMINI_WEB -> "https://gemini.google.com"
+    ConnectionKind.REMOTE_WEB -> "https://claude.ai/code"
     ConnectionKind.CLAUDE_API -> "https://api.anthropic.com/v1/messages"
     ConnectionKind.OPENAI_API -> "https://api.openai.com/v1/chat/completions"
     ConnectionKind.GEMINI_API -> "https://generativelanguage.googleapis.com/v1beta"
@@ -72,8 +85,8 @@ fun defaultEndpointFor(kind: ConnectionKind): String = when (kind) {
 }
 
 fun defaultContextLimitForKind(kind: ConnectionKind): Long? = when (kind) {
-    ConnectionKind.CLAUDE_API -> 200_000L
-    ConnectionKind.OPENAI_API -> 128_000L
-    ConnectionKind.GEMINI_API -> 1_000_000L
+    ConnectionKind.CLAUDE_WEB, ConnectionKind.CLAUDE_API -> 200_000L
+    ConnectionKind.CHATGPT_WEB, ConnectionKind.OPENAI_API -> 128_000L
+    ConnectionKind.GEMINI_WEB, ConnectionKind.GEMINI_API -> 1_000_000L
     else -> null
 }

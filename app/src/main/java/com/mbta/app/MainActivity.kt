@@ -18,12 +18,12 @@ import com.mbta.app.model.TokenSource
 import com.mbta.app.model.defaultContextLimitForKind
 import com.mbta.app.ui.MainScreen
 import com.mbta.app.ui.theme.MbtATheme
-import com.mbta.app.webview.WebViewManager
+import com.mbta.app.webview.HeadlessWebBridge
 
 class MainActivity : ComponentActivity() {
 
     private lateinit var store: WorkspaceStore
-    private lateinit var webViewManager: WebViewManager
+    private lateinit var headlessWebBridge: HeadlessWebBridge
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
     private val tokenUsageMap = mutableStateMapOf<String, AgentTokenUsage>()
     private var themeMode by mutableStateOf(AppThemeMode.DARK)
@@ -55,7 +55,7 @@ class MainActivity : ComponentActivity() {
         store = WorkspaceStore(this)
         themeMode = store.loadThemeMode()
         tokenUsageMap.putAll(store.loadTokenUsage())
-        webViewManager = WebViewManager(
+        headlessWebBridge = HeadlessWebBridge(
             context = this,
             onFileChooserRequested = { intent, callback ->
                 filePathCallback?.onReceiveValue(null)
@@ -68,7 +68,7 @@ class MainActivity : ComponentActivity() {
             MbtATheme(themeMode = themeMode) {
                 MainScreen(
                     store = store,
-                    webViewManager = webViewManager,
+                    headlessWebBridge = headlessWebBridge,
                     themeMode = themeMode,
                     tokenUsageMap = tokenUsageMap,
                     onThemeModeChanged = { newMode ->
@@ -107,7 +107,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
-        webViewManager.destroyAll()
+        headlessWebBridge.destroyAll()
         super.onDestroy()
     }
 }

@@ -62,6 +62,7 @@ import com.mbta.app.model.RemoteMode
 import com.mbta.app.model.defaultEndpointFor
 import com.mbta.app.model.defaultModelFor
 import com.mbta.app.model.displayLabel
+import com.mbta.app.model.isHiddenWebBridge
 import java.util.UUID
 
 private const val TERMUX_BRIDGE_CMD = "python3 ~/multi-agent/scripts/mbta-bridge.py"
@@ -74,6 +75,7 @@ fun SettingsScreen(
     onThemeModeChanged: (AppThemeMode) -> Unit,
     onSaveConnection: (AiConnection) -> Unit,
     onDeleteConnection: (String) -> Unit,
+    onLoginConnection: (AiConnection) -> Unit,
     onBack: () -> Unit
 ) {
     var editingConnection by remember { mutableStateOf<AiConnection?>(null) }
@@ -203,6 +205,14 @@ fun SettingsScreen(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
+                            if (conn.kind.isHiddenWebBridge()) {
+                                OutlinedButton(
+                                    onClick = { onLoginConnection(conn) },
+                                    modifier = Modifier.padding(end = 4.dp)
+                                ) {
+                                    Text("로그인", fontSize = 11.sp)
+                                }
+                            }
                             Switch(
                                 checked = conn.enabled,
                                 onCheckedChange = { enabled ->
@@ -323,6 +333,7 @@ private fun ConnectionEditorDialog(
         initial.kind == ConnectionKind.OPENAI_API ||
         initial.kind == ConnectionKind.GEMINI_API
     val isRemoteKind = initial.kind == ConnectionKind.REMOTE_CONTROL
+    val isWebBridge = initial.kind.isHiddenWebBridge()
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -336,22 +347,24 @@ private fun ConnectionEditorDialog(
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
-                OutlinedTextField(
-                    value = apiKey,
-                    onValueChange = { apiKey = it },
-                    label = { Text(if (isApiKind) "API Key" else "인증 토큰 (선택)") },
-                    singleLine = true,
-                    visualTransformation = if (showKey) VisualTransformation.None else PasswordVisualTransformation(),
-                    trailingIcon = {
-                        IconButton(onClick = { showKey = !showKey }) {
-                            Icon(
-                                imageVector = if (showKey) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                                contentDescription = "키 보기"
-                            )
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                )
+                if (!isWebBridge) {
+                    OutlinedTextField(
+                        value = apiKey,
+                        onValueChange = { apiKey = it },
+                        label = { Text(if (isApiKind) "API Key" else "인증 토큰 (선택)") },
+                        singleLine = true,
+                        visualTransformation = if (showKey) VisualTransformation.None else PasswordVisualTransformation(),
+                        trailingIcon = {
+                            IconButton(onClick = { showKey = !showKey }) {
+                                Icon(
+                                    imageVector = if (showKey) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                    contentDescription = "키 보기"
+                                )
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
                 if (isApiKind) {
                     OutlinedTextField(
                         value = model,

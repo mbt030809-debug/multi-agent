@@ -1,5 +1,7 @@
 package com.mbta.app.ui
 
+import android.view.ViewGroup
+import android.widget.FrameLayout
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -56,6 +58,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
 import com.mbta.app.data.WorkspaceStore
 import com.mbta.app.model.AgentSession
 import com.mbta.app.model.AgentTokenUsage
@@ -70,8 +73,9 @@ import com.mbta.app.model.TokenSource
 import com.mbta.app.model.defaultContextLimitForKind
 import com.mbta.app.model.displayLabel
 import com.mbta.app.model.formatTokens
+import com.mbta.app.model.isHiddenWebBridge
 import com.mbta.app.network.AiApiClient
-import com.mbta.app.webview.WebViewManager
+import com.mbta.app.webview.HeadlessWebBridge
 import kotlinx.coroutines.launch
 import java.util.UUID
 
@@ -79,7 +83,7 @@ import java.util.UUID
 @Composable
 fun MainScreen(
     store: WorkspaceStore,
-    webViewManager: WebViewManager,
+    headlessWebBridge: HeadlessWebBridge,
     themeMode: AppThemeMode,
     tokenUsageMap: Map<String, AgentTokenUsage>,
     onThemeModeChanged: (AppThemeMode) -> Unit,
@@ -99,6 +103,7 @@ fun MainScreen(
     var focusedPane by remember { mutableIntStateOf(0) }
 
     var showSettings by remember { mutableStateOf(false) }
+    var loginConnection by remember { mutableStateOf<AiConnection?>(null) }
     var showTokenDashboard by remember { mutableStateOf(false) }
     var showProjectMenu by remember { mutableStateOf(false) }
     var showNewProjectDialog by remember { mutableStateOf(false) }
@@ -132,29 +137,6 @@ fun MainScreen(
 
     val totalTokensAll = tokenUsageMap.values.sumOf { it.totalTokens }
 
-    if (showSettings) {
-        SettingsScreen(
-            themeMode = themeMode,
-            connections = connections,
-            onThemeModeChanged = onThemeModeChanged,
-            onSaveConnection = { saved ->
-                val exists = connections.any { it.id == saved.id }
-                connections = if (exists) {
-                    connections.map { if (it.id == saved.id) saved else it }
-                } else {
-                    connections + saved
-                }
-                store.saveConnections(connections)
-            },
-            onDeleteConnection = { connId ->
-                connections = connections.filterNot { it.id == connId }
-                store.saveConnections(connections)
-            },
-            onBack = { showSettings = false }
-        )
-        return
-    }
-
     fun sendMessageInSession(session: AgentSession, conn: AiConnection, text: String) {
         val userMsg = ChatMessage(
             id = "msg_${UUID.randomUUID()}",
@@ -162,6 +144,64 @@ fun MainScreen(
             content = text
         )
         val historyBefore = session.messages
+        if (conn.kind.isHiddenWebBridge()) {
+            val placeholderId = "msg_${UUID.randomUUID()}"
+            val placeholder = ChatMessage(
+                id = placeholderId,
+                role = MessageRole.ASSISTANT,
+                content = "응답 대기 중...",
+                agentName = conn.name
+            )
+            sessions = sessions.map {
+                if (it.id == session.id) it.copy(messages = it.messages + userMsg + placeholder) else it
+            }
+            store.saveSessions(sessions)
+            sendingMap[session.id] = true
+
+            val key = "${session.id}:${conn.id}"
+            headlessWebBridge.sendPrompt(
+                key = key,
+                kind = conn.kind,
+                url = conn.endpointUrl,
+                prompt = text,
+                onChunk = { partial ->
+                    sessions = sessions.map { s ->
+                        if (s.id == session.id) {
+                            s.copy(messages = s.messages.map { m ->
+                                if (m.id == placeholderId) m.copy(content = partial) else m
+                            })
+                        } else s
+                    }
+                },
+                onDone = { finalText, inTok, outTok ->
+                    sessions = sessions.map { s ->
+                        if (s.id == session.id) {
+                            s.copy(messages = s.messages.map { m ->
+                                if (m.id == placeholderId) {
+                                    m.copy(content = finalText, inputTokens = inTok, outputTokens = outTok)
+                                } else m
+                            })
+                        } else s
+                    }
+                    store.saveSessions(sessions)
+                    onRecordTokens(conn.id, conn.kind, inTok, outTok)
+                    sendingMap[session.id] = false
+                },
+                onError = { errMsg ->
+                    sessions = sessions.map { s ->
+                        if (s.id == session.id) {
+                            s.copy(messages = s.messages.map { m ->
+                                if (m.id == placeholderId) m.copy(content = errMsg) else m
+                            })
+                        } else s
+                    }
+                    store.saveSessions(sessions)
+                    sendingMap[session.id] = false
+                }
+            )
+            return
+        }
+
         sessions = sessions.map {
             if (it.id == session.id) it.copy(messages = it.messages + userMsg) else it
         }
@@ -245,7 +285,62 @@ fun MainScreen(
         if (next == SplitMode.SINGLE) focusedPane = 0
     }
 
-    Scaffold(
+    val activeWebSessions = listOf(primarySession, secondarySession).distinctBy { it.id }.mapNotNull { sess ->
+        val conn = enabledConnections.find { it.id == sess.connectionId }
+        if (conn != null && conn.kind.isHiddenWebBridge()) {
+            Triple("${sess.id}:${conn.id}", conn.endpointUrl, sess)
+        } else null
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        // Layer 0: Hidden full-viewport host for active WebView bridges
+        AndroidView(
+            modifier = Modifier.fillMaxSize(),
+            factory = { ctx ->
+                FrameLayout(ctx).apply {
+                    layoutParams = ViewGroup.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT
+                    )
+                }
+            },
+            update = { host ->
+                if (loginConnection == null) {
+                    activeWebSessions.forEach { (key, url, _) ->
+                        headlessWebBridge.attachToHiddenHost(host, key, url)
+                    }
+                }
+            }
+        )
+
+        // Layer 1: Opaque MbtA Native UI
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = MaterialTheme.colorScheme.background
+        ) {
+            if (showSettings) {
+                SettingsScreen(
+                    themeMode = themeMode,
+                    connections = connections,
+                    onThemeModeChanged = onThemeModeChanged,
+                    onSaveConnection = { saved ->
+                        val exists = connections.any { it.id == saved.id }
+                        connections = if (exists) {
+                            connections.map { if (it.id == saved.id) saved else it }
+                        } else {
+                            connections + saved
+                        }
+                        store.saveConnections(connections)
+                    },
+                    onDeleteConnection = { connId ->
+                        connections = connections.filterNot { it.id == connId }
+                        store.saveConnections(connections)
+                    },
+                    onLoginConnection = { conn -> loginConnection = conn },
+                    onBack = { showSettings = false }
+                )
+            } else {
+                Scaffold(
         topBar = {
             Column(modifier = Modifier.background(MaterialTheme.colorScheme.surface)) {
                 TopAppBar(
@@ -402,7 +497,6 @@ fun MainScreen(
                         connection = primaryConn,
                         enabledConnections = enabledConnections,
                         tokenUsage = primaryConn?.let { tokenUsageMap[it.id] },
-                        webViewManager = webViewManager,
                         isSending = sendingMap[primarySession.id] == true,
                         isFocused = true,
                         showFocusBorder = false,
@@ -414,6 +508,7 @@ fun MainScreen(
                         onDeleteSession = { deleteSession(primarySession) },
                         onOpenTokenDashboard = { showTokenDashboard = true },
                         onOpenSettings = { showSettings = true },
+                        onLoginConnection = { conn -> loginConnection = conn },
                         modifier = Modifier.fillMaxSize()
                     )
                 }
@@ -424,7 +519,6 @@ fun MainScreen(
                             connection = primaryConn,
                             enabledConnections = enabledConnections,
                             tokenUsage = primaryConn?.let { tokenUsageMap[it.id] },
-                            webViewManager = webViewManager,
                             isSending = sendingMap[primarySession.id] == true,
                             isFocused = focusedPane == 0,
                             showFocusBorder = true,
@@ -436,6 +530,7 @@ fun MainScreen(
                             onDeleteSession = { deleteSession(primarySession) },
                             onOpenTokenDashboard = { showTokenDashboard = true },
                             onOpenSettings = { showSettings = true },
+                            onLoginConnection = { conn -> loginConnection = conn },
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .weight(1f)
@@ -446,7 +541,6 @@ fun MainScreen(
                             connection = secondaryConn,
                             enabledConnections = enabledConnections,
                             tokenUsage = secondaryConn?.let { tokenUsageMap[it.id] },
-                            webViewManager = webViewManager,
                             isSending = sendingMap[secondarySession.id] == true,
                             isFocused = focusedPane == 1,
                             showFocusBorder = true,
@@ -458,6 +552,7 @@ fun MainScreen(
                             onDeleteSession = { deleteSession(secondarySession) },
                             onOpenTokenDashboard = { showTokenDashboard = true },
                             onOpenSettings = { showSettings = true },
+                            onLoginConnection = { conn -> loginConnection = conn },
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .weight(1f)
@@ -471,7 +566,6 @@ fun MainScreen(
                             connection = primaryConn,
                             enabledConnections = enabledConnections,
                             tokenUsage = primaryConn?.let { tokenUsageMap[it.id] },
-                            webViewManager = webViewManager,
                             isSending = sendingMap[primarySession.id] == true,
                             isFocused = focusedPane == 0,
                             showFocusBorder = true,
@@ -483,6 +577,7 @@ fun MainScreen(
                             onDeleteSession = { deleteSession(primarySession) },
                             onOpenTokenDashboard = { showTokenDashboard = true },
                             onOpenSettings = { showSettings = true },
+                            onLoginConnection = { conn -> loginConnection = conn },
                             modifier = Modifier
                                 .fillMaxSize()
                                 .weight(1f)
@@ -493,7 +588,6 @@ fun MainScreen(
                             connection = secondaryConn,
                             enabledConnections = enabledConnections,
                             tokenUsage = secondaryConn?.let { tokenUsageMap[it.id] },
-                            webViewManager = webViewManager,
                             isSending = sendingMap[secondarySession.id] == true,
                             isFocused = focusedPane == 1,
                             showFocusBorder = true,
@@ -505,12 +599,48 @@ fun MainScreen(
                             onDeleteSession = { deleteSession(secondarySession) },
                             onOpenTokenDashboard = { showTokenDashboard = true },
                             onOpenSettings = { showSettings = true },
+                            onLoginConnection = { conn -> loginConnection = conn },
                             modifier = Modifier
                                 .fillMaxSize()
                                 .weight(1f)
                         )
                     }
                 }
+            }
+        }
+            }
+        }
+
+        // Layer 2: Full-screen Login Overlay when user taps "로그인"
+        val activeLoginConn = loginConnection
+        if (activeLoginConn != null) {
+            Scaffold(
+                topBar = {
+                    TopAppBar(
+                        title = { Text("${activeLoginConn.name} 로그인", fontWeight = FontWeight.Bold) },
+                        actions = {
+                            TextButton(onClick = { loginConnection = null }) {
+                                Text("완료", fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    )
+                }
+            ) { pad ->
+                val loginKey = "${primarySession.id}:${activeLoginConn.id}"
+                AndroidView(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(pad),
+                    factory = { ctx ->
+                        FrameLayout(ctx).apply {
+                            layoutParams = ViewGroup.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                                ViewGroup.LayoutParams.MATCH_PARENT
+                            )
+                            headlessWebBridge.attachToHiddenHost(this, loginKey, activeLoginConn.endpointUrl)
+                        }
+                    }
+                )
             }
         }
     }
