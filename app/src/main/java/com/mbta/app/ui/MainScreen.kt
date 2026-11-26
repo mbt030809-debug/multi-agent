@@ -328,14 +328,13 @@ fun MainScreen(
                     }
                 }
 
-                val (text, inTok, outTok, err) = if (conn.kind.isHiddenWebBridge()) {
+                if (conn.kind.isHiddenWebBridge()) {
                     val (triple, errMsg) = headlessWebBridge.sendPromptSuspend(
                         key = conn.id,
                         kind = conn.kind,
                         url = conn.endpointUrl,
                         prompt = stepPrompt
                     )
-                    listOf(triple.first, triple.second, triple.third, errMsg)
                     val out = triple.first
                     if (errMsg != null) {
                         val errBubble = ChatMessage(
