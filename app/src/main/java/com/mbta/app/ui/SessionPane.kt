@@ -32,6 +32,7 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -64,7 +65,9 @@ import com.mbta.app.model.AgentTokenUsage
 import com.mbta.app.model.AiConnection
 import com.mbta.app.model.ChatMessage
 import com.mbta.app.model.ConnectionKind
+import com.mbta.app.model.CustomSkill
 import com.mbta.app.model.MessageRole
+import com.mbta.app.model.Project
 import com.mbta.app.model.displayLabel
 import com.mbta.app.model.formatTokens
 import com.mbta.app.model.isHiddenWebBridge
@@ -91,19 +94,24 @@ private val builtInSkills = listOf(
 
 @Composable
 fun SessionPane(
+    project: Project,
     session: AgentSession,
     connection: AiConnection?,
     enabledConnections: List<AiConnection>,
+    customSkills: List<CustomSkill>,
+    useProjectContext: Boolean,
     tokenUsage: AgentTokenUsage?,
     isLoggedIn: Boolean,
     isSending: Boolean,
     isFocused: Boolean,
     showFocusBorder: Boolean,
     onFocus: () -> Unit,
+    onToggleProjectContext: () -> Unit,
     onSendMessage: (String) -> Unit,
     onRetryLast: () -> Unit,
     onClearSession: () -> Unit,
     onOpenOrchestration: () -> Unit,
+    onShareMarkdown: () -> Unit,
     onHandoffTo: (AiConnection) -> Unit,
     onDeleteSession: () -> Unit,
     onOpenTokenDashboard: () -> Unit,
@@ -217,6 +225,19 @@ fun SessionPane(
                 }
             }
 
+            if (session.messages.isNotEmpty()) {
+                IconButton(
+                    onClick = onShareMarkdown,
+                    modifier = Modifier.size(28.dp)
+                ) {
+                    Icon(
+                        Icons.Default.Share,
+                        contentDescription = "Markdown 공유",
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+            }
+
             if (session.messages.isNotEmpty() && enabledConnections.size > 1) {
                 IconButton(
                     onClick = { showHandoffDialog = true },
@@ -296,10 +317,47 @@ fun SessionPane(
                 }
             }
 
+            if (inputText.startsWith("@") && !inputText.contains(" ") && !inputText.contains("\n")) {
+                val query = inputText.removePrefix("@").lowercase()
+                val matchedConns = enabledConnections.filter {
+                    it.name.lowercase().contains(query)
+                }
+                if (matchedConns.isNotEmpty()) {
+                    Surface(
+                        shape = RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 10.dp)
+                            .heightIn(max = 170.dp)
+                    ) {
+                        LazyColumn(contentPadding = PaddingValues(6.dp)) {
+                            items(matchedConns, key = { it.id }) { target ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { inputText = "@${target.name} " }
+                                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text("@${target.name}", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
+                                    Text(target.kind.displayLabel(), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             if (inputText.startsWith("/") && !inputText.contains("\n")) {
                 val query = inputText.lowercase()
-                val matched = builtInSkills.filter {
-                    it.command.contains(query) || it.title.lowercase().contains(query.removePrefix("/"))
+                val allSkills = builtInSkills + customSkills.map {
+                    SlashSkill(it.command, it.title, it.description, it.promptTemplate)
+                }
+                val matched = allSkills.filter {
+                    it.command.lowercase().contains(query) || it.title.lowercase().contains(query.removePrefix("/"))
                 }
                 if (matched.isNotEmpty()) {
                     Surface(
@@ -352,6 +410,35 @@ fun SessionPane(
                                 }
                             }
                         }
+                    }
+                }
+            }
+
+            if (project.workDir.isNotBlank() || project.memoryText.isNotBlank()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(MaterialTheme.colorScheme.surface)
+                        .padding(horizontal = 10.dp, vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = if (useProjectContext) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                        modifier = Modifier.clickable { onToggleProjectContext() }
+                    ) {
+                        val label = buildString {
+                            if (project.workDir.isNotBlank()) append("📁 ${project.workDir}")
+                            if (project.workDir.isNotBlank() && project.memoryText.isNotBlank()) append(" · ")
+                            if (project.memoryText.isNotBlank()) append("공용 메모리")
+                            append(if (useProjectContext) " ON" else " OFF")
+                        }
+                        Text(
+                            text = label,
+                            fontSize = 10.sp,
+                            color = if (useProjectContext) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                        )
                     }
                 }
             }

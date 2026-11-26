@@ -1,5 +1,7 @@
 package com.mbta.app.ui
 
+import android.content.Context
+import android.content.Intent
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import androidx.compose.foundation.BorderStroke
@@ -60,6 +62,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -95,12 +98,16 @@ fun MainScreen(
     onThemeModeChanged: (AppThemeMode) -> Unit,
     onRecordTokens: (connectionId: String, kind: ConnectionKind, inTok: Long, outTok: Long) -> Unit,
     onResetAgentTokens: (String) -> Unit,
-    onResetAllTokens: () -> Unit
+    onResetAllTokens: () -> Unit,
+    onNotifyIfBackground: (String, String) -> Unit = { _, _ -> }
 ) {
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
 
     var connections by remember { mutableStateOf(store.loadConnections()) }
+    var customSkills by remember { mutableStateOf(store.loadCustomSkills()) }
     var projects by remember { mutableStateOf(store.loadProjects()) }
+    var useProjectContext by remember { mutableStateOf(true) }
     var sessions by remember { mutableStateOf(store.loadSessions()) }
     var activeProjectId by remember { mutableStateOf(store.loadActiveProjectId()) }
     var activeSessionId by remember { mutableStateOf(store.loadActiveSessionId()) }
@@ -150,19 +157,47 @@ fun MainScreen(
     val totalTokensAll = tokenUsageMap.values.sumOf { it.totalTokens }
 
     fun sendMessageInSession(session: AgentSession, conn: AiConnection, text: String) {
+        val mentionedConn = if (text.startsWith("@")) {
+            enabledConnections.firstOrNull { c ->
+                text.startsWith("@${c.name} ", ignoreCase = true)
+            }
+        } else null
+
+        val targetConn = mentionedConn ?: conn
+        val cleanPrompt = if (mentionedConn != null) {
+            text.substring(mentionedConn.name.length + 2).trim()
+        } else {
+            text
+        }
+        val effectivePrompt = if (useProjectContext && (activeProject.workDir.isNotBlank() || activeProject.memoryText.isNotBlank())) {
+            if (targetConn.kind == ConnectionKind.TERMUX_CLI && activeProject.workDir.isNotBlank()) {
+                "cd ${activeProject.workDir} && $cleanPrompt"
+            } else {
+                buildString {
+                    append("[프로젝트 컨텍스트]\n")
+                    if (activeProject.workDir.isNotBlank()) append("- 작업 경로: ${activeProject.workDir}\n")
+                    if (activeProject.memoryText.isNotBlank()) append("- 공용 지침: ${activeProject.memoryText}\n")
+                    append("\n").append(cleanPrompt)
+                }
+            }
+        } else {
+            cleanPrompt
+        }
+        val displayAgentName = if (mentionedConn != null) "@${mentionedConn.name}" else targetConn.name
+
         val userMsg = ChatMessage(
             id = "msg_${UUID.randomUUID()}",
             role = MessageRole.USER,
             content = text
         )
         val historyBefore = session.messages
-        if (conn.kind.isHiddenWebBridge()) {
+        if (targetConn.kind.isHiddenWebBridge()) {
             val placeholderId = "msg_${UUID.randomUUID()}"
             val placeholder = ChatMessage(
                 id = placeholderId,
                 role = MessageRole.ASSISTANT,
                 content = "응답 대기 중...",
-                agentName = conn.name
+                agentName = displayAgentName
             )
             sessions = sessions.map {
                 if (it.id == session.id) it.copy(messages = it.messages + userMsg + placeholder) else it
@@ -170,12 +205,11 @@ fun MainScreen(
             store.saveSessions(sessions)
             sendingMap[session.id] = true
 
-            val key = conn.id
             headlessWebBridge.sendPrompt(
-                key = key,
-                kind = conn.kind,
-                url = conn.endpointUrl,
-                prompt = text,
+                key = targetConn.id,
+                kind = targetConn.kind,
+                url = targetConn.endpointUrl,
+                prompt = effectivePrompt,
                 onChunk = { partial ->
                     sessions = sessions.map { s ->
                         if (s.id == session.id) {
@@ -196,8 +230,9 @@ fun MainScreen(
                         } else s
                     }
                     store.saveSessions(sessions)
-                    onRecordTokens(conn.id, conn.kind, inTok, outTok)
+                    onRecordTokens(targetConn.id, targetConn.kind, inTok, outTok)
                     sendingMap[session.id] = false
+                    onNotifyIfBackground("${targetConn.name} 응답 완료", finalText.take(120))
                 },
                 onError = { errMsg ->
                     sessions = sessions.map { s ->
@@ -221,14 +256,14 @@ fun MainScreen(
         sendingMap[session.id] = true
 
         scope.launch {
-            val reply = AiApiClient.send(conn, historyBefore, text, session.id)
+            val reply = AiApiClient.send(targetConn, historyBefore, effectivePrompt, session.id)
             val assistantMsg = ChatMessage(
                 id = "msg_${UUID.randomUUID()}",
                 role = MessageRole.ASSISTANT,
                 content = reply.error ?: reply.text.ifBlank { "(응답 없음)" },
                 inputTokens = reply.inputTokens,
                 outputTokens = reply.outputTokens,
-                agentName = conn.name,
+                agentName = displayAgentName,
                 isError = reply.error != null
             )
             sessions = sessions.map {
@@ -236,9 +271,12 @@ fun MainScreen(
             }
             store.saveSessions(sessions)
             if (reply.inputTokens > 0L || reply.outputTokens > 0L) {
-                onRecordTokens(conn.id, conn.kind, reply.inputTokens, reply.outputTokens)
+                onRecordTokens(targetConn.id, targetConn.kind, reply.inputTokens, reply.outputTokens)
             }
             sendingMap[session.id] = false
+            if (reply.error == null) {
+                onNotifyIfBackground("${targetConn.name} 응답 완료", assistantMsg.content.take(120))
+            }
         }
     }
 
@@ -400,6 +438,7 @@ fun MainScreen(
                 }
             }
             sendingMap[orchSess.id] = false
+            onNotifyIfBackground("오케스트레이션 완료", prevOutput.take(120).ifBlank { "파이프라인이 종료되었습니다." })
         }
     }
 
@@ -454,6 +493,7 @@ fun MainScreen(
                 SettingsScreen(
                     themeMode = themeMode,
                     connections = connections,
+                    customSkills = customSkills,
                     loginStatusMap = loginStatusMap,
                     onThemeModeChanged = onThemeModeChanged,
                     onSaveConnection = { saved ->
@@ -470,6 +510,19 @@ fun MainScreen(
                         sessions = sessions.filterNot { it.connectionId == connId }
                         store.saveConnections(connections)
                         store.saveSessions(sessions)
+                    },
+                    onSaveSkill = { saved ->
+                        val exists = customSkills.any { it.id == saved.id }
+                        customSkills = if (exists) {
+                            customSkills.map { if (it.id == saved.id) saved else it }
+                        } else {
+                            customSkills + saved
+                        }
+                        store.saveCustomSkills(customSkills)
+                    },
+                    onDeleteSkill = { skillId ->
+                        customSkills = customSkills.filterNot { it.id == skillId }
+                        store.saveCustomSkills(customSkills)
                     },
                     onLoginConnection = { conn -> loginConnection = conn },
                     onBack = { showSettings = false }
@@ -679,15 +732,19 @@ fun MainScreen(
             when (splitMode) {
                 SplitMode.SINGLE -> {
                     SessionPane(
+                        project = activeProject,
                         session = primarySession,
                         connection = primaryConn,
                         enabledConnections = enabledConnections,
+                        customSkills = customSkills,
+                        useProjectContext = useProjectContext,
                         tokenUsage = primaryConn?.let { tokenUsageMap[it.id] },
                         isLoggedIn = primaryConn?.let { loginStatusMap[it.id] == true } ?: false,
                         isSending = sendingMap[primarySession.id] == true,
                         isFocused = true,
                         showFocusBorder = false,
                         onFocus = { focusedPane = 0 },
+                        onToggleProjectContext = { useProjectContext = !useProjectContext },
                         onSendMessage = { text ->
                             if (primaryConn != null) sendMessageInSession(primarySession, primaryConn, text)
                         },
@@ -696,6 +753,7 @@ fun MainScreen(
                         },
                         onClearSession = { clearSessionMessages(primarySession) },
                         onOpenOrchestration = { showOrchestrationDialog = true },
+                        onShareMarkdown = { shareSessionAsMarkdown(context, activeProject, primarySession) },
                         onHandoffTo = { target -> handoffSession(primarySession, target) },
                         onDeleteSession = { deleteSession(primarySession) },
                         onOpenTokenDashboard = { showTokenDashboard = true },
@@ -707,15 +765,19 @@ fun MainScreen(
                 SplitMode.SPLIT_VERTICAL -> {
                     Column(modifier = Modifier.fillMaxSize()) {
                         SessionPane(
+                            project = activeProject,
                             session = primarySession,
                             connection = primaryConn,
                             enabledConnections = enabledConnections,
+                            customSkills = customSkills,
+                            useProjectContext = useProjectContext,
                             tokenUsage = primaryConn?.let { tokenUsageMap[it.id] },
                             isLoggedIn = primaryConn?.let { loginStatusMap[it.id] == true } ?: false,
                             isSending = sendingMap[primarySession.id] == true,
                             isFocused = focusedPane == 0,
                             showFocusBorder = true,
                             onFocus = { focusedPane = 0 },
+                            onToggleProjectContext = { useProjectContext = !useProjectContext },
                             onSendMessage = { text ->
                                 if (primaryConn != null) sendMessageInSession(primarySession, primaryConn, text)
                             },
@@ -724,6 +786,7 @@ fun MainScreen(
                             },
                             onClearSession = { clearSessionMessages(primarySession) },
                             onOpenOrchestration = { showOrchestrationDialog = true },
+                            onShareMarkdown = { shareSessionAsMarkdown(context, activeProject, primarySession) },
                             onHandoffTo = { target -> handoffSession(primarySession, target) },
                             onDeleteSession = { deleteSession(primarySession) },
                             onOpenTokenDashboard = { showTokenDashboard = true },
@@ -735,15 +798,19 @@ fun MainScreen(
                         )
                         HorizontalDivider(thickness = 2.dp, color = MaterialTheme.colorScheme.outline)
                         SessionPane(
+                            project = activeProject,
                             session = secondarySession ?: primarySession,
                             connection = secondaryConn,
                             enabledConnections = enabledConnections,
+                            customSkills = customSkills,
+                            useProjectContext = useProjectContext,
                             tokenUsage = secondaryConn?.let { tokenUsageMap[it.id] },
                             isLoggedIn = secondaryConn?.let { loginStatusMap[it.id] == true } ?: false,
                             isSending = sendingMap[(secondarySession ?: primarySession).id] == true,
                             isFocused = focusedPane == 1,
                             showFocusBorder = true,
                             onFocus = { focusedPane = 1 },
+                            onToggleProjectContext = { useProjectContext = !useProjectContext },
                             onSendMessage = { text ->
                                 val targetSess = secondarySession ?: primarySession
                                 if (secondaryConn != null) sendMessageInSession(targetSess, secondaryConn, text)
@@ -754,6 +821,7 @@ fun MainScreen(
                             },
                             onClearSession = { clearSessionMessages(secondarySession ?: primarySession) },
                             onOpenOrchestration = { showOrchestrationDialog = true },
+                            onShareMarkdown = { shareSessionAsMarkdown(context, activeProject, secondarySession ?: primarySession) },
                             onHandoffTo = { target -> handoffSession(secondarySession ?: primarySession, target) },
                             onDeleteSession = { deleteSession(secondarySession ?: primarySession) },
                             onOpenTokenDashboard = { showTokenDashboard = true },
@@ -768,15 +836,19 @@ fun MainScreen(
                 SplitMode.SPLIT_HORIZONTAL -> {
                     Row(modifier = Modifier.fillMaxSize()) {
                         SessionPane(
+                            project = activeProject,
                             session = primarySession,
                             connection = primaryConn,
                             enabledConnections = enabledConnections,
+                            customSkills = customSkills,
+                            useProjectContext = useProjectContext,
                             tokenUsage = primaryConn?.let { tokenUsageMap[it.id] },
                             isLoggedIn = primaryConn?.let { loginStatusMap[it.id] == true } ?: false,
                             isSending = sendingMap[primarySession.id] == true,
                             isFocused = focusedPane == 0,
                             showFocusBorder = true,
                             onFocus = { focusedPane = 0 },
+                            onToggleProjectContext = { useProjectContext = !useProjectContext },
                             onSendMessage = { text ->
                                 if (primaryConn != null) sendMessageInSession(primarySession, primaryConn, text)
                             },
@@ -785,6 +857,7 @@ fun MainScreen(
                             },
                             onClearSession = { clearSessionMessages(primarySession) },
                             onOpenOrchestration = { showOrchestrationDialog = true },
+                            onShareMarkdown = { shareSessionAsMarkdown(context, activeProject, primarySession) },
                             onHandoffTo = { target -> handoffSession(primarySession, target) },
                             onDeleteSession = { deleteSession(primarySession) },
                             onOpenTokenDashboard = { showTokenDashboard = true },
@@ -796,15 +869,19 @@ fun MainScreen(
                         )
                         VerticalDivider(thickness = 2.dp, color = MaterialTheme.colorScheme.outline)
                         SessionPane(
+                            project = activeProject,
                             session = secondarySession ?: primarySession,
                             connection = secondaryConn,
                             enabledConnections = enabledConnections,
+                            customSkills = customSkills,
+                            useProjectContext = useProjectContext,
                             tokenUsage = secondaryConn?.let { tokenUsageMap[it.id] },
                             isLoggedIn = secondaryConn?.let { loginStatusMap[it.id] == true } ?: false,
                             isSending = sendingMap[(secondarySession ?: primarySession).id] == true,
                             isFocused = focusedPane == 1,
                             showFocusBorder = true,
                             onFocus = { focusedPane = 1 },
+                            onToggleProjectContext = { useProjectContext = !useProjectContext },
                             onSendMessage = { text ->
                                 val targetSess = secondarySession ?: primarySession
                                 if (secondaryConn != null) sendMessageInSession(targetSess, secondaryConn, text)
@@ -815,6 +892,7 @@ fun MainScreen(
                             },
                             onClearSession = { clearSessionMessages(secondarySession ?: primarySession) },
                             onOpenOrchestration = { showOrchestrationDialog = true },
+                            onShareMarkdown = { shareSessionAsMarkdown(context, activeProject, secondarySession ?: primarySession) },
                             onHandoffTo = { target -> handoffSession(secondarySession ?: primarySession, target) },
                             onDeleteSession = { deleteSession(secondarySession ?: primarySession) },
                             onOpenTokenDashboard = { showTokenDashboard = true },
@@ -895,16 +973,23 @@ fun MainScreen(
                 showNewProjectDialog = false
                 editingProject = null
             },
-            onSave = { name ->
+            onSave = { name, workDir, memoryText ->
                 val target = editingProject
                 if (target == null) {
-                    val newProj = Project(id = "proj_${UUID.randomUUID()}", name = name)
+                    val newProj = Project(
+                        id = "proj_${UUID.randomUUID()}",
+                        name = name,
+                        workDir = workDir,
+                        memoryText = memoryText
+                    )
                     projects = projects + newProj
                     store.saveProjects(projects)
                     activeProjectId = newProj.id
                     store.saveActiveProjectId(newProj.id)
                 } else {
-                    projects = projects.map { if (it.id == target.id) it.copy(name = name) else it }
+                    projects = projects.map {
+                        if (it.id == target.id) it.copy(name = name, workDir = workDir, memoryText = memoryText) else it
+                    }
                     store.saveProjects(projects)
                 }
                 showNewProjectDialog = false
@@ -968,24 +1053,48 @@ private fun ProjectEditorDialog(
     initial: Project?,
     canDelete: Boolean,
     onDismiss: () -> Unit,
-    onSave: (String) -> Unit,
+    onSave: (name: String, workDir: String, memoryText: String) -> Unit,
     onDelete: (Project) -> Unit
 ) {
     var name by remember { mutableStateOf(initial?.name ?: "") }
+    var workDir by remember { mutableStateOf(initial?.workDir ?: "") }
+    var memoryText by remember { mutableStateOf(initial?.memoryText ?: "") }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(if (initial == null) "새 프로젝트" else "프로젝트 편집") },
         text = {
-            OutlinedTextField(
-                value = name,
-                onValueChange = { name = it },
-                label = { Text("프로젝트 이름") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth()
-            )
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("프로젝트 이름") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = workDir,
+                    onValueChange = { workDir = it },
+                    label = { Text("작업 디렉토리 (예: ~/multi-agent)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    TextButton(onClick = { workDir = "~/multi-agent" }) { Text("~/multi-agent", fontSize = 11.sp) }
+                    TextButton(onClick = { workDir = "~" }) { Text("~ (홈)", fontSize = 11.sp) }
+                }
+                OutlinedTextField(
+                    value = memoryText,
+                    onValueChange = { memoryText = it },
+                    label = { Text("프로젝트 공용 메모리 / 지침 (선택)") },
+                    maxLines = 4,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
         },
         confirmButton = {
-            Button(onClick = { onSave(name.trim().ifEmpty { "새 프로젝트" }) }) {
+            Button(onClick = {
+                onSave(name.trim().ifEmpty { "새 프로젝트" }, workDir.trim(), memoryText.trim())
+            }) {
                 Text("저장")
             }
         },
@@ -1085,4 +1194,23 @@ private fun NewSessionDialog(
             }
         }
     )
+}
+
+private fun shareSessionAsMarkdown(context: Context, project: Project, session: AgentSession) {
+    val md = buildString {
+        append("# ${project.name} - ${session.title}\n\n")
+        session.messages.forEach { msg ->
+            when (msg.role) {
+                MessageRole.USER -> append("## User\n${msg.content}\n\n")
+                MessageRole.ASSISTANT -> append("## ${msg.agentName.ifBlank { "Assistant" }}\n${msg.content}\n\n")
+                MessageRole.SYSTEM -> append("> ${msg.content}\n\n")
+            }
+        }
+    }
+    val intent = Intent(Intent.ACTION_SEND).apply {
+        type = "text/markdown"
+        putExtra(Intent.EXTRA_SUBJECT, "${project.name} - ${session.title}")
+        putExtra(Intent.EXTRA_TEXT, md)
+    }
+    context.startActivity(Intent.createChooser(intent, "Markdown으로 공유"))
 }

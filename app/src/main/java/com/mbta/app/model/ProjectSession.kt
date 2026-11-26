@@ -6,7 +6,18 @@ import kotlinx.serialization.Serializable
 data class Project(
     val id: String,
     val name: String,
+    val workDir: String = "",
+    val memoryText: String = "",
     val createdAt: Long = System.currentTimeMillis()
+)
+
+@Serializable
+data class CustomSkill(
+    val id: String,
+    val command: String,
+    val title: String,
+    val description: String = "",
+    val promptTemplate: String
 )
 
 @Serializable

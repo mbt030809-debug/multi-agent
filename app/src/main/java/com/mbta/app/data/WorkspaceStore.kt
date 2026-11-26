@@ -5,6 +5,7 @@ import com.mbta.app.model.AgentSession
 import com.mbta.app.model.AgentTokenUsage
 import com.mbta.app.model.AiConnection
 import com.mbta.app.model.AppThemeMode
+import com.mbta.app.model.CustomSkill
 import com.mbta.app.model.Project
 import com.mbta.app.model.SplitMode
 import kotlinx.serialization.encodeToString
@@ -95,6 +96,16 @@ class WorkspaceStore(context: Context) {
         prefs.edit().putString(KEY_THEME_MODE, mode.name).apply()
     }
 
+    fun loadCustomSkills(): List<CustomSkill> {
+        val raw = prefs.getString(KEY_CUSTOM_SKILLS, null) ?: return emptyList()
+        return runCatching { json.decodeFromString<List<CustomSkill>>(raw) }
+            .getOrElse { emptyList() }
+    }
+
+    fun saveCustomSkills(skills: List<CustomSkill>) {
+        prefs.edit().putString(KEY_CUSTOM_SKILLS, json.encodeToString(skills)).apply()
+    }
+
     companion object {
         private val defaultProjects = listOf(Project(id = "proj_default", name = "기본 프로젝트"))
         private val defaultSessions = listOf(
@@ -115,5 +126,6 @@ class WorkspaceStore(context: Context) {
         private const val KEY_SPLIT_MODE = "split_mode"
         private const val KEY_TOKEN_USAGE = "token_usage"
         private const val KEY_THEME_MODE = "theme_mode"
+        private const val KEY_CUSTOM_SKILLS = "custom_skills"
     }
 }

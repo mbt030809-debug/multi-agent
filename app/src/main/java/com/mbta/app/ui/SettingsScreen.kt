@@ -58,6 +58,7 @@ import androidx.compose.ui.unit.sp
 import com.mbta.app.model.AiConnection
 import com.mbta.app.model.AppThemeMode
 import com.mbta.app.model.ConnectionKind
+import com.mbta.app.model.CustomSkill
 import com.mbta.app.model.RemoteMode
 import com.mbta.app.model.autoDetectConnection
 import com.mbta.app.model.defaultEndpointFor
@@ -73,16 +74,21 @@ private const val TERMUX_BRIDGE_CMD = "python3 ~/multi-agent/scripts/mbta-bridge
 fun SettingsScreen(
     themeMode: AppThemeMode,
     connections: List<AiConnection>,
+    customSkills: List<CustomSkill>,
     loginStatusMap: Map<String, Boolean>,
     onThemeModeChanged: (AppThemeMode) -> Unit,
     onSaveConnection: (AiConnection) -> Unit,
     onDeleteConnection: (String) -> Unit,
+    onSaveSkill: (CustomSkill) -> Unit,
+    onDeleteSkill: (String) -> Unit,
     onLoginConnection: (AiConnection) -> Unit,
     onBack: () -> Unit
 ) {
     var editingConnection by remember { mutableStateOf<AiConnection?>(null) }
     var addingKind by remember { mutableStateOf<ConnectionKind?>(null) }
     var showSmartAdd by remember { mutableStateOf(false) }
+    var editingSkill by remember { mutableStateOf<CustomSkill?>(null) }
+    var showAddSkill by remember { mutableStateOf(false) }
     var copiedBanner by remember { mutableStateOf(false) }
     val clipboard = LocalClipboardManager.current
 
@@ -122,6 +128,49 @@ fun SettingsScreen(
                             onClick = { onThemeModeChanged(mode) },
                             label = { Text(label) }
                         )
+                    }
+                }
+            }
+
+            item {
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+                Spacer(modifier = Modifier.height(6.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("커스텀 / 스킬 (${customSkills.size}개)", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                    OutlinedButton(onClick = { showAddSkill = true }) {
+                        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.size(4.dp))
+                        Text("스킬 추가", fontSize = 12.sp)
+                    }
+                }
+            }
+
+            items(customSkills, key = { it.id }) { skill ->
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("${skill.command} · ${skill.title}", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                            if (skill.description.isNotBlank()) {
+                                Text(skill.description, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                        IconButton(onClick = { editingSkill = skill }) {
+                            Icon(Icons.Default.Edit, contentDescription = "편집", modifier = Modifier.size(18.dp))
+                        }
+                        IconButton(onClick = { onDeleteSkill(skill.id) }) {
+                            Icon(Icons.Default.Delete, contentDescription = "삭제", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(18.dp))
+                        }
                     }
                 }
             }
@@ -255,6 +304,49 @@ fun SettingsScreen(
             item {
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
                 Spacer(modifier = Modifier.height(6.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("커스텀 / 스킬 (${customSkills.size}개)", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                    OutlinedButton(onClick = { showAddSkill = true }) {
+                        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.size(4.dp))
+                        Text("스킬 추가", fontSize = 12.sp)
+                    }
+                }
+            }
+
+            items(customSkills, key = { it.id }) { skill ->
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("${skill.command} · ${skill.title}", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                            if (skill.description.isNotBlank()) {
+                                Text(skill.description, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                        IconButton(onClick = { editingSkill = skill }) {
+                            Icon(Icons.Default.Edit, contentDescription = "편집", modifier = Modifier.size(18.dp))
+                        }
+                        IconButton(onClick = { onDeleteSkill(skill.id) }) {
+                            Icon(Icons.Default.Delete, contentDescription = "삭제", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(18.dp))
+                        }
+                    }
+                }
+            }
+
+            item {
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+                Spacer(modifier = Modifier.height(6.dp))
                 Surface(
                     shape = RoundedCornerShape(10.dp),
                     color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
@@ -343,10 +435,94 @@ fun SettingsScreen(
             }
         )
     }
+    if (showAddSkill || editingSkill != null) {
+        SkillEditorDialog(
+            initial = editingSkill,
+            onDismiss = {
+                showAddSkill = false
+                editingSkill = null
+            },
+            onSave = { saved ->
+                onSaveSkill(saved)
+                showAddSkill = false
+                editingSkill = null
+            }
+        )
+    }
 }
 
 @Composable
-private fun SmartAddConnectionDialog(
+private fun SkillEditorDialog(
+    initial: CustomSkill?,
+    onDismiss: () -> Unit,
+    onSave: (CustomSkill) -> Unit
+) {
+    var command by remember { mutableStateOf(initial?.command ?: "/") }
+    var title by remember { mutableStateOf(initial?.title ?: "") }
+    var description by remember { mutableStateOf(initial?.description ?: "") }
+    var promptTemplate by remember { mutableStateOf(initial?.promptTemplate ?: "") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (initial == null) "커스텀 / 스킬 추가" else "스킬 편집") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = command,
+                    onValueChange = { command = it },
+                    label = { Text("명령어 (예: /blog)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = title,
+                    onValueChange = { title = it },
+                    label = { Text("제목") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = description,
+                    onValueChange = { description = it },
+                    label = { Text("짧은 설명 (선택)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = promptTemplate,
+                    onValueChange = { promptTemplate = it },
+                    label = { Text("자동 입력될 프롬프트") },
+                    maxLines = 4,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                enabled = command.isNotBlank() && title.isNotBlank() && promptTemplate.isNotBlank(),
+                onClick = {
+                    val cmd = command.trim().let { if (it.startsWith("/")) it else "/$it" }
+                    onSave(
+                        CustomSkill(
+                            id = initial?.id ?: "skill_${UUID.randomUUID()}",
+                            command = cmd,
+                            title = title.trim(),
+                            description = description.trim(),
+                            promptTemplate = promptTemplate
+                        )
+                    )
+                }
+            ) {
+                Text("저장")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("취소")
+            }
+        }
+    )
+}
     onDismiss: () -> Unit,
     onAdd: (AiConnection, Boolean) -> Unit
 ) {

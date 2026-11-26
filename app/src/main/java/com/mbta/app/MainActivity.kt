@@ -1,6 +1,8 @@
 package com.mbta.app
 
+import android.Manifest
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.webkit.ValueCallback
 import androidx.activity.ComponentActivity
@@ -19,6 +21,7 @@ import com.mbta.app.model.TokenSource
 import com.mbta.app.model.defaultContextLimitForKind
 import com.mbta.app.ui.MainScreen
 import com.mbta.app.ui.theme.MbtATheme
+import com.mbta.app.util.NotificationHelper
 import com.mbta.app.webview.HeadlessWebBridge
 
 class MainActivity : ComponentActivity() {
@@ -28,6 +31,11 @@ class MainActivity : ComponentActivity() {
     private var filePathCallback: ValueCallback<Array<Uri>>? = null
     private val tokenUsageMap = mutableStateMapOf<String, AgentTokenUsage>()
     private var themeMode by mutableStateOf(AppThemeMode.DARK)
+    private var isAppInForeground = true
+
+    private val notifPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { _ -> }
 
     private val fileChooserLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -53,6 +61,9 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         WindowCompat.setDecorFitsSystemWindows(window, false)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            notifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
 
         store = WorkspaceStore(this)
         themeMode = store.loadThemeMode()
@@ -102,10 +113,25 @@ class MainActivity : ComponentActivity() {
                     onResetAllTokens = {
                         tokenUsageMap.clear()
                         store.saveTokenUsage(emptyMap())
+                    },
+                    onNotifyIfBackground = { title, body ->
+                        if (!isAppInForeground) {
+                            NotificationHelper.notifyDone(this, title, body)
+                        }
                     }
                 )
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        isAppInForeground = true
+    }
+
+    override fun onPause() {
+        isAppInForeground = false
+        super.onPause()
     }
 
     override fun onDestroy() {
