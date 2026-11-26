@@ -59,6 +59,7 @@ import com.mbta.app.model.AiConnection
 import com.mbta.app.model.AppThemeMode
 import com.mbta.app.model.ConnectionKind
 import com.mbta.app.model.RemoteMode
+import com.mbta.app.model.autoDetectConnection
 import com.mbta.app.model.defaultEndpointFor
 import com.mbta.app.model.defaultModelFor
 import com.mbta.app.model.displayLabel
@@ -72,6 +73,7 @@ private const val TERMUX_BRIDGE_CMD = "python3 ~/multi-agent/scripts/mbta-bridge
 fun SettingsScreen(
     themeMode: AppThemeMode,
     connections: List<AiConnection>,
+    loginStatusMap: Map<String, Boolean>,
     onThemeModeChanged: (AppThemeMode) -> Unit,
     onSaveConnection: (AiConnection) -> Unit,
     onDeleteConnection: (String) -> Unit,
@@ -80,6 +82,7 @@ fun SettingsScreen(
 ) {
     var editingConnection by remember { mutableStateOf<AiConnection?>(null) }
     var addingKind by remember { mutableStateOf<ConnectionKind?>(null) }
+    var showSmartAdd by remember { mutableStateOf(false) }
     var copiedBanner by remember { mutableStateOf(false) }
     val clipboard = LocalClipboardManager.current
 
@@ -128,6 +131,15 @@ fun SettingsScreen(
                 Spacer(modifier = Modifier.height(8.dp))
                 Text("AI · CLI · Remote 연결 추가", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
                 Spacer(modifier = Modifier.height(6.dp))
+                Button(
+                    onClick = { showSmartAdd = true },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.size(6.dp))
+                    Text("스마트 연결 추가 (URL 또는 API 키 자동 분류)")
+                }
+                Spacer(modifier = Modifier.height(8.dp))
                 FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
@@ -206,11 +218,16 @@ fun SettingsScreen(
                                 )
                             }
                             if (conn.kind.isHiddenWebBridge()) {
+                                val isLoggedIn = loginStatusMap[conn.id] == true
                                 OutlinedButton(
                                     onClick = { onLoginConnection(conn) },
                                     modifier = Modifier.padding(end = 4.dp)
                                 ) {
-                                    Text("로그인", fontSize = 11.sp)
+                                    Text(
+                                        text = if (isLoggedIn) "● 로그인됨" else "○ 로그인 필요",
+                                        fontSize = 11.sp,
+                                        color = if (isLoggedIn) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+                                    )
                                 }
                             }
                             Switch(
@@ -313,6 +330,130 @@ fun SettingsScreen(
             }
         )
     }
+
+    if (showSmartAdd) {
+        SmartAddConnectionDialog(
+            onDismiss = { showSmartAdd = false },
+            onAdd = { conn, openLogin ->
+                onSaveConnection(conn)
+                showSmartAdd = false
+                if (openLogin && conn.kind.isHiddenWebBridge()) {
+                    onLoginConnection(conn)
+                }
+            }
+        )
+    }
+}
+
+@Composable
+private fun SmartAddConnectionDialog(
+    onDismiss: () -> Unit,
+    onAdd: (AiConnection, Boolean) -> Unit
+) {
+    var rawInput by remember { mutableStateOf("") }
+    val detected = remember(rawInput) {
+        if (rawInput.isBlank()) null else autoDetectConnection(rawInput)
+    }
+    var customName by remember(detected?.suggestedName) {
+        mutableStateOf(detected?.suggestedName ?: "")
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("스마트 연결 추가") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    "URL(Claude, ChatGPT, Gemini, Antigravity Remote 등) 또는 API 키를 붙여넣으면 자동으로 분류됩니다.",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                OutlinedTextField(
+                    value = rawInput,
+                    onValueChange = { rawInput = it },
+                    label = { Text("URL 또는 API 키") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                if (detected != null) {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(10.dp)) {
+                            Text(
+                                text = "자동 분류: ${detected.kind.displayLabel()}",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Text(
+                                text = if (detected.apiKey.isNotEmpty()) "API 키 감지됨" else detected.endpointUrl,
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    OutlinedTextField(
+                        value = customName,
+                        onValueChange = { customName = it },
+                        label = { Text("표시 이름") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            val canSave = detected != null
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (detected != null && detected.kind.isHiddenWebBridge()) {
+                    Button(
+                        onClick = {
+                            val conn = AiConnection(
+                                id = "conn_${UUID.randomUUID()}",
+                                name = customName.trim().ifEmpty { detected.suggestedName },
+                                kind = detected.kind,
+                                apiKey = detected.apiKey,
+                                model = defaultModelFor(detected.kind),
+                                endpointUrl = detected.endpointUrl,
+                                enabled = true
+                            )
+                            onAdd(conn, true)
+                        }
+                    ) {
+                        Text("추가 후 로그인")
+                    }
+                } else {
+                    Button(
+                        enabled = canSave,
+                        onClick = {
+                            detected?.let { d ->
+                                val conn = AiConnection(
+                                    id = "conn_${UUID.randomUUID()}",
+                                    name = customName.trim().ifEmpty { d.suggestedName },
+                                    kind = d.kind,
+                                    apiKey = d.apiKey,
+                                    model = defaultModelFor(d.kind),
+                                    endpointUrl = d.endpointUrl,
+                                    enabled = true
+                                )
+                                onAdd(conn, false)
+                            }
+                        }
+                    ) {
+                        Text("추가")
+                    }
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("취소")
+            }
+        }
+    )
 }
 
 @Composable

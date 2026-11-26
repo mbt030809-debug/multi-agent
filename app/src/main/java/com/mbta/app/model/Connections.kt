@@ -90,3 +90,92 @@ fun defaultContextLimitForKind(kind: ConnectionKind): Long? = when (kind) {
     ConnectionKind.GEMINI_WEB, ConnectionKind.GEMINI_API -> 1_000_000L
     else -> null
 }
+
+data class DetectedConnection(
+    val kind: ConnectionKind,
+    val suggestedName: String,
+    val endpointUrl: String,
+    val apiKey: String = ""
+)
+
+fun autoDetectConnection(rawInput: String): DetectedConnection {
+    val raw = rawInput.trim()
+    val lower = raw.lowercase()
+    return when {
+        raw.startsWith("sk-ant-") -> DetectedConnection(
+            kind = ConnectionKind.CLAUDE_API,
+            suggestedName = "Claude API",
+            endpointUrl = defaultEndpointFor(ConnectionKind.CLAUDE_API),
+            apiKey = raw
+        )
+        raw.startsWith("sk-") -> DetectedConnection(
+            kind = ConnectionKind.OPENAI_API,
+            suggestedName = "ChatGPT API",
+            endpointUrl = defaultEndpointFor(ConnectionKind.OPENAI_API),
+            apiKey = raw
+        )
+        raw.startsWith("AIza") -> DetectedConnection(
+            kind = ConnectionKind.GEMINI_API,
+            suggestedName = "Gemini API",
+            endpointUrl = defaultEndpointFor(ConnectionKind.GEMINI_API),
+            apiKey = raw
+        )
+        lower.contains("claude.ai/code") -> DetectedConnection(
+            kind = ConnectionKind.REMOTE_WEB,
+            suggestedName = "Claude Code Remote",
+            endpointUrl = normalizeUrl(raw)
+        )
+        lower.contains("claude.ai") -> DetectedConnection(
+            kind = ConnectionKind.CLAUDE_WEB,
+            suggestedName = "Claude",
+            endpointUrl = normalizeUrl(raw)
+        )
+        lower.contains("chatgpt.com") || lower.contains("chat.openai.com") -> DetectedConnection(
+            kind = ConnectionKind.CHATGPT_WEB,
+            suggestedName = "ChatGPT",
+            endpointUrl = normalizeUrl(raw)
+        )
+        lower.contains("gemini.google.com") -> DetectedConnection(
+            kind = ConnectionKind.GEMINI_WEB,
+            suggestedName = "Gemini",
+            endpointUrl = normalizeUrl(raw)
+        )
+        lower.contains("antigravity") -> DetectedConnection(
+            kind = ConnectionKind.REMOTE_WEB,
+            suggestedName = "Antigravity Remote",
+            endpointUrl = normalizeUrl(raw)
+        )
+        lower.contains("127.0.0.1") || lower.contains("localhost") -> when {
+            lower.endsWith("/exec") -> DetectedConnection(
+                kind = ConnectionKind.TERMUX_CLI,
+                suggestedName = "Termux CLI",
+                endpointUrl = normalizeUrl(raw, defaultScheme = "http://")
+            )
+            lower.endsWith("/agy") -> DetectedConnection(
+                kind = ConnectionKind.REMOTE_CONTROL,
+                suggestedName = "Antigravity 로컬",
+                endpointUrl = normalizeUrl(raw, defaultScheme = "http://")
+            )
+            lower.endsWith("/claude") -> DetectedConnection(
+                kind = ConnectionKind.REMOTE_CONTROL,
+                suggestedName = "Claude Code 로컬",
+                endpointUrl = normalizeUrl(raw, defaultScheme = "http://")
+            )
+            else -> DetectedConnection(
+                kind = ConnectionKind.REMOTE_CONTROL,
+                suggestedName = "로컬 브릿지",
+                endpointUrl = normalizeUrl(raw, defaultScheme = "http://")
+            )
+        }
+        else -> DetectedConnection(
+            kind = ConnectionKind.REMOTE_WEB,
+            suggestedName = "Remote Control",
+            endpointUrl = normalizeUrl(raw)
+        )
+    }
+}
+
+private fun normalizeUrl(raw: String, defaultScheme: String = "https://"): String {
+    if (raw.isBlank()) return defaultScheme
+    return if (raw.startsWith("http://") || raw.startsWith("https://")) raw else "$defaultScheme$raw"
+}

@@ -171,6 +171,48 @@ class HeadlessWebBridge(
         }, delayMs)
     }
 
+    fun reload(key: String) {
+        pool[key]?.reload()
+    }
+
+    fun goBack(key: String) {
+        pool[key]?.let { if (it.canGoBack()) it.goBack() }
+    }
+
+    fun checkLoginStatus(
+        key: String,
+        kind: ConnectionKind,
+        url: String,
+        onResult: (Boolean) -> Unit
+    ) {
+        val wv = pool[key]
+        if (wv != null && loadedUrls[key] == true) {
+            val js = """
+                (function() {
+                    var href = (location.href || '').toLowerCase();
+                    if (/login|signin|auth|accounts\.google/.test(href)) return 'false';
+                    var el = document.querySelector('#prompt-textarea, div.ProseMirror[contenteditable="true"], rich-textarea div[contenteditable="true"], div[contenteditable="true"], textarea');
+                    return el ? 'true' : 'false';
+                })();
+            """.trimIndent()
+            wv.evaluateJavascript(js) { res ->
+                val ok = res?.contains("true") == true
+                onResult(ok)
+            }
+            return
+        }
+
+        val cookies = CookieManager.getInstance().getCookie(url).orEmpty()
+        val hasAuthCookie = when (kind) {
+            ConnectionKind.CLAUDE_WEB -> cookies.contains("sessionKey") || cookies.contains("__cf_bm")
+            ConnectionKind.CHATGPT_WEB -> cookies.contains("__Secure-next-auth.session-token") || cookies.contains("oai-did")
+            ConnectionKind.GEMINI_WEB -> cookies.contains("SID=") || cookies.contains("__Secure-1PSID")
+            ConnectionKind.REMOTE_WEB -> cookies.isNotBlank()
+            else -> false
+        }
+        onResult(hasAuthCookie)
+    }
+
     fun destroyAll() {
         pending.clear()
         pool.values.forEach { wv ->
@@ -220,7 +262,8 @@ class HeadlessWebBridge(
                 var inputEl = findFirst(inputSelectors);
                 if (!inputEl) {
                     if (window.MbtABridge) {
-                        window.MbtABridge.onError(reqId, 'NEED_LOGIN', '입력창을 찾을 수 없습니다. 설정 또는 상단 로그인 버튼으로 해당 계정에 먼저 로그인해주세요.');
+                        var loc = (location.hostname || '') + (location.pathname || '');
+                        window.MbtABridge.onError(reqId, 'NEED_LOGIN', '입력창을 찾을 수 없습니다 (' + loc + '). 상단 로그인 버튼으로 해당 계정에 먼저 로그인해주세요.');
                     }
                     return;
                 }

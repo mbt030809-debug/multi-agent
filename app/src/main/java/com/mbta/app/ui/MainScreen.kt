@@ -13,15 +13,19 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.ViewAgenda
 import androidx.compose.material.icons.filled.ViewColumn
@@ -45,6 +49,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateMapOf
@@ -111,6 +116,20 @@ fun MainScreen(
     var showNewSessionDialog by remember { mutableStateOf(false) }
 
     val sendingMap = remember { mutableStateMapOf<String, Boolean>() }
+    val loginStatusMap = remember { mutableStateMapOf<String, Boolean>() }
+
+    fun refreshLoginStatuses() {
+        connections.filter { it.kind.isHiddenWebBridge() }.forEach { conn ->
+            val key = "${primarySession?.id ?: "login"}:${conn.id}"
+            headlessWebBridge.checkLoginStatus(key, conn.kind, conn.endpointUrl) { ok ->
+                loginStatusMap[conn.id] = ok
+            }
+        }
+    }
+
+    LaunchedEffect(connections, showSettings, loginConnection) {
+        refreshLoginStatuses()
+    }
 
     val enabledConnections = connections.filter { it.enabled }
     val activeProject = projects.find { it.id == activeProjectId } ?: projects.first()
@@ -297,13 +316,17 @@ fun MainScreen(
 
         // Layer 1: Opaque MbtA Native UI
         Surface(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .fillMaxSize()
+                .navigationBarsPadding()
+                .imePadding(),
             color = MaterialTheme.colorScheme.background
         ) {
             if (showSettings) {
                 SettingsScreen(
                     themeMode = themeMode,
                     connections = connections,
+                    loginStatusMap = loginStatusMap,
                     onThemeModeChanged = onThemeModeChanged,
                     onSaveConnection = { saved ->
                         val exists = connections.any { it.id == saved.id }
@@ -527,6 +550,7 @@ fun MainScreen(
                         connection = primaryConn,
                         enabledConnections = enabledConnections,
                         tokenUsage = primaryConn?.let { tokenUsageMap[it.id] },
+                        isLoggedIn = primaryConn?.let { loginStatusMap[it.id] == true } ?: false,
                         isSending = sendingMap[primarySession.id] == true,
                         isFocused = true,
                         showFocusBorder = false,
@@ -571,6 +595,7 @@ fun MainScreen(
                             connection = secondaryConn,
                             enabledConnections = enabledConnections,
                             tokenUsage = secondaryConn?.let { tokenUsageMap[it.id] },
+                            isLoggedIn = secondaryConn?.let { loginStatusMap[it.id] == true } ?: false,
                             isSending = sendingMap[(secondarySession ?: primarySession).id] == true,
                             isFocused = focusedPane == 1,
                             showFocusBorder = true,
@@ -619,6 +644,7 @@ fun MainScreen(
                             connection = secondaryConn,
                             enabledConnections = enabledConnections,
                             tokenUsage = secondaryConn?.let { tokenUsageMap[it.id] },
+                            isLoggedIn = secondaryConn?.let { loginStatusMap[it.id] == true } ?: false,
                             isSending = sendingMap[(secondarySession ?: primarySession).id] == true,
                             isFocused = focusedPane == 1,
                             showFocusBorder = true,
@@ -648,19 +674,29 @@ fun MainScreen(
         // Layer 2: Full-screen Login Overlay when user taps "로그인"
         val activeLoginConn = loginConnection
         if (activeLoginConn != null) {
+            val loginKey = "${primarySession?.id ?: "login"}:${activeLoginConn.id}"
             Scaffold(
+                modifier = Modifier.navigationBarsPadding().imePadding(),
                 topBar = {
                     TopAppBar(
                         title = { Text("${activeLoginConn.name} 로그인", fontWeight = FontWeight.Bold) },
                         actions = {
-                            TextButton(onClick = { loginConnection = null }) {
+                            IconButton(onClick = { headlessWebBridge.goBack(loginKey) }) {
+                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "뒤로")
+                            }
+                            IconButton(onClick = { headlessWebBridge.reload(loginKey) }) {
+                                Icon(Icons.Default.Refresh, contentDescription = "새로고침")
+                            }
+                            TextButton(onClick = {
+                                loginConnection = null
+                                refreshLoginStatuses()
+                            }) {
                                 Text("완료", fontWeight = FontWeight.Bold)
                             }
                         }
                     )
                 }
             ) { pad ->
-                val loginKey = "${primarySession?.id ?: "login"}:${activeLoginConn.id}"
                 AndroidView(
                     modifier = Modifier
                         .fillMaxSize()

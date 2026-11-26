@@ -25,6 +25,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.CallSplit
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Login
 import androidx.compose.material.icons.filled.Settings
@@ -46,6 +47,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -68,6 +71,7 @@ fun SessionPane(
     connection: AiConnection?,
     enabledConnections: List<AiConnection>,
     tokenUsage: AgentTokenUsage?,
+    isLoggedIn: Boolean,
     isSending: Boolean,
     isFocused: Boolean,
     showFocusBorder: Boolean,
@@ -160,14 +164,18 @@ fun SessionPane(
             }
 
             if (connection != null && connection.kind.isHiddenWebBridge()) {
-                IconButton(
-                    onClick = { onLoginConnection(connection) },
-                    modifier = Modifier.size(28.dp)
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.75f),
+                    modifier = Modifier
+                        .padding(end = 4.dp)
+                        .clickable { onLoginConnection(connection) }
                 ) {
-                    Icon(
-                        Icons.Default.Login,
-                        contentDescription = "계정 로그인",
-                        modifier = Modifier.size(16.dp)
+                    Text(
+                        text = if (isLoggedIn) "● 로그인됨" else "○ 로그인 필요",
+                        fontSize = 10.sp,
+                        color = if (isLoggedIn) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                     )
                 }
             }
@@ -369,6 +377,7 @@ private fun ChatBubble(message: ChatMessage, isCli: Boolean) {
             }
         }
         MessageRole.ASSISTANT -> {
+            val clipboard = LocalClipboardManager.current
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
                 Surface(
                     shape = RoundedCornerShape(12.dp),
@@ -376,15 +385,34 @@ private fun ChatBubble(message: ChatMessage, isCli: Boolean) {
                     modifier = Modifier.widthIn(max = 320.dp)
                 ) {
                     Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-                        if (message.agentName.isNotBlank()) {
-                            Text(
-                                text = message.agentName,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                            Spacer(modifier = Modifier.height(2.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            if (message.agentName.isNotBlank()) {
+                                Text(
+                                    text = message.agentName,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            } else {
+                                Spacer(modifier = Modifier.size(1.dp))
+                            }
+                            IconButton(
+                                onClick = { clipboard.setText(AnnotatedString(message.content)) },
+                                modifier = Modifier.size(22.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.ContentCopy,
+                                    contentDescription = "복사",
+                                    modifier = Modifier.size(13.dp),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         }
+                        Spacer(modifier = Modifier.height(2.dp))
                         Text(
                             text = message.content,
                             fontSize = 14.sp,
