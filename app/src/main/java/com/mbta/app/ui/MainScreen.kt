@@ -120,7 +120,7 @@ fun MainScreen(
 
     fun refreshLoginStatuses() {
         connections.filter { it.kind.isHiddenWebBridge() }.forEach { conn ->
-            val key = "${primarySession?.id ?: "login"}:${conn.id}"
+            val key = "${activeSessionId.ifBlank { "login" }}:${conn.id}"
             headlessWebBridge.checkLoginStatus(key, conn.kind, conn.endpointUrl) { ok ->
                 loginStatusMap[conn.id] = ok
             }
@@ -573,6 +573,7 @@ fun MainScreen(
                             connection = primaryConn,
                             enabledConnections = enabledConnections,
                             tokenUsage = primaryConn?.let { tokenUsageMap[it.id] },
+                            isLoggedIn = primaryConn?.let { loginStatusMap[it.id] == true } ?: false,
                             isSending = sendingMap[primarySession.id] == true,
                             isFocused = focusedPane == 0,
                             showFocusBorder = true,
@@ -622,6 +623,7 @@ fun MainScreen(
                             connection = primaryConn,
                             enabledConnections = enabledConnections,
                             tokenUsage = primaryConn?.let { tokenUsageMap[it.id] },
+                            isLoggedIn = primaryConn?.let { loginStatusMap[it.id] == true } ?: false,
                             isSending = sendingMap[primarySession.id] == true,
                             isFocused = focusedPane == 0,
                             showFocusBorder = true,
