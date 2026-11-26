@@ -1,10 +1,7 @@
 package com.mbta.app.ui
 
-import android.view.ViewGroup
-import android.widget.FrameLayout
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -14,43 +11,32 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Bookmarks
-import androidx.compose.material.icons.filled.Computer
-import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.PhoneAndroid
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.SmartToy
-import androidx.compose.material.icons.filled.SwapHoriz
-import androidx.compose.material.icons.filled.Terminal
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.ViewAgenda
 import androidx.compose.material.icons.filled.ViewColumn
 import androidx.compose.material.icons.filled.ViewStream
-import androidx.compose.material.icons.filled.Web
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -58,10 +44,11 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -69,82 +56,180 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.viewinterop.AndroidView
 import com.mbta.app.data.WorkspaceStore
+import com.mbta.app.model.AgentSession
 import com.mbta.app.model.AgentTokenUsage
-import com.mbta.app.model.AiPanel
-import com.mbta.app.model.PanelType
+import com.mbta.app.model.AiConnection
+import com.mbta.app.model.AppThemeMode
+import com.mbta.app.model.ChatMessage
+import com.mbta.app.model.ConnectionKind
+import com.mbta.app.model.MessageRole
+import com.mbta.app.model.Project
 import com.mbta.app.model.SplitMode
 import com.mbta.app.model.TokenSource
-import com.mbta.app.model.WorkspacePreset
+import com.mbta.app.model.defaultContextLimitForKind
+import com.mbta.app.model.displayLabel
 import com.mbta.app.model.formatTokens
-import com.mbta.app.webview.WebViewManager
+import com.mbta.app.network.AiApiClient
+import kotlinx.coroutines.launch
 import java.util.UUID
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(
     store: WorkspaceStore,
-    webViewManager: WebViewManager,
+    themeMode: AppThemeMode,
     tokenUsageMap: Map<String, AgentTokenUsage>,
+    onThemeModeChanged: (AppThemeMode) -> Unit,
+    onRecordTokens: (connectionId: String, kind: ConnectionKind, inTok: Long, outTok: Long) -> Unit,
     onResetAgentTokens: (String) -> Unit,
-    onResetAllTokens: () -> Unit,
-    onFocusedPanelChanged: (String) -> Unit
+    onResetAllTokens: () -> Unit
 ) {
-    var panels by remember { mutableStateOf(store.loadPanels()) }
-    var presets by remember { mutableStateOf(store.loadPresets()) }
-    var primaryPanelId by remember { mutableStateOf(store.loadPrimaryPanelId()) }
-    var secondaryPanelId by remember { mutableStateOf(store.loadSecondaryPanelId()) }
+    val scope = rememberCoroutineScope()
+
+    var connections by remember { mutableStateOf(store.loadConnections()) }
+    var projects by remember { mutableStateOf(store.loadProjects()) }
+    var sessions by remember { mutableStateOf(store.loadSessions()) }
+    var activeProjectId by remember { mutableStateOf(store.loadActiveProjectId()) }
+    var activeSessionId by remember { mutableStateOf(store.loadActiveSessionId()) }
+    var secondarySessionId by remember { mutableStateOf(store.loadSecondarySessionId()) }
     var splitMode by remember { mutableStateOf(store.loadSplitMode()) }
     var focusedPane by remember { mutableIntStateOf(0) }
 
-    var showPresetDialog by remember { mutableStateOf(false) }
+    var showSettings by remember { mutableStateOf(false) }
     var showTokenDashboard by remember { mutableStateOf(false) }
-    var editingPanel by remember { mutableStateOf<AiPanel?>(null) }
-    var showAddPanelDialog by remember { mutableStateOf(false) }
+    var showProjectMenu by remember { mutableStateOf(false) }
+    var showNewProjectDialog by remember { mutableStateOf(false) }
+    var editingProject by remember { mutableStateOf<Project?>(null) }
+    var showNewSessionDialog by remember { mutableStateOf(false) }
+
+    val sendingMap = remember { mutableStateMapOf<String, Boolean>() }
+
+    val enabledConnections = connections.filter { it.enabled }
+    val activeProject = projects.find { it.id == activeProjectId } ?: projects.first()
+    val projectSessions = sessions.filter { it.projectId == activeProject.id }
+    val primarySession = projectSessions.find { it.id == activeSessionId }
+        ?: projectSessions.firstOrNull()
+        ?: run {
+            val created = AgentSession(
+                id = "sess_${UUID.randomUUID()}",
+                projectId = activeProject.id,
+                title = "세션 1",
+                connectionId = enabledConnections.firstOrNull()?.id
+            )
+            sessions = sessions + created
+            store.saveSessions(sessions)
+            activeSessionId = created.id
+            store.saveActiveSessionId(created.id)
+            created
+        }
+
+    val secondarySession = projectSessions.find { it.id == secondarySessionId }
+        ?: projectSessions.firstOrNull { it.id != primarySession.id }
+        ?: primarySession
+
     val totalTokensAll = tokenUsageMap.values.sumOf { it.totalTokens }
 
-    val primaryPanel = panels.find { it.id == primaryPanelId } ?: panels.first()
-    val secondaryPanel = panels.find { it.id == secondaryPanelId }
-        ?: panels.firstOrNull { it.id != primaryPanel.id }
-        ?: primaryPanel
-
-    val activeFocusedPanelId = if (splitMode != SplitMode.SINGLE && focusedPane == 1) {
-        secondaryPanel.id
-    } else {
-        primaryPanel.id
+    if (showSettings) {
+        SettingsScreen(
+            themeMode = themeMode,
+            connections = connections,
+            onThemeModeChanged = onThemeModeChanged,
+            onSaveConnection = { saved ->
+                val exists = connections.any { it.id == saved.id }
+                connections = if (exists) {
+                    connections.map { if (it.id == saved.id) saved else it }
+                } else {
+                    connections + saved
+                }
+                store.saveConnections(connections)
+            },
+            onDeleteConnection = { connId ->
+                connections = connections.filterNot { it.id == connId }
+                store.saveConnections(connections)
+            },
+            onBack = { showSettings = false }
+        )
+        return
     }
-    onFocusedPanelChanged(activeFocusedPanelId)
 
-    fun selectPanel(panelId: String) {
-        if (splitMode == SplitMode.SINGLE) {
-            primaryPanelId = panelId
-            store.savePrimaryPanelId(panelId)
-        } else {
-            if (focusedPane == 0) {
-                if (panelId == secondaryPanel.id) {
-                    secondaryPanelId = primaryPanel.id
-                    store.saveSecondaryPanelId(primaryPanel.id)
-                }
-                primaryPanelId = panelId
-                store.savePrimaryPanelId(panelId)
-            } else {
-                if (panelId == primaryPanel.id) {
-                    primaryPanelId = secondaryPanel.id
-                    store.savePrimaryPanelId(secondaryPanel.id)
-                }
-                secondaryPanelId = panelId
-                store.saveSecondaryPanelId(panelId)
+    fun sendMessageInSession(session: AgentSession, conn: AiConnection, text: String) {
+        val userMsg = ChatMessage(
+            id = "msg_${UUID.randomUUID()}",
+            role = MessageRole.USER,
+            content = text
+        )
+        val historyBefore = session.messages
+        sessions = sessions.map {
+            if (it.id == session.id) it.copy(messages = it.messages + userMsg) else it
+        }
+        store.saveSessions(sessions)
+        sendingMap[session.id] = true
+
+        scope.launch {
+            val reply = AiApiClient.send(conn, historyBefore, text)
+            val assistantMsg = ChatMessage(
+                id = "msg_${UUID.randomUUID()}",
+                role = MessageRole.ASSISTANT,
+                content = reply.error ?: reply.text.ifBlank { "(응답 없음)" },
+                inputTokens = reply.inputTokens,
+                outputTokens = reply.outputTokens,
+                agentName = conn.name
+            )
+            sessions = sessions.map {
+                if (it.id == session.id) it.copy(messages = it.messages + assistantMsg) else it
             }
+            store.saveSessions(sessions)
+            if (reply.inputTokens > 0L || reply.outputTokens > 0L) {
+                onRecordTokens(conn.id, conn.kind, reply.inputTokens, reply.outputTokens)
+            }
+            sendingMap[session.id] = false
         }
     }
 
-    fun swapPanes() {
-        val oldPrimary = primaryPanel.id
-        primaryPanelId = secondaryPanel.id
-        secondaryPanelId = oldPrimary
-        store.savePrimaryPanelId(primaryPanelId)
-        store.saveSecondaryPanelId(secondaryPanelId)
+    fun handoffSession(fromSession: AgentSession, targetConn: AiConnection) {
+        val transcript = fromSession.messages
+            .filter { it.role != MessageRole.SYSTEM }
+            .joinToString("\n") { msg ->
+                val who = if (msg.role == MessageRole.USER) "User" else (msg.agentName.ifBlank { "Assistant" })
+                "[$who]: ${msg.content}"
+            }
+        val sysMsg = ChatMessage(
+            id = "msg_${UUID.randomUUID()}",
+            role = MessageRole.SYSTEM,
+            content = "이전 세션('${fromSession.title}')에서 전달된 컨텍스트:\n\n$transcript"
+        )
+        val newSess = AgentSession(
+            id = "sess_${UUID.randomUUID()}",
+            projectId = activeProject.id,
+            title = "${targetConn.name} 이어받기",
+            connectionId = targetConn.id,
+            messages = listOf(sysMsg)
+        )
+        sessions = sessions + newSess
+        store.saveSessions(sessions)
+        activeSessionId = newSess.id
+        store.saveActiveSessionId(newSess.id)
+    }
+
+    fun deleteSession(session: AgentSession) {
+        val remainingInProject = projectSessions.filterNot { it.id == session.id }
+        sessions = sessions.filterNot { it.id == session.id }
+        if (remainingInProject.isEmpty()) {
+            val replacement = AgentSession(
+                id = "sess_${UUID.randomUUID()}",
+                projectId = activeProject.id,
+                title = "세션 1",
+                connectionId = enabledConnections.firstOrNull()?.id
+            )
+            sessions = sessions + replacement
+            activeSessionId = replacement.id
+            store.saveActiveSessionId(replacement.id)
+        } else if (activeSessionId == session.id) {
+            activeSessionId = remainingInProject.first().id
+            store.saveActiveSessionId(activeSessionId)
+        }
+        store.saveSessions(sessions)
     }
 
     fun cycleSplitMode() {
@@ -155,9 +240,7 @@ fun MainScreen(
         }
         splitMode = next
         store.saveSplitMode(next)
-        if (next == SplitMode.SINGLE) {
-            focusedPane = 0
-        }
+        if (next == SplitMode.SINGLE) focusedPane = 0
     }
 
     Scaffold(
@@ -165,11 +248,63 @@ fun MainScreen(
             Column(modifier = Modifier.background(MaterialTheme.colorScheme.surface)) {
                 TopAppBar(
                     title = {
-                        Text(
-                            text = "MbtA",
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 18.sp
-                        )
+                        Box {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .clickable { showProjectMenu = true }
+                                    .padding(vertical = 4.dp)
+                            ) {
+                                Text(
+                                    text = activeProject.name,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 17.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Icon(Icons.Default.ArrowDropDown, contentDescription = "프로젝트 선택")
+                            }
+                            DropdownMenu(
+                                expanded = showProjectMenu,
+                                onDismissRequest = { showProjectMenu = false }
+                            ) {
+                                projects.forEach { proj ->
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                proj.name,
+                                                fontWeight = if (proj.id == activeProject.id) FontWeight.Bold else FontWeight.Normal
+                                            )
+                                        },
+                                        onClick = {
+                                            activeProjectId = proj.id
+                                            store.saveActiveProjectId(proj.id)
+                                            val firstSess = sessions.firstOrNull { it.projectId == proj.id }
+                                            if (firstSess != null) {
+                                                activeSessionId = firstSess.id
+                                                store.saveActiveSessionId(firstSess.id)
+                                            }
+                                            showProjectMenu = false
+                                        }
+                                    )
+                                }
+                                HorizontalDivider()
+                                DropdownMenuItem(
+                                    text = { Text("+ 새 프로젝트") },
+                                    onClick = {
+                                        showProjectMenu = false
+                                        showNewProjectDialog = true
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("현재 프로젝트 편집") },
+                                    onClick = {
+                                        showProjectMenu = false
+                                        editingProject = activeProject
+                                    }
+                                )
+                            }
+                        }
                     },
                     colors = TopAppBarDefaults.topAppBarColors(
                         containerColor = MaterialTheme.colorScheme.surface,
@@ -191,24 +326,16 @@ fun MainScreen(
                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                             )
                         }
-                        if (splitMode != SplitMode.SINGLE) {
-                            IconButton(onClick = { swapPanes() }) {
-                                Icon(Icons.Default.SwapHoriz, contentDescription = "화면 교체")
-                            }
-                        }
                         IconButton(onClick = { cycleSplitMode() }) {
                             val icon = when (splitMode) {
                                 SplitMode.SINGLE -> Icons.Default.ViewAgenda
                                 SplitMode.SPLIT_VERTICAL -> Icons.Default.ViewStream
                                 SplitMode.SPLIT_HORIZONTAL -> Icons.Default.ViewColumn
                             }
-                            Icon(icon, contentDescription = "화면 분할 전환")
+                            Icon(icon, contentDescription = "화면 분할")
                         }
-                        IconButton(onClick = { showPresetDialog = true }) {
-                            Icon(Icons.Default.Bookmarks, contentDescription = "워크스페이스 프리셋")
-                        }
-                        IconButton(onClick = { showAddPanelDialog = true }) {
-                            Icon(Icons.Default.Add, contentDescription = "패널 추가")
+                        IconButton(onClick = { showSettings = true }) {
+                            Icon(Icons.Default.Settings, contentDescription = "설정")
                         }
                     }
                 )
@@ -218,31 +345,40 @@ fun MainScreen(
                         .fillMaxWidth()
                         .padding(bottom = 6.dp),
                     contentPadding = PaddingValues(horizontal = 12.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    items(panels, key = { it.id }) { panel ->
+                    items(projectSessions, key = { it.id }) { sess ->
+                        val connName = enabledConnections.find { it.id == sess.connectionId }?.name
                         val isSelected = if (splitMode == SplitMode.SINGLE) {
-                            panel.id == primaryPanel.id
+                            sess.id == primarySession.id
                         } else {
-                            panel.id == primaryPanel.id || panel.id == secondaryPanel.id
-                        }
-                        val typeIcon = when (panel.type) {
-                            PanelType.AI_WEB -> Icons.Default.SmartToy
-                            PanelType.TERMUX_CLI -> Icons.Default.Terminal
-                            PanelType.REMOTE_CONTROL -> Icons.Default.Web
+                            sess.id == primarySession.id || sess.id == secondarySession.id
                         }
                         FilterChip(
                             selected = isSelected,
-                            onClick = { selectPanel(panel.id) },
-                            label = { Text(panel.name, maxLines = 1) },
-                            leadingIcon = {
-                                Icon(
-                                    imageVector = typeIcon,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(16.dp)
-                                )
+                            onClick = {
+                                if (splitMode == SplitMode.SINGLE || focusedPane == 0) {
+                                    activeSessionId = sess.id
+                                    store.saveActiveSessionId(sess.id)
+                                } else {
+                                    secondarySessionId = sess.id
+                                    store.saveSecondarySessionId(sess.id)
+                                }
+                            },
+                            label = {
+                                val label = if (connName != null) "${sess.title} · $connName" else sess.title
+                                Text(label, maxLines = 1)
                             }
                         )
+                    }
+                    item {
+                        IconButton(
+                            onClick = { showNewSessionDialog = true },
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(Icons.Default.Add, contentDescription = "새 하위 세션")
+                        }
                     }
                 }
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f))
@@ -254,63 +390,69 @@ fun MainScreen(
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
+            val primaryConn = enabledConnections.find { it.id == primarySession.connectionId }
+            val secondaryConn = enabledConnections.find { it.id == secondarySession.connectionId }
+
             when (splitMode) {
                 SplitMode.SINGLE -> {
-                    WebViewPane(
-                        panel = primaryPanel,
-                        tokenUsage = tokenUsageMap[primaryPanel.id],
+                    SessionPane(
+                        session = primarySession,
+                        connection = primaryConn,
+                        enabledConnections = enabledConnections,
+                        tokenUsage = primaryConn?.let { tokenUsageMap[it.id] },
+                        isSending = sendingMap[primarySession.id] == true,
                         isFocused = true,
                         showFocusBorder = false,
-                        webViewManager = webViewManager,
                         onFocus = { focusedPane = 0 },
-                        onTokenClick = { showTokenDashboard = true },
-                        onEdit = { editingPanel = primaryPanel },
-                        onToggleDesktop = { updated ->
-                            panels = panels.map { if (it.id == updated.id) updated else it }
-                            store.savePanels(panels)
-                            webViewManager.setDesktopMode(updated.id, updated.desktopMode)
+                        onSendMessage = { text ->
+                            if (primaryConn != null) sendMessageInSession(primarySession, primaryConn, text)
                         },
+                        onHandoffTo = { target -> handoffSession(primarySession, target) },
+                        onDeleteSession = { deleteSession(primarySession) },
+                        onOpenTokenDashboard = { showTokenDashboard = true },
+                        onOpenSettings = { showSettings = true },
                         modifier = Modifier.fillMaxSize()
                     )
                 }
                 SplitMode.SPLIT_VERTICAL -> {
                     Column(modifier = Modifier.fillMaxSize()) {
-                        WebViewPane(
-                            panel = primaryPanel,
-                            tokenUsage = tokenUsageMap[primaryPanel.id],
+                        SessionPane(
+                            session = primarySession,
+                            connection = primaryConn,
+                            enabledConnections = enabledConnections,
+                            tokenUsage = primaryConn?.let { tokenUsageMap[it.id] },
+                            isSending = sendingMap[primarySession.id] == true,
                             isFocused = focusedPane == 0,
                             showFocusBorder = true,
-                            webViewManager = webViewManager,
                             onFocus = { focusedPane = 0 },
-                            onTokenClick = { showTokenDashboard = true },
-                            onEdit = { editingPanel = primaryPanel },
-                            onToggleDesktop = { updated ->
-                                panels = panels.map { if (it.id == updated.id) updated else it }
-                                store.savePanels(panels)
-                                webViewManager.setDesktopMode(updated.id, updated.desktopMode)
+                            onSendMessage = { text ->
+                                if (primaryConn != null) sendMessageInSession(primarySession, primaryConn, text)
                             },
+                            onHandoffTo = { target -> handoffSession(primarySession, target) },
+                            onDeleteSession = { deleteSession(primarySession) },
+                            onOpenTokenDashboard = { showTokenDashboard = true },
+                            onOpenSettings = { showSettings = true },
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .weight(1f)
                         )
-                        HorizontalDivider(
-                            thickness = 2.dp,
-                            color = MaterialTheme.colorScheme.outline
-                        )
-                        WebViewPane(
-                            panel = secondaryPanel,
-                            tokenUsage = tokenUsageMap[secondaryPanel.id],
+                        HorizontalDivider(thickness = 2.dp, color = MaterialTheme.colorScheme.outline)
+                        SessionPane(
+                            session = secondarySession,
+                            connection = secondaryConn,
+                            enabledConnections = enabledConnections,
+                            tokenUsage = secondaryConn?.let { tokenUsageMap[it.id] },
+                            isSending = sendingMap[secondarySession.id] == true,
                             isFocused = focusedPane == 1,
                             showFocusBorder = true,
-                            webViewManager = webViewManager,
                             onFocus = { focusedPane = 1 },
-                            onTokenClick = { showTokenDashboard = true },
-                            onEdit = { editingPanel = secondaryPanel },
-                            onToggleDesktop = { updated ->
-                                panels = panels.map { if (it.id == updated.id) updated else it }
-                                store.savePanels(panels)
-                                webViewManager.setDesktopMode(updated.id, updated.desktopMode)
+                            onSendMessage = { text ->
+                                if (secondaryConn != null) sendMessageInSession(secondarySession, secondaryConn, text)
                             },
+                            onHandoffTo = { target -> handoffSession(secondarySession, target) },
+                            onDeleteSession = { deleteSession(secondarySession) },
+                            onOpenTokenDashboard = { showTokenDashboard = true },
+                            onOpenSettings = { showSettings = true },
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .weight(1f)
@@ -319,42 +461,43 @@ fun MainScreen(
                 }
                 SplitMode.SPLIT_HORIZONTAL -> {
                     Row(modifier = Modifier.fillMaxSize()) {
-                        WebViewPane(
-                            panel = primaryPanel,
-                            tokenUsage = tokenUsageMap[primaryPanel.id],
+                        SessionPane(
+                            session = primarySession,
+                            connection = primaryConn,
+                            enabledConnections = enabledConnections,
+                            tokenUsage = primaryConn?.let { tokenUsageMap[it.id] },
+                            isSending = sendingMap[primarySession.id] == true,
                             isFocused = focusedPane == 0,
                             showFocusBorder = true,
-                            webViewManager = webViewManager,
                             onFocus = { focusedPane = 0 },
-                            onTokenClick = { showTokenDashboard = true },
-                            onEdit = { editingPanel = primaryPanel },
-                            onToggleDesktop = { updated ->
-                                panels = panels.map { if (it.id == updated.id) updated else it }
-                                store.savePanels(panels)
-                                webViewManager.setDesktopMode(updated.id, updated.desktopMode)
+                            onSendMessage = { text ->
+                                if (primaryConn != null) sendMessageInSession(primarySession, primaryConn, text)
                             },
+                            onHandoffTo = { target -> handoffSession(primarySession, target) },
+                            onDeleteSession = { deleteSession(primarySession) },
+                            onOpenTokenDashboard = { showTokenDashboard = true },
+                            onOpenSettings = { showSettings = true },
                             modifier = Modifier
                                 .fillMaxSize()
                                 .weight(1f)
                         )
-                        VerticalDivider(
-                            thickness = 2.dp,
-                            color = MaterialTheme.colorScheme.outline
-                        )
-                        WebViewPane(
-                            panel = secondaryPanel,
-                            tokenUsage = tokenUsageMap[secondaryPanel.id],
+                        VerticalDivider(thickness = 2.dp, color = MaterialTheme.colorScheme.outline)
+                        SessionPane(
+                            session = secondarySession,
+                            connection = secondaryConn,
+                            enabledConnections = enabledConnections,
+                            tokenUsage = secondaryConn?.let { tokenUsageMap[it.id] },
+                            isSending = sendingMap[secondarySession.id] == true,
                             isFocused = focusedPane == 1,
                             showFocusBorder = true,
-                            webViewManager = webViewManager,
                             onFocus = { focusedPane = 1 },
-                            onTokenClick = { showTokenDashboard = true },
-                            onEdit = { editingPanel = secondaryPanel },
-                            onToggleDesktop = { updated ->
-                                panels = panels.map { if (it.id == updated.id) updated else it }
-                                store.savePanels(panels)
-                                webViewManager.setDesktopMode(updated.id, updated.desktopMode)
+                            onSendMessage = { text ->
+                                if (secondaryConn != null) sendMessageInSession(secondarySession, secondaryConn, text)
                             },
+                            onHandoffTo = { target -> handoffSession(secondarySession, target) },
+                            onDeleteSession = { deleteSession(secondarySession) },
+                            onOpenTokenDashboard = { showTokenDashboard = true },
+                            onOpenSettings = { showSettings = true },
                             modifier = Modifier
                                 .fillMaxSize()
                                 .weight(1f)
@@ -365,300 +508,100 @@ fun MainScreen(
         }
     }
 
-    if (showAddPanelDialog || editingPanel != null) {
-        AddEditPanelDialog(
-            initial = editingPanel,
-            canDelete = editingPanel != null && panels.size > 1,
-            onDismiss = {
-                showAddPanelDialog = false
-                editingPanel = null
-            },
-            onSave = { saved ->
-                val exists = panels.any { it.id == saved.id }
-                panels = if (exists) {
-                    panels.map { if (it.id == saved.id) saved else it }
-                } else {
-                    panels + saved
-                }
-                store.savePanels(panels)
-                if (exists) {
-                    webViewManager.loadUrl(saved.id, saved.url)
-                } else {
-                    selectPanel(saved.id)
-                }
-                showAddPanelDialog = false
-                editingPanel = null
-            },
-            onDelete = { toDelete ->
-                panels = panels.filterNot { it.id == toDelete.id }
-                store.savePanels(panels)
-                webViewManager.removeWebView(toDelete.id)
-                if (primaryPanelId == toDelete.id) {
-                    primaryPanelId = panels.first().id
-                    store.savePrimaryPanelId(primaryPanelId)
-                }
-                if (secondaryPanelId == toDelete.id) {
-                    secondaryPanelId = panels.first().id
-                    store.saveSecondaryPanelId(secondaryPanelId)
-                }
-                editingPanel = null
-            }
-        )
-    }
-
-    if (showPresetDialog) {
-        WorkspacePresetDialog(
-            presets = presets,
-            panels = panels,
-            onDismiss = { showPresetDialog = false },
-            onApply = { preset ->
-                splitMode = preset.splitMode
-                primaryPanelId = preset.primaryPanelId
-                secondaryPanelId = preset.secondaryPanelId ?: secondaryPanelId
-                store.saveSplitMode(splitMode)
-                store.savePrimaryPanelId(primaryPanelId)
-                store.saveSecondaryPanelId(secondaryPanelId)
-                focusedPane = 0
-                showPresetDialog = false
-            },
-            onSaveCurrent = { name ->
-                val newPreset = WorkspacePreset(
-                    id = "preset_${UUID.randomUUID()}",
-                    name = name,
-                    primaryPanelId = primaryPanel.id,
-                    secondaryPanelId = if (splitMode == SplitMode.SINGLE) null else secondaryPanel.id,
-                    splitMode = splitMode
-                )
-                presets = presets + newPreset
-                store.savePresets(presets)
-            },
-            onDelete = { preset ->
-                presets = presets.filterNot { it.id == preset.id }
-                store.savePresets(presets)
-            }
-        )
-    }
     if (showTokenDashboard) {
         TokenDashboardDialog(
-            panels = panels,
+            connections = enabledConnections,
             tokenUsageMap = tokenUsageMap,
             onResetAgent = onResetAgentTokens,
             onResetAll = onResetAllTokens,
             onDismiss = { showTokenDashboard = false }
         )
     }
-}
 
-@Composable
-private fun WebViewPane(
-    panel: AiPanel,
-    tokenUsage: AgentTokenUsage?,
-    isFocused: Boolean,
-    showFocusBorder: Boolean,
-    webViewManager: WebViewManager,
-    onFocus: () -> Unit,
-    onTokenClick: () -> Unit,
-    onEdit: () -> Unit,
-    onToggleDesktop: (AiPanel) -> Unit,
-    modifier: Modifier = Modifier
-) {
-    val borderColor = if (showFocusBorder && isFocused) {
-        MaterialTheme.colorScheme.primary
-    } else {
-        MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)
-    }
-
-    Column(
-        modifier = modifier.border(
-            width = if (showFocusBorder && isFocused) 1.5.dp else 0.dp,
-            color = borderColor
-        )
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(34.dp)
-                .background(
-                    if (isFocused && showFocusBorder) {
-                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f)
-                    } else {
-                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-                    }
-                )
-                .clickable { onFocus() }
-                .padding(horizontal = 8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = panel.name,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f)
-            )
-            val total = tokenUsage?.totalTokens ?: 0L
-            val prefix = if (tokenUsage == null || tokenUsage.source == TokenSource.ESTIMATED_WEB) "~" else ""
-            Surface(
-                shape = RoundedCornerShape(6.dp),
-                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f),
-                modifier = Modifier
-                    .padding(end = 4.dp)
-                    .clickable { onTokenClick() }
-            ) {
-                Text(
-                    text = "$prefix${formatTokens(total)}",
-                    fontSize = 10.sp,
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                )
-            }
-            IconButton(
-                onClick = { webViewManager.goBack(panel.id) },
-                modifier = Modifier.size(28.dp)
-            ) {
-                Icon(
-                    Icons.AutoMirrored.Filled.ArrowBack,
-                    contentDescription = "뒤로",
-                    modifier = Modifier.size(16.dp)
-                )
-            }
-            IconButton(
-                onClick = { webViewManager.reload(panel.id) },
-                modifier = Modifier.size(28.dp)
-            ) {
-                Icon(
-                    Icons.Default.Refresh,
-                    contentDescription = "새로고침",
-                    modifier = Modifier.size(16.dp)
-                )
-            }
-            IconButton(
-                onClick = { onToggleDesktop(panel.copy(desktopMode = !panel.desktopMode)) },
-                modifier = Modifier.size(28.dp)
-            ) {
-                Icon(
-                    imageVector = if (panel.desktopMode) Icons.Default.Computer else Icons.Default.PhoneAndroid,
-                    contentDescription = "데스크톱 모드 전환",
-                    modifier = Modifier.size(16.dp)
-                )
-            }
-            IconButton(
-                onClick = onEdit,
-                modifier = Modifier.size(28.dp)
-            ) {
-                Icon(
-                    Icons.Default.Edit,
-                    contentDescription = "패널 편집",
-                    modifier = Modifier.size(15.dp)
-                )
-            }
-        }
-
-        key(panel.id) {
-            AndroidView(
-                modifier = Modifier.fillMaxSize(),
-                factory = { ctx ->
-                    val webView = webViewManager.getOrCreateWebView(panel)
-                    (webView.parent as? ViewGroup)?.removeView(webView)
-                    FrameLayout(ctx).apply {
-                        layoutParams = ViewGroup.LayoutParams(
-                            ViewGroup.LayoutParams.MATCH_PARENT,
-                            ViewGroup.LayoutParams.MATCH_PARENT
-                        )
-                        addView(webView)
-                    }
-                },
-                update = { container ->
-                    val webView = webViewManager.getOrCreateWebView(panel)
-                    if (webView.parent !== container) {
-                        (webView.parent as? ViewGroup)?.removeView(webView)
-                        container.removeAllViews()
-                        container.addView(webView)
-                    }
+    if (showNewProjectDialog || editingProject != null) {
+        ProjectEditorDialog(
+            initial = editingProject,
+            canDelete = editingProject != null && projects.size > 1,
+            onDismiss = {
+                showNewProjectDialog = false
+                editingProject = null
+            },
+            onSave = { name ->
+                val target = editingProject
+                if (target == null) {
+                    val newProj = Project(id = "proj_${UUID.randomUUID()}", name = name)
+                    projects = projects + newProj
+                    store.saveProjects(projects)
+                    activeProjectId = newProj.id
+                    store.saveActiveProjectId(newProj.id)
+                } else {
+                    projects = projects.map { if (it.id == target.id) it.copy(name = name) else it }
+                    store.saveProjects(projects)
                 }
-            )
-        }
+                showNewProjectDialog = false
+                editingProject = null
+            },
+            onDelete = { proj ->
+                projects = projects.filterNot { it.id == proj.id }
+                sessions = sessions.filterNot { it.projectId == proj.id }
+                store.saveProjects(projects)
+                store.saveSessions(sessions)
+                activeProjectId = projects.first().id
+                store.saveActiveProjectId(activeProjectId)
+                editingProject = null
+            }
+        )
+    }
+
+    if (showNewSessionDialog) {
+        NewSessionDialog(
+            enabledConnections = enabledConnections,
+            defaultIndex = projectSessions.size + 1,
+            onDismiss = { showNewSessionDialog = false },
+            onOpenSettings = {
+                showNewSessionDialog = false
+                showSettings = true
+            },
+            onCreate = { title, connId ->
+                val newSess = AgentSession(
+                    id = "sess_${UUID.randomUUID()}",
+                    projectId = activeProject.id,
+                    title = title,
+                    connectionId = connId
+                )
+                sessions = sessions + newSess
+                store.saveSessions(sessions)
+                activeSessionId = newSess.id
+                store.saveActiveSessionId(newSess.id)
+                showNewSessionDialog = false
+            }
+        )
     }
 }
 
 @Composable
-private fun AddEditPanelDialog(
-    initial: AiPanel?,
+private fun ProjectEditorDialog(
+    initial: Project?,
     canDelete: Boolean,
     onDismiss: () -> Unit,
-    onSave: (AiPanel) -> Unit,
-    onDelete: (AiPanel) -> Unit
+    onSave: (String) -> Unit,
+    onDelete: (Project) -> Unit
 ) {
     var name by remember { mutableStateOf(initial?.name ?: "") }
-    var url by remember { mutableStateOf(initial?.url ?: "https://") }
-    var type by remember { mutableStateOf(initial?.type ?: PanelType.AI_WEB) }
-    var desktopMode by remember { mutableStateOf(initial?.desktopMode ?: false) }
-
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(if (initial == null) "패널 추가" else "패널 편집") },
+        title = { Text(if (initial == null) "새 프로젝트" else "프로젝트 편집") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    label = { Text("이름") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                OutlinedTextField(
-                    value = url,
-                    onValueChange = { url = it },
-                    label = { Text("URL (예: https://claude.ai 또는 http://127.0.0.1:7681)") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    PanelType.entries.forEach { entry ->
-                        val label = when (entry) {
-                            PanelType.AI_WEB -> "AI 웹"
-                            PanelType.TERMUX_CLI -> "Termux"
-                            PanelType.REMOTE_CONTROL -> "Remote"
-                        }
-                        FilterChip(
-                            selected = type == entry,
-                            onClick = { type = entry },
-                            label = { Text(label, fontSize = 12.sp) }
-                        )
-                    }
-                }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text("데스크톱 User-Agent")
-                    Switch(checked = desktopMode, onCheckedChange = { desktopMode = it })
-                }
-            }
+            OutlinedTextField(
+                value = name,
+                onValueChange = { name = it },
+                label = { Text("프로젝트 이름") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
         },
         confirmButton = {
-            Button(
-                onClick = {
-                    val trimmedName = name.trim().ifEmpty { "AI 패널" }
-                    val trimmedUrl = url.trim().let {
-                        if (it.startsWith("http://") || it.startsWith("https://")) it else "https://$it"
-                    }
-                    onSave(
-                        AiPanel(
-                            id = initial?.id ?: "panel_${UUID.randomUUID()}",
-                            name = trimmedName,
-                            url = trimmedUrl,
-                            type = type,
-                            desktopMode = desktopMode
-                        )
-                    )
-                }
-            ) {
+            Button(onClick = { onSave(name.trim().ifEmpty { "새 프로젝트" }) }) {
                 Text("저장")
             }
         },
@@ -678,92 +621,56 @@ private fun AddEditPanelDialog(
 }
 
 @Composable
-private fun WorkspacePresetDialog(
-    presets: List<WorkspacePreset>,
-    panels: List<AiPanel>,
+private fun NewSessionDialog(
+    enabledConnections: List<AiConnection>,
+    defaultIndex: Int,
     onDismiss: () -> Unit,
-    onApply: (WorkspacePreset) -> Unit,
-    onSaveCurrent: (String) -> Unit,
-    onDelete: (WorkspacePreset) -> Unit
+    onOpenSettings: () -> Unit,
+    onCreate: (title: String, connectionId: String) -> Unit
 ) {
-    var newPresetName by remember { mutableStateOf("") }
+    var title by remember { mutableStateOf("세션 $defaultIndex") }
+    var selectedConnId by remember { mutableStateOf(enabledConnections.firstOrNull()?.id) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("워크스페이스 프리셋") },
+        title = { Text("새 하위 세션") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    OutlinedTextField(
-                        value = newPresetName,
-                        onValueChange = { newPresetName = it },
-                        label = { Text("현재 레이아웃 저장") },
-                        singleLine = true,
-                        modifier = Modifier.weight(1f)
+                if (enabledConnections.isEmpty()) {
+                    Text(
+                        "등록된 AI / CLI 연결이 없습니다. 먼저 설정에서 연결을 추가해주세요.",
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    OutlinedButton(
-                        onClick = {
-                            val trimmed = newPresetName.trim()
-                            if (trimmed.isNotEmpty()) {
-                                onSaveCurrent(trimmed)
-                                newPresetName = ""
-                            }
-                        }
-                    ) {
-                        Text("저장")
-                    }
-                }
-
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(220.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    items(presets, key = { it.id }) { preset ->
-                        val p1 = panels.find { it.id == preset.primaryPanelId }?.name ?: preset.primaryPanelId
-                        val p2 = preset.secondaryPanelId?.let { id ->
-                            panels.find { it.id == id }?.name ?: id
-                        }
+                } else {
+                    OutlinedTextField(
+                        value = title,
+                        onValueChange = { title = it },
+                        label = { Text("세션 이름") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Text("사용할 AI 선택 (등록된 연결만 표시)", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    enabledConnections.forEach { conn ->
+                        val selected = conn.id == selectedConnId
                         Surface(
                             shape = RoundedCornerShape(8.dp),
-                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)),
+                            color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
+                            border = BorderStroke(
+                                1.dp,
+                                if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)
+                            ),
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clickable { onApply(preset) }
+                                .clickable { selectedConnId = conn.id }
                         ) {
                             Row(
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                modifier = Modifier.padding(10.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(preset.name, fontWeight = FontWeight.Medium, fontSize = 14.sp)
-                                    val desc = if (preset.splitMode == SplitMode.SINGLE || p2 == null) {
-                                        p1
-                                    } else {
-                                        "$p1 + $p2"
-                                    }
-                                    Text(
-                                        desc,
-                                        fontSize = 12.sp,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                                Spacer(modifier = Modifier.width(8.dp))
-                                IconButton(
-                                    onClick = { onDelete(preset) },
-                                    modifier = Modifier.size(28.dp)
-                                ) {
-                                    Icon(
-                                        Icons.Default.Delete,
-                                        contentDescription = "프리셋 삭제",
-                                        modifier = Modifier.size(16.dp)
-                                    )
-                                }
+                                Text(conn.name, fontWeight = FontWeight.Medium, fontSize = 14.sp)
+                                Text(conn.kind.displayLabel(), fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
                             }
                         }
                     }
@@ -771,8 +678,26 @@ private fun WorkspacePresetDialog(
             }
         },
         confirmButton = {
+            if (enabledConnections.isEmpty()) {
+                Button(onClick = onOpenSettings) {
+                    Text("설정으로 이동")
+                }
+            } else {
+                Button(
+                    enabled = selectedConnId != null,
+                    onClick = {
+                        selectedConnId?.let { id ->
+                            onCreate(title.trim().ifEmpty { "세션 $defaultIndex" }, id)
+                        }
+                    }
+                ) {
+                    Text("생성")
+                }
+            }
+        },
+        dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("닫기")
+                Text("취소")
             }
         }
     )

@@ -1,0 +1,393 @@
+package com.mbta.app.ui
+
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.mbta.app.model.AiConnection
+import com.mbta.app.model.AppThemeMode
+import com.mbta.app.model.ConnectionKind
+import com.mbta.app.model.defaultEndpointFor
+import com.mbta.app.model.defaultModelFor
+import com.mbta.app.model.displayLabel
+import java.util.UUID
+
+private const val TERMUX_BRIDGE_CMD =
+    "python3 -c \"import http.server,json,subprocess;H=http.server.BaseHTTPRequestHandler;\nclass R(H):\n def do_POST(s):\n  d=json.loads(s.rfile.read(int(s.headers['Content-Length'])));p=subprocess.run(d['command'],shell=True,capture_output=True,text=True);s.send_response(200);s.end_headers();s.wfile.write(json.dumps({'output':p.stdout+p.stderr,'exitCode':p.returncode}).encode())\nhttp.server.HTTPServer(('127.0.0.1',7681),R).serve_forever()\""
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@Composable
+fun SettingsScreen(
+    themeMode: AppThemeMode,
+    connections: List<AiConnection>,
+    onThemeModeChanged: (AppThemeMode) -> Unit,
+    onSaveConnection: (AiConnection) -> Unit,
+    onDeleteConnection: (String) -> Unit,
+    onBack: () -> Unit
+) {
+    var editingConnection by remember { mutableStateOf<AiConnection?>(null) }
+    var addingKind by remember { mutableStateOf<ConnectionKind?>(null) }
+    var copiedBanner by remember { mutableStateOf(false) }
+    val clipboard = LocalClipboardManager.current
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("설정", fontWeight = FontWeight.Bold) },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "뒤로")
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.surface
+                )
+            )
+        }
+    ) { innerPadding ->
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            item {
+                Text("앱 테마", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                Spacer(modifier = Modifier.height(6.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(
+                        AppThemeMode.DARK to "다크",
+                        AppThemeMode.LIGHT to "라이트",
+                        AppThemeMode.SYSTEM to "시스템"
+                    ).forEach { (mode, label) ->
+                        FilterChip(
+                            selected = themeMode == mode,
+                            onClick = { onThemeModeChanged(mode) },
+                            label = { Text(label) }
+                        )
+                    }
+                }
+            }
+
+            item {
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+                Spacer(modifier = Modifier.height(8.dp))
+                Text("AI · CLI · Remote 연결 추가", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                Spacer(modifier = Modifier.height(6.dp))
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    ConnectionKind.entries.forEach { kind ->
+                        OutlinedButton(onClick = { addingKind = kind }) {
+                            Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.size(4.dp))
+                            Text(kind.displayLabel(), fontSize = 12.sp)
+                        }
+                    }
+                }
+            }
+
+            item {
+                Text(
+                    "등록된 연결 (${connections.size}개)",
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 14.sp
+                )
+            }
+
+            if (connections.isEmpty()) {
+                item {
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "등록된 연결이 없습니다. 위 버튼을 눌러 Claude, ChatGPT, Gemini, Termux CLI 또는 Remote Control을 추가하세요.",
+                            fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(14.dp)
+                        )
+                    }
+                }
+            } else {
+                items(connections, key = { it.id }) { conn ->
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Text(conn.name, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                                    Surface(
+                                        shape = RoundedCornerShape(4.dp),
+                                        color = MaterialTheme.colorScheme.primaryContainer
+                                    ) {
+                                        Text(
+                                            text = conn.kind.displayLabel(),
+                                            fontSize = 10.sp,
+                                            color = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                }
+                                val subtitle = if (conn.model.isNotBlank()) {
+                                    conn.model
+                                } else {
+                                    conn.endpointUrl.ifBlank { defaultEndpointFor(conn.kind) }
+                                }
+                                Text(
+                                    text = subtitle,
+                                    fontSize = 12.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Switch(
+                                checked = conn.enabled,
+                                onCheckedChange = { enabled ->
+                                    onSaveConnection(conn.copy(enabled = enabled))
+                                }
+                            )
+                            IconButton(onClick = { editingConnection = conn }) {
+                                Icon(Icons.Default.Edit, contentDescription = "편집", modifier = Modifier.size(18.dp))
+                            }
+                            IconButton(onClick = { onDeleteConnection(conn.id) }) {
+                                Icon(
+                                    Icons.Default.Delete,
+                                    contentDescription = "삭제",
+                                    tint = MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            item {
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+                Spacer(modifier = Modifier.height(6.dp))
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Termux 로컬 브릿지 실행 명령", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                            IconButton(
+                                onClick = {
+                                    clipboard.setText(AnnotatedString(TERMUX_BRIDGE_CMD))
+                                    copiedBanner = true
+                                },
+                                modifier = Modifier.size(28.dp)
+                            ) {
+                                Icon(Icons.Default.ContentCopy, contentDescription = "복사", modifier = Modifier.size(16.dp))
+                            }
+                        }
+                        Text(
+                            text = "Termux에서 아래 명령을 실행하면 MbtA 앱 테마 안에서 바로 CLI 명령을 실행할 수 있습니다.",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = TERMUX_BRIDGE_CMD,
+                            fontSize = 10.sp,
+                            fontFamily = FontFamily.Monospace,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 4
+                        )
+                        if (copiedBanner) {
+                            Text(
+                                text = "클립보드에 복사되었습니다.",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.padding(top = 4.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    val initialForDialog = editingConnection ?: addingKind?.let { kind ->
+        AiConnection(
+            id = "conn_${UUID.randomUUID()}",
+            name = kind.displayLabel(),
+            kind = kind,
+            model = defaultModelFor(kind),
+            endpointUrl = defaultEndpointFor(kind),
+            enabled = true
+        )
+    }
+
+    if (initialForDialog != null) {
+        ConnectionEditorDialog(
+            initial = initialForDialog,
+            isNew = editingConnection == null,
+            onDismiss = {
+                editingConnection = null
+                addingKind = null
+            },
+            onSave = { saved ->
+                onSaveConnection(saved)
+                editingConnection = null
+                addingKind = null
+            }
+        )
+    }
+}
+
+@Composable
+private fun ConnectionEditorDialog(
+    initial: AiConnection,
+    isNew: Boolean,
+    onDismiss: () -> Unit,
+    onSave: (AiConnection) -> Unit
+) {
+    var name by remember { mutableStateOf(initial.name) }
+    var apiKey by remember { mutableStateOf(initial.apiKey) }
+    var model by remember { mutableStateOf(initial.model) }
+    var endpointUrl by remember { mutableStateOf(initial.endpointUrl) }
+    var showKey by remember { mutableStateOf(false) }
+
+    val isApiKind = initial.kind == ConnectionKind.CLAUDE_API ||
+        initial.kind == ConnectionKind.OPENAI_API ||
+        initial.kind == ConnectionKind.GEMINI_API
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (isNew) "${initial.kind.displayLabel()} 추가" else "${initial.name} 편집") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("표시 이름") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = apiKey,
+                    onValueChange = { apiKey = it },
+                    label = { Text(if (isApiKind) "API Key" else "인증 토큰 (선택)") },
+                    singleLine = true,
+                    visualTransformation = if (showKey) VisualTransformation.None else PasswordVisualTransformation(),
+                    trailingIcon = {
+                        IconButton(onClick = { showKey = !showKey }) {
+                            Icon(
+                                imageVector = if (showKey) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                contentDescription = "키 보기"
+                            )
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                if (isApiKind) {
+                    OutlinedTextField(
+                        value = model,
+                        onValueChange = { model = it },
+                        label = { Text("모델명") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+                OutlinedTextField(
+                    value = endpointUrl,
+                    onValueChange = { endpointUrl = it },
+                    label = { Text(if (isApiKind) "엔드포인트 URL (기본값 사용 가능)" else "서버 URL") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    onSave(
+                        initial.copy(
+                            name = name.trim().ifEmpty { initial.kind.displayLabel() },
+                            apiKey = apiKey.trim(),
+                            model = model.trim(),
+                            endpointUrl = endpointUrl.trim().ifEmpty { defaultEndpointFor(initial.kind) }
+                        )
+                    )
+                }
+            ) {
+                Text("저장")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("취소")
+            }
+        }
+    )
+}

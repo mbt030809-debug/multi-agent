@@ -3,6 +3,7 @@ package com.mbta.app.webview
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
+import android.graphics.Color
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
@@ -15,31 +16,35 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import com.mbta.app.model.AiPanel
-import com.mbta.app.model.PanelType
 
 class WebViewManager(
     private val context: Context,
     private val onFileChooserRequested: (Intent, ValueCallback<Array<Uri>>) -> Unit,
-    private val onTokenDelta: (panelId: String, inputDelta: Long, outputDelta: Long) -> Unit = { _, _, _ -> }
+    private val onTokenDelta: (connectionId: String, inputDelta: Long, outputDelta: Long) -> Unit = { _, _, _ -> }
 ) {
     private val pool = mutableMapOf<String, WebView>()
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    private inner class TokenJsBridge(private val panelId: String) {
+    private inner class TokenJsBridge(private val connectionId: String) {
         @JavascriptInterface
         fun reportDelta(inputTokens: Long, outputTokens: Long) {
             if (inputTokens > 0 || outputTokens > 0) {
                 mainHandler.post {
-                    onTokenDelta(panelId, inputTokens.coerceAtLeast(0L), outputTokens.coerceAtLeast(0L))
+                    onTokenDelta(connectionId, inputTokens.coerceAtLeast(0L), outputTokens.coerceAtLeast(0L))
                 }
             }
         }
     }
 
     @SuppressLint("SetJavaScriptEnabled")
-    fun getOrCreateWebView(panel: AiPanel): WebView {
-        pool[panel.id]?.let { existing ->
+    fun getOrCreateWebView(
+        sessionKey: String,
+        connectionId: String,
+        url: String,
+        desktopMode: Boolean,
+        trackWebTokens: Boolean
+    ): WebView {
+        pool[sessionKey]?.let { existing ->
             return existing
         }
 
@@ -48,6 +53,7 @@ class WebViewManager(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
+            setBackgroundColor(Color.parseColor("#11111B"))
 
             settings.apply {
                 javaScriptEnabled = true
@@ -60,21 +66,22 @@ class WebViewManager(
                 builtInZoomControls = true
                 displayZoomControls = false
                 mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
-                userAgentString = if (panel.desktopMode) DESKTOP_UA else MOBILE_UA
+                userAgentString = if (desktopMode) DESKTOP_UA else MOBILE_UA
             }
 
             val cookieManager = CookieManager.getInstance()
             cookieManager.setAcceptCookie(true)
             cookieManager.setAcceptThirdPartyCookies(this, true)
 
-            if (panel.type == PanelType.AI_WEB) {
-                addJavascriptInterface(TokenJsBridge(panel.id), "MbtATokenBridge")
+            if (trackWebTokens) {
+                addJavascriptInterface(TokenJsBridge(connectionId), "MbtATokenBridge")
             }
 
             webViewClient = object : WebViewClient() {
-                override fun onPageFinished(view: WebView?, url: String?) {
-                    super.onPageFinished(view, url)
-                    if (panel.type == PanelType.AI_WEB) {
+                override fun onPageFinished(view: WebView?, loadedUrl: String?) {
+                    super.onPageFinished(view, loadedUrl)
+                    view?.evaluateJavascript(DARK_THEME_CSS_JS, null)
+                    if (trackWebTokens) {
                         view?.evaluateJavascript(TOKEN_ESTIMATOR_JS, null)
                     }
                 }
@@ -116,38 +123,27 @@ class WebViewManager(
                 }
             }
 
-            loadUrl(panel.url)
+            loadUrl(url)
         }
 
-        pool[panel.id] = webView
+        pool[sessionKey] = webView
         return webView
     }
 
-    fun reload(id: String) {
-        pool[id]?.reload()
+    fun reload(sessionKey: String) {
+        pool[sessionKey]?.reload()
     }
 
-    fun canGoBack(id: String): Boolean = pool[id]?.canGoBack() == true
+    fun canGoBack(sessionKey: String): Boolean = pool[sessionKey]?.canGoBack() == true
 
-    fun goBack(id: String) {
-        pool[id]?.let {
+    fun goBack(sessionKey: String) {
+        pool[sessionKey]?.let {
             if (it.canGoBack()) it.goBack()
         }
     }
 
-    fun loadUrl(id: String, url: String) {
-        pool[id]?.loadUrl(url)
-    }
-
-    fun setDesktopMode(id: String, desktop: Boolean) {
-        pool[id]?.let { wv ->
-            wv.settings.userAgentString = if (desktop) DESKTOP_UA else MOBILE_UA
-            wv.reload()
-        }
-    }
-
-    fun removeWebView(id: String) {
-        pool.remove(id)?.let { wv ->
+    fun removeWebView(sessionKey: String) {
+        pool.remove(sessionKey)?.let { wv ->
             (wv.parent as? ViewGroup)?.removeView(wv)
             wv.destroy()
         }
@@ -166,6 +162,13 @@ class WebViewManager(
             "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
         private const val DESKTOP_UA =
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+        private const val DARK_THEME_CSS_JS = """
+            (function() {
+                try {
+                    document.documentElement.style.colorScheme = 'dark';
+                } catch(e) {}
+            })();
+        """
         private const val TOKEN_ESTIMATOR_JS = """
             (function() {
                 if (window.__mbtaTokenInit) return;

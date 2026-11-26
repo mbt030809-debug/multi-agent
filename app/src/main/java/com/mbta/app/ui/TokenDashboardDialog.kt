@@ -29,14 +29,15 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.mbta.app.model.AgentTokenUsage
-import com.mbta.app.model.AiPanel
+import com.mbta.app.model.AiConnection
 import com.mbta.app.model.TokenSource
-import com.mbta.app.model.defaultContextLimit
+import com.mbta.app.model.defaultContextLimitForKind
+import com.mbta.app.model.displayLabel
 import com.mbta.app.model.formatTokens
 
 @Composable
 fun TokenDashboardDialog(
-    panels: List<AiPanel>,
+    connections: List<AiConnection>,
     tokenUsageMap: Map<String, AgentTokenUsage>,
     onResetAgent: (String) -> Unit,
     onResetAll: () -> Unit,
@@ -78,94 +79,92 @@ fun TokenDashboardDialog(
                     }
                 }
 
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(250.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    items(panels, key = { it.id }) { panel ->
-                        val usage = tokenUsageMap[panel.id] ?: AgentTokenUsage(
-                            panelId = panel.id,
-                            contextLimit = defaultContextLimit(panel.id)
-                        )
-                        val limit = usage.contextLimit ?: defaultContextLimit(panel.id)
-                        val sourceLabel = when (usage.source) {
-                            TokenSource.ESTIMATED_WEB -> "Web 추정"
-                            TokenSource.API_EXACT -> "API 정확"
-                            TokenSource.CLI_BRIDGE -> "CLI"
-                        }
+                if (connections.isEmpty()) {
+                    Text(
+                        text = "설정에서 AI 또는 CLI 연결을 등록하면 에이전트별 토큰 사용량이 표시됩니다.",
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(250.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(connections, key = { it.id }) { conn ->
+                            val usage = tokenUsageMap[conn.id] ?: AgentTokenUsage(
+                                panelId = conn.id,
+                                contextLimit = defaultContextLimitForKind(conn.kind),
+                                source = TokenSource.API_EXACT
+                            )
+                            val limit = usage.contextLimit ?: defaultContextLimitForKind(conn.kind)
 
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(modifier = Modifier.padding(10.dp)) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text(
-                                        text = panel.name,
-                                        fontWeight = FontWeight.SemiBold,
-                                        fontSize = 14.sp,
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                    Surface(
-                                        shape = RoundedCornerShape(4.dp),
-                                        color = MaterialTheme.colorScheme.surfaceVariant
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(modifier = Modifier.padding(10.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically
                                     ) {
                                         Text(
-                                            text = sourceLabel,
-                                            fontSize = 10.sp,
-                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                            text = conn.name,
+                                            fontWeight = FontWeight.SemiBold,
+                                            fontSize = 14.sp,
+                                            modifier = Modifier.weight(1f)
                                         )
+                                        Surface(
+                                            shape = RoundedCornerShape(4.dp),
+                                            color = MaterialTheme.colorScheme.surfaceVariant
+                                        ) {
+                                            Text(
+                                                text = conn.kind.displayLabel(),
+                                                fontSize = 10.sp,
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                            )
+                                        }
+                                        IconButton(
+                                            onClick = { onResetAgent(conn.id) },
+                                            modifier = Modifier.size(28.dp)
+                                        ) {
+                                            Icon(
+                                                Icons.Default.RestartAlt,
+                                                contentDescription = "초기화",
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                        }
                                     }
-                                    IconButton(
-                                        onClick = { onResetAgent(panel.id) },
-                                        modifier = Modifier.size(28.dp)
-                                    ) {
-                                        Icon(
-                                            Icons.Default.RestartAlt,
-                                            contentDescription = "초기화",
-                                            modifier = Modifier.size(16.dp)
-                                        )
-                                    }
-                                }
 
-                                Text(
-                                    text = "입력 ${formatTokens(usage.inputTokens)} · 출력 ${formatTokens(usage.outputTokens)} · 합계 ${formatTokens(usage.totalTokens)}",
-                                    fontSize = 12.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-
-                                if (limit != null && limit > 0L) {
-                                    Spacer(modifier = Modifier.height(6.dp))
-                                    val progress = (usage.totalTokens.toFloat() / limit.toFloat()).coerceIn(0f, 1f)
-                                    LinearProgressIndicator(
-                                        progress = { progress },
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .height(5.dp)
-                                    )
                                     Text(
-                                        text = "컨텍스트 한도 ${formatTokens(limit)} 중 ${(progress * 100).toInt()}%",
-                                        fontSize = 10.sp,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier.padding(top = 2.dp)
+                                        text = "입력 ${formatTokens(usage.inputTokens)} · 출력 ${formatTokens(usage.outputTokens)} · 합계 ${formatTokens(usage.totalTokens)}",
+                                        fontSize = 12.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
+
+                                    if (limit != null && limit > 0L) {
+                                        Spacer(modifier = Modifier.height(6.dp))
+                                        val progress = (usage.totalTokens.toFloat() / limit.toFloat()).coerceIn(0f, 1f)
+                                        LinearProgressIndicator(
+                                            progress = { progress },
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(5.dp)
+                                        )
+                                        Text(
+                                            text = "컨텍스트 한도 ${formatTokens(limit)} 중 ${(progress * 100).toInt()}%",
+                                            fontSize = 10.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.padding(top = 2.dp)
+                                        )
+                                    }
                                 }
                             }
                         }
                     }
                 }
-
-                Text(
-                    text = "※ WebView 탭은 화면 텍스트 기반 추정치이며, API/CLI 연동 시 정확한 토큰 수로 표시됩니다.",
-                    fontSize = 11.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
             }
         },
         confirmButton = {
