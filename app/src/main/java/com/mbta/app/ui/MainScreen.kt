@@ -1562,7 +1562,7 @@ fun MainScreen(
                                     trimmedTitle == "기본 세션" ||
                                     (conn != null && trimmedTitle == conn.name.trim())
                                 val baseLabel = if (isDefaultTitle) "${idx + 1}" else trimmedTitle
-                                val tabLabel = if (sess.isOrchestration) "⚡$baseLabel" else baseLabel
+                                val tabLabel = baseLabel
                                 Text(
                                     text = tabLabel,
                                     fontSize = 12.sp,

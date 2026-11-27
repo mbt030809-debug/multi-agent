@@ -682,7 +682,7 @@ fun SessionPane(
                 else -> "보통"
             }
             Surface(
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                color = androidx.compose.ui.graphics.Color.Transparent,
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Row(
@@ -2105,7 +2105,7 @@ private fun ChatBubble(
                 Surface(
                     shape = RoundedCornerShape(12.dp),
                     color = bubbleColor,
-                    modifier = Modifier.widthIn(max = 320.dp)
+                    modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp)) {
                         Row(
