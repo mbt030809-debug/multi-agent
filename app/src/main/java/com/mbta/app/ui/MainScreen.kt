@@ -666,12 +666,15 @@ fun MainScreen(
 
         // Layer 1: Opaque MbtA Native UI
         Surface(
-            modifier = Modifier
-                .fillMaxSize()
-                .navigationBarsPadding()
-                .imePadding(),
+            modifier = Modifier.fillMaxSize(),
             color = MaterialTheme.colorScheme.background
         ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .navigationBarsPadding()
+                    .imePadding()
+            ) {
             if (showSettings) {
                 SettingsScreen(
                     themeMode = themeMode,
@@ -1200,6 +1203,7 @@ fun MainScreen(
             }
         }
             }
+        }
         }
         }
 
