@@ -267,7 +267,12 @@ fun SessionPane(
     var showCustomModelDialog by remember { mutableStateOf(false) }
     var showRenameDialog by remember { mutableStateOf(false) }
     var dismissedQuestionMsgId by remember(session.id) { mutableStateOf("") }
-    val listState = rememberLazyListState()
+    val listState = remember(session.id) {
+        androidx.compose.foundation.lazy.LazyListState(
+            firstVisibleItemIndex = (session.messages.size - 1).coerceAtLeast(0),
+            firstVisibleItemScrollOffset = 100000
+        )
+    }
     val context = LocalContext.current
     val uiPrefs = remember(context) { context.getSharedPreferences("mbta_ui_prefs", android.content.Context.MODE_PRIVATE) }
     var zoomScale by remember { mutableFloatStateOf(uiPrefs.getFloat("chat_zoom_scale", 1f).coerceIn(0.7f, 1.8f)) }
@@ -293,9 +298,9 @@ fun SessionPane(
         }
     }
 
-    LaunchedEffect(session.messages.size) {
+    LaunchedEffect(session.id, session.messages.size) {
         if (session.messages.isNotEmpty()) {
-            listState.animateScrollToItem(session.messages.lastIndex)
+            listState.scrollToItem(session.messages.lastIndex, 100000)
         }
     }
 
