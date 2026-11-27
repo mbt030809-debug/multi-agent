@@ -542,6 +542,13 @@ fun MainScreen(
         }
     }
 
+    fun renameSession(session: AgentSession, newTitle: String) {
+        val trimmed = newTitle.trim()
+        if (trimmed.isEmpty()) return
+        sessions = sessions.map { if (it.id == session.id) it.copy(title = trimmed) else it }
+        store.saveSessions(sessions)
+    }
+
     fun retryLastInSession(session: AgentSession, conn: AiConnection) {
         val lastUserIdx = session.messages.indexOfLast { it.role == MessageRole.USER }
         if (lastUserIdx == -1) return
@@ -1098,6 +1105,7 @@ fun MainScreen(
                         onSendQueuedNow = { idx ->
                             if (primaryConn != null) sendQueuedNow(primarySession, primaryConn, idx)
                         },
+                        onRenameSession = { newTitle -> renameSession(primarySession, newTitle) },
                         modifier = Modifier.fillMaxSize()
                     )
                 }
@@ -1144,6 +1152,7 @@ fun MainScreen(
                             onSendQueuedNow = { idx ->
                                 if (primaryConn != null) sendQueuedNow(primarySession, primaryConn, idx)
                             },
+                            onRenameSession = { newTitle -> renameSession(primarySession, newTitle) },
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .weight(1f)
@@ -1193,6 +1202,7 @@ fun MainScreen(
                             onSendQueuedNow = { idx ->
                                 if (primaryConn != null) sendQueuedNow(primarySession, primaryConn, idx)
                             },
+                            onRenameSession = { newTitle -> renameSession(primarySession, newTitle) },
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .weight(1f)
@@ -1242,6 +1252,7 @@ fun MainScreen(
                             onSendQueuedNow = { idx ->
                                 if (primaryConn != null) sendQueuedNow(primarySession, primaryConn, idx)
                             },
+                            onRenameSession = { newTitle -> renameSession(primarySession, newTitle) },
                             modifier = Modifier
                                 .fillMaxSize()
                                 .weight(1f)
@@ -1291,6 +1302,7 @@ fun MainScreen(
                             onSendQueuedNow = { idx ->
                                 if (primaryConn != null) sendQueuedNow(primarySession, primaryConn, idx)
                             },
+                            onRenameSession = { newTitle -> renameSession(primarySession, newTitle) },
                             modifier = Modifier
                                 .fillMaxSize()
                                 .weight(1f)

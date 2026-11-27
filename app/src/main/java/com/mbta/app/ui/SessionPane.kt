@@ -255,6 +255,7 @@ fun SessionPane(
     onCancelSending: () -> Unit = {},
     onRemoveQueued: (Int) -> Unit = {},
     onSendQueuedNow: (Int) -> Unit = {},
+    onRenameSession: (String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var inputText by remember(session.id) { mutableStateOf("") }
@@ -262,6 +263,7 @@ fun SessionPane(
     var showHandoffDialog by remember { mutableStateOf(false) }
     var showModelMenu by remember { mutableStateOf(false) }
     var showCustomModelDialog by remember { mutableStateOf(false) }
+    var showRenameDialog by remember { mutableStateOf(false) }
     var dismissedQuestionMsgId by remember(session.id) { mutableStateOf("") }
     val listState = rememberLazyListState()
     val context = LocalContext.current
@@ -324,16 +326,23 @@ fun SessionPane(
                 .padding(horizontal = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            ProviderMarkIcon(connection = connection, size = 14.dp)
-            Spacer(modifier = Modifier.size(4.dp))
-            Text(
-                text = session.title.ifBlank { connection?.name ?: "연결 없음" },
-                fontSize = 11.sp,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.widthIn(max = 120.dp)
-            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .clickable { showRenameDialog = true }
+                    .padding(end = 2.dp)
+            ) {
+                ProviderMarkIcon(connection = connection, size = 14.dp)
+                Spacer(modifier = Modifier.size(4.dp))
+                Text(
+                    text = session.title.ifBlank { connection?.name ?: "연결 없음" },
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.widthIn(max = 120.dp)
+                )
+            }
             if (connection != null) {
                 var dynamicModels by remember(connection.id, connection.endpointUrl) { mutableStateOf<List<String>>(emptyList()) }
                 LaunchedEffect(showModelMenu, connection.id) {
@@ -939,6 +948,35 @@ fun SessionPane(
                 }
             }
         }
+    }
+
+    if (showRenameDialog) {
+        var newTitle by remember(session.id, session.title) { mutableStateOf(session.title) }
+        AlertDialog(
+            onDismissRequest = { showRenameDialog = false },
+            title = { Text("세션 이름 변경") },
+            text = {
+                OutlinedTextField(
+                    value = newTitle,
+                    onValueChange = { newTitle = it },
+                    label = { Text("세션 이름") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                Button(
+                    enabled = newTitle.isNotBlank(),
+                    onClick = {
+                        onRenameSession(newTitle.trim())
+                        showRenameDialog = false
+                    }
+                ) { Text("변경") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRenameDialog = false }) { Text("취소") }
+            }
+        )
     }
 
     if (showCustomModelDialog) {
