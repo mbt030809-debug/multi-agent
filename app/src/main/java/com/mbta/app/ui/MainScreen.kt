@@ -243,21 +243,54 @@ fun MainScreen(
             lower.contains("/r/")
     }
 
+    fun applyQuotaUpdate(connId: String, pct: Int, lbl: String) {
+        val cur = tokenUsageMap[connId] ?: AgentTokenUsage(panelId = connId)
+        tokenUsageMap[connId] = cur.copy(
+            quotaPercent = pct,
+            quotaLabel = lbl,
+            updatedAt = System.currentTimeMillis()
+        )
+        store.saveTokenUsage(tokenUsageMap)
+    }
+
+    fun refreshQuotaForConnection(conn: AiConnection, force: Boolean = false) {
+        when (conn.kind) {
+            ConnectionKind.REMOTE_CONTROL -> {
+                val bridgeKind = if (conn.endpointUrl.lowercase().contains("/agy")) "agy" else "claude"
+                scope.launch {
+                    val (pct, lbl) = GitBridgeClient.fetchQuota(bridgeKind, force)
+                    if (pct != null) applyQuotaUpdate(conn.id, pct, lbl)
+                }
+            }
+            ConnectionKind.CLAUDE_WEB -> {
+                headlessWebBridge.fetchClaudeWebUsagePercent(conn.id) { pct, lbl ->
+                    if (pct != null) applyQuotaUpdate(conn.id, pct, lbl)
+                }
+            }
+            ConnectionKind.CHATGPT_WEB -> {
+                headlessWebBridge.fetchChatGptWebUsagePercent(conn.id) { pct, lbl ->
+                    if (pct != null) applyQuotaUpdate(conn.id, pct, lbl)
+                }
+            }
+            else -> Unit
+        }
+    }
+
+    fun refreshAllQuotas(force: Boolean = false) {
+        enabledConnections.forEach { conn -> refreshQuotaForConnection(conn, force) }
+    }
+
+    LaunchedEffect(enabledConnections.size) {
+        refreshAllQuotas(force = false)
+    }
+
     LaunchedEffect(activeSessionId) {
         val sess = sessions.find { it.id == activeSessionId } ?: return@LaunchedEffect
         val conn = connections.find { it.id == sess.connectionId } ?: return@LaunchedEffect
         if (conn.usesHiddenWebBridge() && sess.webConversationUrl.isNotBlank()) {
             headlessWebBridge.navigateIfNeeded(conn.id, sess.webConversationUrl)
         }
-        if (conn.kind == ConnectionKind.CLAUDE_WEB) {
-            headlessWebBridge.fetchClaudeWebUsagePercent(conn.id) { pct, lbl ->
-                if (pct != null) {
-                    val cur = tokenUsageMap[conn.id] ?: AgentTokenUsage(panelId = conn.id)
-                    tokenUsageMap[conn.id] = cur.copy(quotaPercent = pct, quotaLabel = lbl, updatedAt = System.currentTimeMillis())
-                    store.saveTokenUsage(tokenUsageMap)
-                }
-            }
-        }
+        refreshQuotaForConnection(conn, force = false)
     }
 
     fun parseSubagentRequests(text: String): List<Pair<String, String>> {
@@ -2035,6 +2068,7 @@ fun MainScreen(
             tokenUsageMap = tokenUsageMap,
             onResetAgent = onResetAgentTokens,
             onResetAll = onResetAllTokens,
+            onRefreshQuotas = { refreshAllQuotas(force = true) },
             onDismiss = { showTokenDashboard = false }
         )
     }

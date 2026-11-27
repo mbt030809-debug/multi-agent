@@ -499,7 +499,7 @@ fun SessionPane(
             Spacer(modifier = Modifier.weight(1f))
 
             if (connection != null) {
-                val ctxLimit = tokenUsage?.customLimit ?: tokenUsage?.contextLimit ?: defaultContextLimitFor(connection)
+                val customLim = tokenUsage?.customLimit
                 val lastTracked = session.messages.lastOrNull { it.inputTokens > 0L || it.outputTokens > 0L }
                 val sessionCtxTokens = if (lastTracked != null) {
                     lastTracked.inputTokens + lastTracked.outputTokens
@@ -508,13 +508,13 @@ fun SessionPane(
                 }
                 val totalTok = tokenUsage?.totalTokens ?: sessionCtxTokens
                 val remPct = tokenUsage?.quotaPercent
-                val remCtxPct = if (ctxLimit != null && ctxLimit > 0L) {
-                    (((ctxLimit - sessionCtxTokens).coerceAtLeast(0L).toDouble() / ctxLimit.toDouble()) * 100.0).coerceIn(0.0, 100.0)
+                val customRemPct = if (customLim != null && customLim > 0L) {
+                    (((customLim - totalTok).coerceAtLeast(0L).toDouble() / customLim.toDouble()) * 100.0).coerceIn(0.0, 100.0)
                 } else null
-                val effectiveRemPct = remPct?.toDouble() ?: remCtxPct
+                val effectiveRemPct = remPct?.toDouble() ?: customRemPct
                 val badgeText = when {
-                    remPct != null -> "남음 $remPct%"
-                    remCtxPct != null -> "남음 ${remCtxPct.roundToInt()}%"
+                    remPct != null -> "5h $remPct%"
+                    customRemPct != null -> "남음 ${customRemPct.roundToInt()}%"
                     else -> formatTokens(totalTok)
                 }
                 val badgeColor = when {

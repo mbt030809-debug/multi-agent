@@ -23,6 +23,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -42,6 +43,7 @@ fun TokenDashboardDialog(
     tokenUsageMap: Map<String, AgentTokenUsage>,
     onResetAgent: (String) -> Unit,
     onResetAll: () -> Unit,
+    onRefreshQuotas: () -> Unit = {},
     onDismiss: () -> Unit
 ) {
     val totalInput = tokenUsageMap.values.sumOf { it.inputTokens }
@@ -50,7 +52,7 @@ fun TokenDashboardDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("에이전트별 토큰 사용량") },
+        title = { Text("에이전트별 잔여 한도 · 사용량", fontSize = 16.sp, fontWeight = FontWeight.Bold) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Surface(
@@ -96,23 +98,31 @@ fun TokenDashboardDialog(
                         items(connections, key = { it.id }) { conn ->
                             val usage = tokenUsageMap[conn.id] ?: AgentTokenUsage(
                                 panelId = conn.id,
-                                contextLimit = defaultContextLimitFor(conn),
                                 source = TokenSource.API_EXACT
                             )
-                            val limit = usage.customLimit ?: usage.contextLimit ?: defaultContextLimitFor(conn)
+                            val customLim = usage.customLimit
                             val remPctFloat: Float? = when {
                                 usage.quotaPercent != null -> usage.quotaPercent.toFloat().coerceIn(0f, 100f)
-                                limit != null && limit > 0L -> (((limit - usage.totalTokens).coerceAtLeast(0L).toDouble() / limit.toDouble()) * 100.0).toFloat().coerceIn(0f, 100f)
+                                customLim != null && customLim > 0L -> (((customLim - usage.totalTokens).coerceAtLeast(0L).toDouble() / customLim.toDouble()) * 100.0).toFloat().coerceIn(0f, 100f)
                                 else -> null
                             }
-                            val remLabel = remPctFloat?.let { p ->
-                                if (p < 10f && p > 0f) String.format(java.util.Locale.US, "남음 %.1f%%", p)
-                                else "남음 ${p.roundToInt()}%"
+                            val weeklyPct: Int? = remember(usage.quotaLabel) {
+                                Regex("주간\\s*(\\d{1,3})%").find(usage.quotaLabel)?.groupValues?.getOrNull(1)?.toIntOrNull()?.coerceIn(0, 100)
+                            }
+                            val remLabel = when {
+                                usage.quotaPercent != null -> "5h ${usage.quotaPercent}%"
+                                remPctFloat != null -> "남음 ${remPctFloat.roundToInt()}%"
+                                else -> null
                             }
                             val remColor = when {
                                 remPctFloat != null && remPctFloat <= 15f -> MaterialTheme.colorScheme.error
                                 remPctFloat != null && remPctFloat <= 35f -> androidx.compose.ui.graphics.Color(0xFFFF9800)
                                 else -> MaterialTheme.colorScheme.primary
+                            }
+                            val weeklyColor = when {
+                                weeklyPct != null && weeklyPct <= 15 -> MaterialTheme.colorScheme.error
+                                weeklyPct != null && weeklyPct <= 35 -> androidx.compose.ui.graphics.Color(0xFFFF9800)
+                                else -> MaterialTheme.colorScheme.secondary
                             }
 
                             Surface(
@@ -176,23 +186,51 @@ fun TokenDashboardDialog(
 
                                     if (remPctFloat != null) {
                                         Spacer(modifier = Modifier.height(6.dp))
+                                        Text(
+                                            text = if (usage.quotaPercent != null) "5시간 한도 · 남음 ${usage.quotaPercent}%" else "사용자 한도 · ${remLabel ?: ""}",
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Medium,
+                                            color = remColor
+                                        )
                                         LinearProgressIndicator(
                                             progress = { (remPctFloat / 100f).coerceIn(0f, 1f) },
                                             color = remColor,
                                             modifier = Modifier
                                                 .fillMaxWidth()
+                                                .padding(top = 2.dp)
                                                 .height(5.dp)
                                         )
-                                        val subLabel = if (usage.quotaPercent != null) {
-                                            "${usage.quotaLabel.ifBlank { "계정 쿼터" }} · $remLabel"
-                                        } else {
-                                            "한도 ${formatTokens(limit ?: 0L)} 기준 · $remLabel"
+                                        if (weeklyPct != null) {
+                                            Spacer(modifier = Modifier.height(5.dp))
+                                            Text(
+                                                text = "일주일 한도 · 남음 ${weeklyPct}%",
+                                                fontSize = 10.sp,
+                                                fontWeight = FontWeight.Medium,
+                                                color = weeklyColor
+                                            )
+                                            LinearProgressIndicator(
+                                                progress = { (weeklyPct / 100f).coerceIn(0f, 1f) },
+                                                color = weeklyColor,
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(top = 2.dp)
+                                                    .height(5.dp)
+                                            )
                                         }
+                                        if (usage.quotaLabel.isNotBlank()) {
+                                            Text(
+                                                text = usage.quotaLabel,
+                                                fontSize = 9.5.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                modifier = Modifier.padding(top = 3.dp)
+                                            )
+                                        }
+                                    } else {
                                         Text(
-                                            text = subLabel,
-                                            fontSize = 10.sp,
+                                            text = "실제 잔여량 미제공 (누적 사용량만 표시)",
+                                            fontSize = 9.5.sp,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            modifier = Modifier.padding(top = 2.dp)
+                                            modifier = Modifier.padding(top = 3.dp)
                                         )
                                     }
                                 }
@@ -203,8 +241,13 @@ fun TokenDashboardDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = onDismiss) {
-                Text("닫기")
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                TextButton(onClick = onRefreshQuotas) {
+                    Text("새로고침")
+                }
+                TextButton(onClick = onDismiss) {
+                    Text("닫기")
+                }
             }
         },
         dismissButton = {

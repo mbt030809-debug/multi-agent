@@ -21,6 +21,102 @@ import threading
 
 SESSION_FILE = os.path.expanduser("~/.cache/mbta-bridge-sessions.json")
 SESSION_LOCK = threading.Lock()
+QUOTA_CACHE = {}
+QUOTA_LOCK = threading.Lock()
+
+
+def fetch_agy_quota():
+    try:
+        proc = subprocess.run(
+            ["agy", "-p", "/usage", "--output-format", "text"],
+            capture_output=True, text=True, timeout=25
+        )
+        out = (proc.stdout or "") + "\n" + (proc.stderr or "")
+        g5 = g7 = c5 = c7 = None
+        for line in out.splitlines():
+            parts = [p.strip() for p in line.split("\t")]
+            if len(parts) < 3:
+                continue
+            group = parts[0].lower()
+            metric = parts[1].lower()
+            m = re.search(r"(\d{1,3})\s*%", parts[2])
+            if not m:
+                continue
+            val = max(0, min(100, int(m.group(1))))
+            if "gemini" in group:
+                if "five hour" in metric or "5" in metric:
+                    g5 = val
+                elif "weekly" in metric or "week" in metric:
+                    g7 = val
+            elif "claude" in group or "gpt" in group:
+                if "five hour" in metric or "5" in metric:
+                    c5 = val
+                elif "weekly" in metric or "week" in metric:
+                    c7 = val
+        primary = g5 if g5 is not None else (g7 if g7 is not None else c5)
+        if primary is None:
+            return {"ok": False, "quotaPercent": None, "quotaLabel": ""}
+        lbl_parts = []
+        if g5 is not None:
+            lbl_parts.append(f"5시간 {g5}%")
+        if g7 is not None:
+            lbl_parts.append(f"주간 {g7}%")
+        if c5 is not None and c7 is not None:
+            lbl_parts.append(f"Claude/GPT 5시간 {c5}% · 주간 {c7}%")
+        return {"ok": True, "quotaPercent": primary, "quotaLabel": " · ".join(lbl_parts)}
+    except Exception as e:
+        return {"ok": False, "quotaPercent": None, "quotaLabel": "", "error": str(e)}
+
+
+def fetch_claude_quota():
+    try:
+        import urllib.request
+        cred_path = os.path.expanduser("~/.claude/.credentials.json")
+        if not os.path.exists(cred_path):
+            return {"ok": False, "quotaPercent": None, "quotaLabel": ""}
+        with open(cred_path, "r", encoding="utf-8") as f:
+            creds = json.load(f)
+        tok = (creds.get("claudeAiOauth") or {}).get("accessToken") or creds.get("accessToken")
+        if not tok:
+            return {"ok": False, "quotaPercent": None, "quotaLabel": ""}
+        req = urllib.request.Request(
+            "https://api.anthropic.com/api/oauth/usage",
+            headers={
+                "Authorization": f"Bearer {tok}",
+                "anthropic-beta": "oauth-2025-04-20",
+                "Content-Type": "application/json",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        fh = data.get("five_hour") or {}
+        sd = data.get("seven_day") or {}
+        h5 = max(0, min(100, round(100.0 - float(fh["utilization"])))) if isinstance(fh.get("utilization"), (int, float)) else None
+        d7 = max(0, min(100, round(100.0 - float(sd["utilization"])))) if isinstance(sd.get("utilization"), (int, float)) else None
+        primary = h5 if h5 is not None else d7
+        if primary is None:
+            return {"ok": False, "quotaPercent": None, "quotaLabel": ""}
+        parts = []
+        if h5 is not None:
+            parts.append(f"5시간 {h5}%")
+        if d7 is not None:
+            parts.append(f"주간 {d7}%")
+        return {"ok": True, "quotaPercent": primary, "quotaLabel": " · ".join(parts)}
+    except Exception as e:
+        return {"ok": False, "quotaPercent": None, "quotaLabel": "", "error": str(e)}
+
+
+def fetch_real_quota(kind, force=False):
+    now = time.time()
+    with QUOTA_LOCK:
+        cached = QUOTA_CACHE.get(kind)
+        if not force and cached and (now - cached[0] < 120):
+            return cached[1]
+    res = fetch_claude_quota() if kind == "claude" else fetch_agy_quota()
+    if res.get("ok"):
+        with QUOTA_LOCK:
+            QUOTA_CACHE[kind] = (time.time(), res)
+    return res
 
 
 def load_sessions():
@@ -573,6 +669,13 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                 models = fetch_claude_models() if kind == "claude" else fetch_agy_models()
                 MODELS_CACHE[kind] = (now, models)
             self._send_json(200, {"models": models})
+        elif self.path.startswith("/quota"):
+            from urllib.parse import urlparse, parse_qs
+            qs = parse_qs(urlparse(self.path).query)
+            kind = (qs.get("kind") or ["agy"])[0]
+            force = (qs.get("force") or ["0"])[0] in ("1", "true", "yes")
+            res = fetch_real_quota(kind, force=force)
+            self._send_json(200, res)
         elif self.path.startswith("/job_status"):
             from urllib.parse import urlparse, parse_qs
             qs = parse_qs(urlparse(self.path).query)

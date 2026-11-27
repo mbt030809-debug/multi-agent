@@ -584,13 +584,26 @@ class HeadlessWebBridge(
         val js = """
             (function() {
                 try {
-                    fetch('/settings/usage', { credentials: 'include' })
-                        .then(function(r) { return r.text(); })
-                        .then(function(txt) {
-                            var m = txt.match(/(\d{1,3})\s*%/);
-                            if (m) {
-                                window.MbtABridge && window.MbtABridge.onChunk('__usage_' + '$key', m[1]);
-                            }
+                    fetch('/api/organizations', { credentials: 'include' })
+                        .then(function(r) { return r.ok ? r.json() : null; })
+                        .then(function(orgs) {
+                            if (!orgs || !orgs.length) return null;
+                            var orgId = orgs[0].uuid || orgs[0].id;
+                            if (!orgId) return null;
+                            return fetch('/api/organizations/' + orgId + '/usage', { credentials: 'include' })
+                                .then(function(r2) { return r2.ok ? r2.json() : null; });
+                        })
+                        .then(function(data) {
+                            if (!data) return;
+                            var h5 = data.five_hour && typeof data.five_hour.utilization === 'number' ? Math.max(0, Math.min(100, Math.round(100 - data.five_hour.utilization))) : null;
+                            var d7 = data.seven_day && typeof data.seven_day.utilization === 'number' ? Math.max(0, Math.min(100, Math.round(100 - data.seven_day.utilization))) : null;
+                            if (h5 === null && d7 === null) return;
+                            var primary = h5 !== null ? h5 : d7;
+                            var parts = [];
+                            if (h5 !== null) parts.push('5시간 ' + h5 + '%');
+                            if (d7 !== null) parts.push('주간 ' + d7 + '%');
+                            var payload = primary + '|' + parts.join(' · ');
+                            window.MbtABridge && window.MbtABridge.onChunk('__usage_' + '$key', payload);
                         })
                         .catch(function(){});
                 } catch(e) {}
@@ -599,11 +612,66 @@ class HeadlessWebBridge(
         val usageReqId = "__usage_$key"
         pending[usageReqId] = PendingRequest(
             inputTokens = 0L,
-            onChunk = { pctStr ->
+            onChunk = { payload ->
                 pending.remove(usageReqId)
-                val usedPct = pctStr.toIntOrNull()?.coerceIn(0, 100)
-                val remPct = usedPct?.let { (100 - it).coerceIn(0, 100) }
-                onResult(remPct, "Claude 계정")
+                val parts = payload.split("|", limit = 2)
+                val remPct = parts.getOrNull(0)?.toIntOrNull()?.coerceIn(0, 100)
+                val lbl = parts.getOrNull(1).orEmpty().ifBlank { "Claude 계정" }
+                onResult(remPct, lbl)
+            },
+            onDone = { _, _, _ -> },
+            onError = { _ -> }
+        )
+        wv.evaluateJavascript(js, null)
+    }
+
+    fun fetchChatGptWebUsagePercent(key: String, onResult: (Int?, String) -> Unit) {
+        val wv = pool[key]
+        if (wv == null) {
+            onResult(null, "")
+            return
+        }
+        val js = """
+            (function() {
+                try {
+                    fetch('/backend-api/wham/usage', { credentials: 'include' })
+                        .then(function(r) { return r.ok ? r.json() : null; })
+                        .then(function(data) {
+                            if (data && data.rate_limit) {
+                                var rl = data.rate_limit;
+                                var p = rl.primary_window && typeof rl.primary_window.used_percent === 'number' ? Math.max(0, Math.min(100, Math.round(100 - rl.primary_window.used_percent))) : null;
+                                var s = rl.secondary_window && typeof rl.secondary_window.used_percent === 'number' ? Math.max(0, Math.min(100, Math.round(100 - rl.secondary_window.used_percent))) : null;
+                                if (p !== null || s !== null) {
+                                    var primary = p !== null ? p : s;
+                                    var parts = [];
+                                    if (p !== null) parts.push('5시간 ' + p + '%');
+                                    if (s !== null) parts.push('주간 ' + s + '%');
+                                    window.MbtABridge && window.MbtABridge.onChunk('__usage_' + '$key', primary + '|' + parts.join(' · '));
+                                    return;
+                                }
+                            }
+                            return fetch('/backend-api/conversation_limit', { credentials: 'include' })
+                                .then(function(r2) { return r2.ok ? r2.json() : null; })
+                                .then(function(d2) {
+                                    if (d2 && typeof d2.remaining === 'number' && typeof d2.limit === 'number' && d2.limit > 0) {
+                                        var pct = Math.max(0, Math.min(100, Math.round((d2.remaining / d2.limit) * 100)));
+                                        window.MbtABridge && window.MbtABridge.onChunk('__usage_' + '$key', pct + '|' + d2.remaining + '/' + d2.limit + ' 남음');
+                                    }
+                                });
+                        })
+                        .catch(function(){});
+                } catch(e) {}
+            })();
+        """.trimIndent()
+        val usageReqId = "__usage_$key"
+        pending[usageReqId] = PendingRequest(
+            inputTokens = 0L,
+            onChunk = { payload ->
+                pending.remove(usageReqId)
+                val parts = payload.split("|", limit = 2)
+                val remPct = parts.getOrNull(0)?.toIntOrNull()?.coerceIn(0, 100)
+                val lbl = parts.getOrNull(1).orEmpty().ifBlank { "ChatGPT 계정" }
+                onResult(remPct, lbl)
             },
             onDone = { _, _, _ -> },
             onError = { _ -> }

@@ -275,8 +275,10 @@ object AiApiClient {
             val usage = root["usage"]?.jsonObject
             val inTok = usage?.get("prompt_tokens")?.jsonPrimitive?.longOrNull ?: 0L
             val outTok = usage?.get("completion_tokens")?.jsonPrimitive?.longOrNull ?: 0L
-            val rlLimit = response.header("anthropic-ratelimit-tokens-limit")?.toLongOrNull()
-            val rlRem = response.header("anthropic-ratelimit-tokens-remaining")?.toLongOrNull()
+            val rlLimit = response.header("x-ratelimit-limit-tokens")?.toLongOrNull()
+                ?: response.header("x-ratelimit-limit-requests")?.toLongOrNull()
+            val rlRem = response.header("x-ratelimit-remaining-tokens")?.toLongOrNull()
+                ?: response.header("x-ratelimit-remaining-requests")?.toLongOrNull()
             val quotaPct = if (rlLimit != null && rlRem != null && rlLimit > 0L) {
                 ((rlRem * 100L) / rlLimit).toInt().coerceIn(0, 100)
             } else null
@@ -285,7 +287,7 @@ object AiApiClient {
                 inputTokens = inTok,
                 outputTokens = outTok,
                 quotaPercent = quotaPct,
-                quotaLabel = if (quotaPct != null) "Claude API" else ""
+                quotaLabel = if (quotaPct != null) "OpenAI API" else ""
             )
         }
     }
@@ -349,17 +351,10 @@ object AiApiClient {
             val usage = root["usageMetadata"]?.jsonObject
             val inTok = usage?.get("promptTokenCount")?.jsonPrimitive?.longOrNull ?: 0L
             val outTok = usage?.get("candidatesTokenCount")?.jsonPrimitive?.longOrNull ?: 0L
-            val rlLimit = response.header("anthropic-ratelimit-tokens-limit")?.toLongOrNull()
-            val rlRem = response.header("anthropic-ratelimit-tokens-remaining")?.toLongOrNull()
-            val quotaPct = if (rlLimit != null && rlRem != null && rlLimit > 0L) {
-                ((rlRem * 100L) / rlLimit).toInt().coerceIn(0, 100)
-            } else null
             return AiReply(
                 text = text,
                 inputTokens = inTok,
-                outputTokens = outTok,
-                quotaPercent = quotaPct,
-                quotaLabel = if (quotaPct != null) "Claude API" else ""
+                outputTokens = outTok
             )
         }
     }
