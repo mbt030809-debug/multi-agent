@@ -91,6 +91,7 @@ class HeadlessWebBridge(
 
     private val pending = mutableMapOf<String, PendingRequest>()
     private val activeReqByKey = mutableMapOf<String, String>()
+    private val pendingAutoUploadUris = mutableMapOf<String, Uri>()
 
     fun cancelActiveRequest(key: String) {
         val reqId = activeReqByKey.remove(key)
@@ -230,6 +231,12 @@ class HeadlessWebBridge(
                     fileChooserParams: FileChooserParams?
                 ): Boolean {
                     if (filePathCallback == null) return false
+                    val autoUri = pendingAutoUploadUris.remove(key)
+                    if (autoUri != null) {
+                        log("onShowFileChooser auto-fulfilled key=$key uri=$autoUri")
+                        filePathCallback.onReceiveValue(arrayOf(autoUri))
+                        return true
+                    }
                     val intent = fileChooserParams?.createIntent() ?: Intent(Intent.ACTION_GET_CONTENT).apply {
                         addCategory(Intent.CATEGORY_OPENABLE)
                         type = "*/*"
@@ -267,8 +274,18 @@ class HeadlessWebBridge(
         return true
     }
 
-    fun attachFileToWebInput(key: String, filename: String, mimeType: String, base64Data: String) {
-        val wv = pool[key] ?: return
+    suspend fun attachFileToWebInputSuspend(
+        key: String,
+        url: String,
+        filename: String,
+        mimeType: String,
+        base64Data: String,
+        contentUri: Uri? = null
+    ): Boolean {
+        val wv = getOrCreateWebView(key, url)
+        if (contentUri != null) {
+            pendingAutoUploadUris[key] = contentUri
+        }
         val qName = JSONObject.quote(filename)
         val qMime = JSONObject.quote(mimeType.ifBlank { "application/octet-stream" })
         val qB64 = JSONObject.quote(base64Data)
@@ -276,22 +293,144 @@ class HeadlessWebBridge(
             (function() {
                 try {
                     $DEEP_QUERY_JS
+                    function buildDataTransfer() {
+                        var bin = atob($qB64);
+                        var arr = new Uint8Array(bin.length);
+                        for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+                        var file = new File([arr], $qName, { type: $qMime, lastModified: Date.now() });
+                        var dt = new DataTransfer();
+                        dt.items.add(file);
+                        return dt;
+                    }
+                    function hasAttachmentPreview() {
+                        var sels = 'img[src^="blob:"], img[src^="data:image/"], [data-test-id*="image-preview"], [data-test-id*="file-preview"], .file-preview, [aria-label*="Remove attachment" i], [aria-label*="첨부" i][aria-label*="삭제"], [aria-label*="제거"]';
+                        var els = queryAllDeep(sels);
+                        for (var i = 0; i < els.length; i++) {
+                            var r = els[i].getBoundingClientRect();
+                            if (r.width > 12 && r.height > 12) return true;
+                        }
+                        return false;
+                    }
+                    // Tier 1: Direct <input type="file"> injection
                     var inputs = queryAllDeep('input[type="file"]');
-                    if (!inputs || inputs.length === 0) return 'no_input';
-                    var inp = inputs[0];
-                    var bin = atob($qB64);
-                    var arr = new Uint8Array(bin.length);
-                    for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
-                    var file = new File([arr], $qName, { type: $qMime });
-                    var dt = new DataTransfer();
-                    dt.items.add(file);
-                    inp.files = dt.files;
-                    inp.dispatchEvent(new Event('change', { bubbles: true }));
-                    return 'ok';
+                    if (inputs && inputs.length > 0) {
+                        var inp = inputs[inputs.length - 1];
+                        var dt1 = buildDataTransfer();
+                        inp.files = dt1.files;
+                        inp.dispatchEvent(new Event('input', { bubbles: true }));
+                        inp.dispatchEvent(new Event('change', { bubbles: true }));
+                        return 'input_ok';
+                    }
+                    // Tier 2: ClipboardEvent paste + DragEvent drop onto rich editor (Gemini / Claude / ChatGPT)
+                    var editors = queryAllDeep('rich-textarea [contenteditable="true"], .ql-editor[contenteditable="true"], #prompt-textarea, div.ProseMirror[contenteditable="true"], [contenteditable="true"], textarea');
+                    var target = null;
+                    for (var j = 0; j < editors.length; j++) {
+                        var er = editors[j].getBoundingClientRect();
+                        if (er.width > 40 && er.height > 12) { target = editors[j]; break; }
+                    }
+                    if (target) {
+                        target.focus();
+                        try {
+                            var dt2 = buildDataTransfer();
+                            var pasteEvt = new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: dt2 });
+                            target.dispatchEvent(pasteEvt);
+                        } catch(pe) {}
+                        try {
+                            var dt3 = buildDataTransfer();
+                            target.dispatchEvent(new DragEvent('dragenter', { bubbles: true, cancelable: true, dataTransfer: dt3 }));
+                            target.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt3 }));
+                            target.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt3 }));
+                        } catch(de) {}
+                        return 'paste_drop_sent';
+                    }
+                    return 'no_target';
                 } catch(e) { return 'err:' + e; }
             })();
         """.trimIndent()
-        wv.evaluateJavascript(js, null)
+
+        val firstRes = suspendCancellableCoroutine<String> { cont ->
+            mainHandler.post {
+                wv.evaluateJavascript(js) { res ->
+                    if (cont.isActive) cont.resume(res.orEmpty().trim('"'))
+                }
+            }
+        }
+        log("attachFile tier12 key=$key res=$firstRes")
+
+        // Wait briefly and check if attachment preview appeared; if not, trigger Tier 3 (upload button + silent onShowFileChooser)
+        kotlinx.coroutines.delay(700L)
+        val previewAfterPaste = suspendCancellableCoroutine<Boolean> { cont ->
+            val checkJs = """
+                (function() {
+                    try {
+                        $DEEP_QUERY_JS
+                        var els = queryAllDeep('img[src^="blob:"], img[src^="data:image/"], [data-test-id*="image"], [data-test-id*="file"], .file-preview, button[aria-label*="Remove" i], button[aria-label*="삭제"], button[aria-label*="제거"]');
+                        for (var i = 0; i < els.length; i++) {
+                            var r = els[i].getBoundingClientRect();
+                            if (r.width > 12 && r.height > 12) return 'yes';
+                        }
+                        return 'no';
+                    } catch(e) { return 'no'; }
+                })();
+            """.trimIndent()
+            mainHandler.post {
+                wv.evaluateJavascript(checkJs) { res ->
+                    if (cont.isActive) cont.resume(res?.contains("yes") == true)
+                }
+            }
+        }
+
+        if (previewAfterPaste || firstRes == "input_ok") {
+            pendingAutoUploadUris.remove(key)
+            // Give Gemini/web app enough time to finish uploading the image before send
+            kotlinx.coroutines.delay(1400L)
+            return true
+        }
+
+        // Tier 3: Click Gemini/web upload button -> click "파일 업로드" / "Upload file" menu item -> triggers silent onShowFileChooser
+        if (contentUri != null) {
+            val triggerUploadJs = """
+                (function() {
+                    try {
+                        $DEEP_QUERY_JS
+                        var btns = queryAllDeep('button[aria-label*="Upload" i], button[aria-label*="업로드"], button[aria-label*="파일"], button[aria-label*="이미지"], button[aria-label*="추가"], button.upload-card-button, xap-deferred-trigger-button button');
+                        for (var i = 0; i < btns.length; i++) {
+                            var r = btns[i].getBoundingClientRect();
+                            if (r.width > 16 && r.height > 16) {
+                                btns[i].click();
+                                setTimeout(function() {
+                                    var items = queryAllDeep('button, [role="menuitem"], mat-list-item, li');
+                                    for (var k = 0; k < items.length; k++) {
+                                        var txt = (items[k].innerText || items[k].getAttribute('aria-label') || '').trim();
+                                        if (/파일\s*업로드|이미지\s*업로드|사진|upload\s*file|upload\s*from|add\s*file|photos/i.test(txt)) {
+                                            items[k].click();
+                                            break;
+                                        }
+                                    }
+                                }, 350);
+                                return 'clicked_upload';
+                            }
+                        }
+                        return 'no_upload_btn';
+                    } catch(e) { return 'err:' + e; }
+                })();
+            """.trimIndent()
+            val tier3Res = suspendCancellableCoroutine<String> { cont ->
+                mainHandler.post {
+                    wv.evaluateJavascript(triggerUploadJs) { res ->
+                        if (cont.isActive) cont.resume(res.orEmpty().trim('"'))
+                    }
+                }
+            }
+            log("attachFile tier3 key=$key res=$tier3Res")
+            if (tier3Res == "clicked_upload") {
+                kotlinx.coroutines.delay(2200L)
+                pendingAutoUploadUris.remove(key)
+                return true
+            }
+        }
+        pendingAutoUploadUris.remove(key)
+        return firstRes == "paste_drop_sent"
     }
 
     fun sendPrompt(

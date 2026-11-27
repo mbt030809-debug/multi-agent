@@ -200,7 +200,8 @@ private fun detectQuickReplies(rawContent: String): List<String> {
 private data class PendingAttachment(
     val name: String,
     val mimeType: String,
-    val bytes: ByteArray
+    val bytes: ByteArray,
+    val uri: Uri? = null
 )
 
 private data class SlashSkill(
@@ -282,7 +283,7 @@ fun SessionPane(
             }
             val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: return@runCatching
             if (bytes.size <= 10 * 1024 * 1024) {
-                attachments = attachments + PendingAttachment(name, mime, bytes)
+                attachments = attachments + PendingAttachment(name, mime, bytes, uri)
             }
         }
     }
@@ -896,9 +897,19 @@ fun SessionPane(
                                         extra.append("\n\n[📎 첨부: ${att.name}]\n```\n${att.bytes.toString(Charsets.UTF_8)}\n```")
                                     } else if (connection.usesHiddenWebBridge()) {
                                         val b64 = android.util.Base64.encodeToString(att.bytes, android.util.Base64.NO_WRAP)
-                                        headlessWebBridge.attachFileToWebInput(connection.id, att.name, att.mimeType, b64)
-                                        extra.append("\n[📎 첨부: ${att.name}]")
-                                        webAttached = true
+                                        val attached = headlessWebBridge.attachFileToWebInputSuspend(
+                                            key = connection.id,
+                                            url = connection.endpointUrl,
+                                            filename = att.name,
+                                            mimeType = att.mimeType,
+                                            base64Data = b64,
+                                            contentUri = att.uri
+                                        )
+                                        if (attached) {
+                                            webAttached = true
+                                        } else {
+                                            extra.append("\n[📎 첨부 실패: ${att.name}]")
+                                        }
                                     } else {
                                         val savedPath = GitBridgeClient.uploadFile(att.name, att.bytes)
                                         if (savedPath != null) {
@@ -908,7 +919,7 @@ fun SessionPane(
                                         }
                                     }
                                 }
-                                if (webAttached) kotlinx.coroutines.delay(400L)
+                                if (webAttached) kotlinx.coroutines.delay(500L)
                                 val combined = (text + extra.toString()).trim().ifBlank { "첨부한 파일을 확인해줘." }
                                 onSendMessage(combined)
                             }
