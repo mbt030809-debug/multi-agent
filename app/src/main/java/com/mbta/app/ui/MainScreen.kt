@@ -214,6 +214,15 @@ fun MainScreen(
         if (conn.usesHiddenWebBridge() && sess.webConversationUrl.isNotBlank()) {
             headlessWebBridge.navigateIfNeeded(conn.id, sess.webConversationUrl)
         }
+        if (conn.kind == ConnectionKind.CLAUDE_WEB) {
+            headlessWebBridge.fetchClaudeWebUsagePercent(conn.id) { pct, lbl ->
+                if (pct != null) {
+                    val cur = tokenUsageMap[conn.id] ?: AgentTokenUsage(panelId = conn.id)
+                    tokenUsageMap[conn.id] = cur.copy(quotaPercent = pct, quotaLabel = lbl, updatedAt = System.currentTimeMillis())
+                    store.saveTokenUsage(tokenUsageMap)
+                }
+            }
+        }
     }
 
     fun sendMessageInSession(session: AgentSession, conn: AiConnection, text: String) {
@@ -394,6 +403,15 @@ fun MainScreen(
             store.saveSessions(sessions)
             if (reply.inputTokens > 0L || reply.outputTokens > 0L) {
                 onRecordTokens(targetConn.id, targetConn.kind, reply.inputTokens, reply.outputTokens)
+            }
+            if (reply.quotaPercent != null) {
+                val cur = tokenUsageMap[targetConn.id] ?: AgentTokenUsage(panelId = targetConn.id)
+                tokenUsageMap[targetConn.id] = cur.copy(
+                    quotaPercent = reply.quotaPercent,
+                    quotaLabel = reply.quotaLabel,
+                    updatedAt = System.currentTimeMillis()
+                )
+                store.saveTokenUsage(tokenUsageMap)
             }
             sendingMap[session.id] = false
             if (activeSessionId != session.id) unreadDoneSessions[session.id] = true
@@ -1231,6 +1249,11 @@ fun MainScreen(
         TokenDashboardDialog(
             connections = enabledConnections,
             tokenUsageMap = tokenUsageMap,
+            onSetCustomLimit = { connId, newLim ->
+                val cur = tokenUsageMap[connId] ?: AgentTokenUsage(panelId = connId)
+                tokenUsageMap[connId] = cur.copy(customLimit = newLim)
+                store.saveTokenUsage(tokenUsageMap)
+            },
             onResetAgent = onResetAgentTokens,
             onResetAll = onResetAllTokens,
             onDismiss = { showTokenDashboard = false }

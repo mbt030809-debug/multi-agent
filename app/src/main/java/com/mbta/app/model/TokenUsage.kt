@@ -16,6 +16,9 @@ data class AgentTokenUsage(
     val inputTokens: Long = 0L,
     val outputTokens: Long = 0L,
     val contextLimit: Long? = null,
+    val customLimit: Long? = null,
+    val quotaPercent: Int? = null,
+    val quotaLabel: String = "",
     val source: TokenSource = TokenSource.ESTIMATED_WEB,
     val updatedAt: Long = 0L
 ) {

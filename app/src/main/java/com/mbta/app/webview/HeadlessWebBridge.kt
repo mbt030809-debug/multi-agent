@@ -387,6 +387,41 @@ class HeadlessWebBridge(
 
     fun currentUrl(key: String): String? = pool[key]?.url
 
+    fun fetchClaudeWebUsagePercent(key: String, onResult: (Int?, String) -> Unit) {
+        val wv = pool[key]
+        if (wv == null) {
+            onResult(null, "")
+            return
+        }
+        val js = """
+            (function() {
+                try {
+                    fetch('/settings/usage', { credentials: 'include' })
+                        .then(function(r) { return r.text(); })
+                        .then(function(txt) {
+                            var m = txt.match(/(\d{1,3})\s*%/);
+                            if (m) {
+                                window.MbtABridge && window.MbtABridge.onChunk('__usage_' + '$key', m[1]);
+                            }
+                        })
+                        .catch(function(){});
+                } catch(e) {}
+            })();
+        """.trimIndent()
+        val usageReqId = "__usage_$key"
+        pending[usageReqId] = PendingRequest(
+            inputTokens = 0L,
+            onChunk = { pctStr ->
+                pending.remove(usageReqId)
+                val pct = pctStr.toIntOrNull()?.coerceIn(0, 100)
+                onResult(pct, "Claude 사용량")
+            },
+            onDone = { _, _, _ -> },
+            onError = { _ -> }
+        )
+        wv.evaluateJavascript(js, null)
+    }
+
     fun fetchWebSessionMessages(
         key: String,
         kind: ConnectionKind,

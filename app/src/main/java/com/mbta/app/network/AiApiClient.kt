@@ -29,6 +29,8 @@ data class AiReply(
     val text: String,
     val inputTokens: Long = 0L,
     val outputTokens: Long = 0L,
+    val quotaPercent: Int? = null,
+    val quotaLabel: String = "",
     val error: String? = null
 )
 
@@ -202,7 +204,18 @@ object AiApiClient {
             val usage = root["usage"]?.jsonObject
             val inTok = usage?.get("input_tokens")?.jsonPrimitive?.longOrNull ?: 0L
             val outTok = usage?.get("output_tokens")?.jsonPrimitive?.longOrNull ?: 0L
-            return AiReply(text = text, inputTokens = inTok, outputTokens = outTok)
+            val rlLimit = response.header("anthropic-ratelimit-tokens-limit")?.toLongOrNull()
+            val rlRem = response.header("anthropic-ratelimit-tokens-remaining")?.toLongOrNull()
+            val quotaPct = if (rlLimit != null && rlRem != null && rlLimit > 0L) {
+                (((rlLimit - rlRem) * 100L) / rlLimit).toInt().coerceIn(0, 100)
+            } else null
+            return AiReply(
+                text = text,
+                inputTokens = inTok,
+                outputTokens = outTok,
+                quotaPercent = quotaPct,
+                quotaLabel = if (quotaPct != null) "Claude API 한도" else ""
+            )
         }
     }
 
@@ -256,7 +269,18 @@ object AiApiClient {
             val usage = root["usage"]?.jsonObject
             val inTok = usage?.get("prompt_tokens")?.jsonPrimitive?.longOrNull ?: 0L
             val outTok = usage?.get("completion_tokens")?.jsonPrimitive?.longOrNull ?: 0L
-            return AiReply(text = text, inputTokens = inTok, outputTokens = outTok)
+            val rlLimit = response.header("anthropic-ratelimit-tokens-limit")?.toLongOrNull()
+            val rlRem = response.header("anthropic-ratelimit-tokens-remaining")?.toLongOrNull()
+            val quotaPct = if (rlLimit != null && rlRem != null && rlLimit > 0L) {
+                (((rlLimit - rlRem) * 100L) / rlLimit).toInt().coerceIn(0, 100)
+            } else null
+            return AiReply(
+                text = text,
+                inputTokens = inTok,
+                outputTokens = outTok,
+                quotaPercent = quotaPct,
+                quotaLabel = if (quotaPct != null) "Claude API 한도" else ""
+            )
         }
     }
 
@@ -319,7 +343,18 @@ object AiApiClient {
             val usage = root["usageMetadata"]?.jsonObject
             val inTok = usage?.get("promptTokenCount")?.jsonPrimitive?.longOrNull ?: 0L
             val outTok = usage?.get("candidatesTokenCount")?.jsonPrimitive?.longOrNull ?: 0L
-            return AiReply(text = text, inputTokens = inTok, outputTokens = outTok)
+            val rlLimit = response.header("anthropic-ratelimit-tokens-limit")?.toLongOrNull()
+            val rlRem = response.header("anthropic-ratelimit-tokens-remaining")?.toLongOrNull()
+            val quotaPct = if (rlLimit != null && rlRem != null && rlLimit > 0L) {
+                (((rlLimit - rlRem) * 100L) / rlLimit).toInt().coerceIn(0, 100)
+            } else null
+            return AiReply(
+                text = text,
+                inputTokens = inTok,
+                outputTokens = outTok,
+                quotaPercent = quotaPct,
+                quotaLabel = if (quotaPct != null) "Claude API 한도" else ""
+            )
         }
     }
 
