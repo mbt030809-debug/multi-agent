@@ -243,7 +243,7 @@ class HeadlessWebBridge(
                     var host = (location.hostname || '').toLowerCase();
                     var path = (location.pathname || '').toLowerCase();
                     if (host === 'accounts.google.com' || host === 'auth0.com' || /^\/(login|signin|oauth|account-chooser)/.test(path)) return 'false';
-                    var els = queryAllDeep('#prompt-textarea, div.ProseMirror[contenteditable="true"], rich-textarea div[contenteditable="true"], [contenteditable="true"], textarea, [role="textbox"]');
+                    var els = queryAllDeep('#prompt-textarea, div.ProseMirror, rich-textarea [contenteditable], [contenteditable]:not([contenteditable="false"]), textarea, [role="textbox"]');
                     if (els.length > 0) return 'true';
                     try {
                         if (window.localStorage && window.localStorage.length > 0) return 'true';
@@ -313,122 +313,157 @@ class HeadlessWebBridge(
                 var inputSelectors = [];
                 var msgSelectors = [];
                 if (kind === 'CHATGPT_WEB') {
-                    inputSelectors = ['#prompt-textarea', 'div[contenteditable="true"][id="prompt-textarea"]', '[contenteditable="true"]', '[contenteditable="plaintext-only"]', 'textarea', '[role="textbox"]'];
+                    inputSelectors = ['#prompt-textarea', '[contenteditable]:not([contenteditable="false"])', 'textarea', '[role="textbox"]'];
                     msgSelectors = ['[data-message-author-role="assistant"] .markdown', '[data-message-author-role="assistant"]'];
                 } else if (kind === 'CLAUDE_WEB') {
-                    inputSelectors = ['div.ProseMirror[contenteditable="true"]', 'fieldset [contenteditable="true"]', '[contenteditable="true"]', '[contenteditable="plaintext-only"]', 'textarea', '[role="textbox"]'];
+                    inputSelectors = ['div.ProseMirror', 'fieldset [contenteditable]', '[contenteditable]:not([contenteditable="false"])', 'textarea', '[role="textbox"]'];
                     msgSelectors = ['.font-claude-response', '.font-claude-message', '[data-testid="assistant-message"]', '[data-is-streaming]', '.prose'];
                 } else if (kind === 'GEMINI_WEB') {
-                    inputSelectors = ['rich-textarea [contenteditable="true"]', 'div.ql-editor[contenteditable="true"]', '[contenteditable="true"]', '[contenteditable="plaintext-only"]', 'textarea', '[role="textbox"]'];
+                    inputSelectors = ['rich-textarea [contenteditable]', 'div.ql-editor', '[contenteditable]:not([contenteditable="false"])', 'textarea', '[role="textbox"]'];
                     msgSelectors = ['model-response .markdown', 'model-response message-content', 'message-content', '.model-response-text'];
                 } else {
-                    inputSelectors = ['textarea', '[contenteditable="true"]', '[contenteditable="plaintext-only"]', '[role="textbox"]', 'input[type="text"]', 'input:not([type])'];
+                    inputSelectors = [
+                        '[contenteditable]:not([contenteditable="false"])',
+                        '[role="textbox"]',
+                        'textarea',
+                        'input[type="text"]',
+                        'input[type="search"]',
+                        'input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="file"])'
+                    ];
                     msgSelectors = ['[data-message-author-role="assistant"]', '.font-claude-response', '.prose', 'article', 'pre'];
                 }
 
-                var inputEl = findFirst(inputSelectors);
-                if (!inputEl) {
-                    if (window.MbtABridge) {
-                        var loc = (location.hostname || '') + (location.pathname || '');
-                        window.MbtABridge.onError(reqId, 'NEED_LOGIN', '입력창을 찾을 수 없습니다 (' + loc + '). 상단 로그인 버튼으로 해당 계정에 먼저 로그인해주세요.');
-                    }
-                    return;
-                }
-
-                function getLatestMsgText() {
-                    for (var i = 0; i < msgSelectors.length; i++) {
+                function findAnyEditable() {
+                    var el = findFirst(inputSelectors);
+                    if (el) return el;
+                    var all = queryAllDeep('*');
+                    for (var k = 0; k < all.length; k++) {
                         try {
-                            var nodes = queryAllDeep(msgSelectors[i]);
-                            if (nodes && nodes.length > 0) {
-                                return { count: nodes.length, text: (nodes[nodes.length - 1].innerText || '').trim() };
-                            }
+                            if (all[k] && all[k].isContentEditable && isVisible(all[k])) return all[k];
                         } catch(e) {}
                     }
-                    return { count: 0, text: '' };
+                    return null;
                 }
 
-                var before = getLatestMsgText();
-                var beforeBodyLen = (document.body && document.body.innerText) ? document.body.innerText.length : 0;
-
-                inputEl.focus();
-                if (inputEl.tagName === 'TEXTAREA' || inputEl.tagName === 'INPUT') {
-                    var proto = inputEl.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
-                    var setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
-                    setter.call(inputEl, promptText);
-                    inputEl.dispatchEvent(new Event('input', { bubbles: true }));
-                } else {
-                    try {
-                        document.execCommand('selectAll', false, null);
-                        document.execCommand('insertText', false, promptText);
-                    } catch(e) {
-                        inputEl.textContent = promptText;
+                function proceedWithInput(inputEl) {
+                    function getLatestMsgText() {
+                        for (var i = 0; i < msgSelectors.length; i++) {
+                            try {
+                                var nodes = queryAllDeep(msgSelectors[i]);
+                                if (nodes && nodes.length > 0) {
+                                    return { count: nodes.length, text: (nodes[nodes.length - 1].innerText || '').trim() };
+                                }
+                            } catch(e) {}
+                        }
+                        return { count: 0, text: '' };
                     }
-                    inputEl.dispatchEvent(new Event('input', { bubbles: true }));
-                }
 
-                setTimeout(function() {
-                    var sendBtn = findFirst([
-                        'button[data-testid="send-button"]',
-                        'button[aria-label*="Send"]',
-                        'button[aria-label*="전송"]',
-                        'button[aria-label*="보내기"]',
-                        'button.send-button',
-                        'button[type="submit"]'
-                    ]);
-                    if (sendBtn && !sendBtn.disabled) {
-                        sendBtn.click();
-                        setTimeout(function() {
-                            var rem = (inputEl.value !== undefined ? inputEl.value : inputEl.innerText) || '';
-                            if (rem.trim().length > 0) {
-                                inputEl.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
-                            }
-                        }, 350);
+                    var before = getLatestMsgText();
+                    var beforeBodyLen = (document.body && document.body.innerText) ? document.body.innerText.length : 0;
+
+                    inputEl.focus();
+                    if (inputEl.tagName === 'TEXTAREA' || inputEl.tagName === 'INPUT') {
+                        var proto = inputEl.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+                        var setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+                        setter.call(inputEl, promptText);
+                        inputEl.dispatchEvent(new Event('input', { bubbles: true }));
                     } else {
-                        inputEl.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+                        try {
+                            document.execCommand('selectAll', false, null);
+                            document.execCommand('insertText', false, promptText);
+                        } catch(e) {
+                            inputEl.textContent = promptText;
+                        }
+                        try {
+                            inputEl.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: promptText }));
+                        } catch(e) {
+                            inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+                        }
                     }
 
-                    var lastText = '';
-                    var stableTicks = 0;
-                    var totalTicks = 0;
-                    var timer = setInterval(function() {
-                        totalTicks++;
-                        if (totalTicks > 180) {
-                            clearInterval(timer);
-                            if (lastText) {
-                                window.MbtABridge.onDone(reqId, lastText);
-                            } else {
-                                window.MbtABridge.onError(reqId, 'TIMEOUT', '응답 시간이 초과되었습니다.');
-                            }
-                            return;
+                    setTimeout(function() {
+                        var sendBtn = findFirst([
+                            'button[data-testid="send-button"]',
+                            'button[aria-label*="Send"]',
+                            'button[aria-label*="Submit"]',
+                            'button[aria-label*="전송"]',
+                            'button[aria-label*="보내기"]',
+                            'button.send-button',
+                            'button[type="submit"]'
+                        ]);
+                        if (sendBtn && !sendBtn.disabled) {
+                            sendBtn.click();
+                            setTimeout(function() {
+                                var rem = (inputEl.value !== undefined ? inputEl.value : inputEl.innerText) || '';
+                                if (rem.trim().length > 0) {
+                                    inputEl.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
+                                }
+                            }, 350);
+                        } else {
+                            inputEl.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
                         }
 
-                        var cur = getLatestMsgText();
-                        var candidate = '';
-                        if (cur.count > before.count || (cur.text && cur.text !== before.text)) {
-                            candidate = cur.text;
-                        } else if (cur.count === 0 && document.body) {
-                            var bodyText = document.body.innerText || '';
-                            if (bodyText.length > beforeBodyLen + promptText.length + 5) {
-                                candidate = bodyText.slice(beforeBodyLen).trim();
+                        var lastText = '';
+                        var stableTicks = 0;
+                        var totalTicks = 0;
+                        var timer = setInterval(function() {
+                            totalTicks++;
+                            if (totalTicks > 180) {
+                                clearInterval(timer);
+                                if (lastText) {
+                                    window.MbtABridge.onDone(reqId, lastText);
+                                } else {
+                                    window.MbtABridge.onError(reqId, 'TIMEOUT', '응답 시간이 초과되었습니다.');
+                                }
+                                return;
                             }
-                        }
 
-                        if (candidate && candidate !== lastText) {
-                            lastText = candidate;
-                            stableTicks = 0;
-                            if (window.MbtABridge) window.MbtABridge.onChunk(reqId, lastText);
-                        } else if (lastText) {
-                            var streaming = !!document.querySelector('button[aria-label*="Stop"], button[aria-label*="중지"], button[data-testid="stop-button"], [data-is-streaming="true"]');
-                            if (!streaming) {
-                                stableTicks++;
-                                if (stableTicks >= 5) {
-                                    clearInterval(timer);
-                                    if (window.MbtABridge) window.MbtABridge.onDone(reqId, lastText);
+                            var cur = getLatestMsgText();
+                            var candidate = '';
+                            if (cur.count > before.count || (cur.text && cur.text !== before.text)) {
+                                candidate = cur.text;
+                            } else if (cur.count === 0 && document.body) {
+                                var bodyText = document.body.innerText || '';
+                                if (bodyText.length > beforeBodyLen + promptText.length + 5) {
+                                    candidate = bodyText.slice(beforeBodyLen).trim();
                                 }
                             }
+
+                            if (candidate && candidate !== lastText) {
+                                lastText = candidate;
+                                stableTicks = 0;
+                                if (window.MbtABridge) window.MbtABridge.onChunk(reqId, lastText);
+                            } else if (lastText) {
+                                var streaming = !!document.querySelector('button[aria-label*="Stop"], button[aria-label*="중지"], button[data-testid="stop-button"], [data-is-streaming="true"]');
+                                if (!streaming) {
+                                    stableTicks++;
+                                    if (stableTicks >= 5) {
+                                        clearInterval(timer);
+                                        if (window.MbtABridge) window.MbtABridge.onDone(reqId, lastText);
+                                    }
+                                }
+                            }
+                        }, 500);
+                    }, 300);
+                }
+
+                var waitTries = 0;
+                var waitTimer = setInterval(function() {
+                    var found = findAnyEditable();
+                    if (found) {
+                        clearInterval(waitTimer);
+                        proceedWithInput(found);
+                        return;
+                    }
+                    waitTries++;
+                    if (waitTries >= 15) {
+                        clearInterval(waitTimer);
+                        if (window.MbtABridge) {
+                            var loc = (location.hostname || '') + (location.pathname || '');
+                            window.MbtABridge.onError(reqId, 'NEED_LOGIN', '입력창을 찾을 수 없습니다 (' + loc + '). 상단 👁️ 버튼으로 화면 상태를 확인해주세요.');
                         }
-                    }, 500);
-                }, 300);
+                    }
+                }, 400);
             })();
         """.trimIndent()
     }
