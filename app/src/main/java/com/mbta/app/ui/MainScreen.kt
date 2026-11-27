@@ -41,6 +41,7 @@ import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.CompareArrows
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.ViewAgenda
 import androidx.compose.material.icons.filled.ViewColumn
@@ -119,7 +120,11 @@ fun MainScreen(
     onRecordTokens: (connectionId: String, kind: ConnectionKind, inTok: Long, outTok: Long) -> Unit,
     onResetAgentTokens: (String) -> Unit,
     onResetAllTokens: () -> Unit,
-    onNotifyIfBackground: (String, String) -> Unit = { _, _ -> }
+    onNotifyIfBackground: (String, String) -> Unit = { _, _ -> },
+    onNotifyEvent: (sessionId: String, title: String, body: String, isUrgent: Boolean, actions: List<String>) -> Unit = { _, _, _, _, _ -> },
+    pendingNotifSessionId: String? = null,
+    pendingNotifReply: Pair<String, String>? = null,
+    onConsumeNotifAction: () -> Unit = {}
 ) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -138,7 +143,9 @@ fun MainScreen(
     var showSettings by remember { mutableStateOf(false) }
     var loginConnection by remember { mutableStateOf<AiConnection?>(null) }
     var showTokenDashboard by remember { mutableStateOf(false) }
+    var showGlobalSearch by remember { mutableStateOf(false) }
     var showOrchestrationDialog by remember { mutableStateOf(false) }
+    val autoRetryCountMap = remember { mutableStateMapOf<String, Int>() }
     var showGitDialog by remember { mutableStateOf(false) }
     var showFanOutDialog by remember { mutableStateOf(false) }
     var showProjectMenu by remember { mutableStateOf(false) }
@@ -340,7 +347,12 @@ fun MainScreen(
                     onRecordTokens(targetConn.id, targetConn.kind, inTok, outTok)
                     sendingMap[session.id] = false
                     if (activeSessionId != session.id) unreadDoneSessions[session.id] = true
-                    onNotifyIfBackground("${targetConn.name} 응답 완료", finalText.take(120))
+                    val replies = detectQuickReplies(finalText)
+                    when {
+                        replies.firstOrNull() == "허용" -> onNotifyEvent(session.id, "⚠️ ${targetConn.name} 권한 승인 필요", finalText.take(140), true, listOf("허용", "거부"))
+                        replies.isNotEmpty() -> onNotifyEvent(session.id, "❓ ${targetConn.name} 확인 대기 중", finalText.take(140), true, replies.take(2))
+                        else -> onNotifyEvent(session.id, "✅ ${targetConn.name} 응답 완료", finalText.take(140), false, emptyList())
+                    }
                 },
                 onError = { errMsg ->
                     sessions = sessions.map { s ->
@@ -352,6 +364,7 @@ fun MainScreen(
                     }
                     store.saveSessions(sessions)
                     sendingMap[session.id] = false
+                    onNotifyEvent(session.id, "❌ ${targetConn.name} 작업 오류", errMsg.take(140), true, emptyList())
                 }
             )
             return
@@ -377,6 +390,9 @@ fun MainScreen(
 
         val pollJob = if (isBridgeKind) {
             scope.launch {
+                var lastSig = ""
+                var lastChangedAt = System.currentTimeMillis()
+                var stuckNotified = false
                 while (sendingMap[session.id] == true) {
                     kotlinx.coroutines.delay(1200L)
                     val lines = GitBridgeClient.fetchProgress(session.id)
@@ -393,6 +409,21 @@ fun MainScreen(
                     }.fold(mutableListOf<String>()) { acc, line ->
                         if (acc.lastOrNull() != line) acc.add(line)
                         acc
+                    }
+                    val contentSig = filtered.filterNot { it.contains("프로세스 활성") }.joinToString("\n")
+                    if (contentSig != lastSig) {
+                        lastSig = contentSig
+                        lastChangedAt = System.currentTimeMillis()
+                        stuckNotified = false
+                    } else if (!stuckNotified && System.currentTimeMillis() - lastChangedAt >= 120_000L) {
+                        stuckNotified = true
+                        onNotifyEvent(
+                            session.id,
+                            "⏱️ ${targetConn.name} 응답 지연",
+                            "2분 동안 새 진행 업데이트가 없습니다.",
+                            true,
+                            listOf("Keep going")
+                        )
                     }
                     if (filtered.isNotEmpty()) {
                         val logText = "⏳ 작업 진행 로그:\n" + filtered.joinToString("\n")
@@ -447,7 +478,30 @@ fun MainScreen(
             sendingMap[session.id] = false
             if (activeSessionId != session.id) unreadDoneSessions[session.id] = true
             if (reply.error == null) {
-                onNotifyIfBackground("${targetConn.name} 응답 완료", assistantMsg.content.take(120))
+                autoRetryCountMap[session.id] = 0
+                val replies = detectQuickReplies(assistantMsg.content)
+                when {
+                    replies.firstOrNull() == "허용" -> onNotifyEvent(session.id, "⚠️ ${targetConn.name} 권한 승인 필요", assistantMsg.content.take(140), true, listOf("허용", "거부"))
+                    replies.isNotEmpty() -> onNotifyEvent(session.id, "❓ ${targetConn.name} 확인 대기 중", assistantMsg.content.take(140), true, replies.take(2))
+                    else -> onNotifyEvent(session.id, "✅ ${targetConn.name} 응답 완료", assistantMsg.content.take(140), false, emptyList())
+                }
+            } else {
+                onNotifyEvent(session.id, "❌ ${targetConn.name} 작업 오류", reply.error.take(140), true, listOf("Keep going"))
+                val autoResumeOn = context.getSharedPreferences("mbta_ui_prefs", android.content.Context.MODE_PRIVATE)
+                    .getBoolean("auto_resume_enabled", true)
+                val isTransient = Regex("(timeout|timed out|rate.?limit|429|502|503|overloaded|connection|reset|broken pipe|eof)", RegexOption.IGNORE_CASE)
+                    .containsMatchIn(reply.error)
+                val retries = autoRetryCountMap[session.id] ?: 0
+                if (autoResumeOn && isTransient && retries < 2) {
+                    autoRetryCountMap[session.id] = retries + 1
+                    scope.launch {
+                        kotlinx.coroutines.delay(5000L)
+                        val latestSess = sessions.find { it.id == session.id }
+                        if (latestSess != null && sendingMap[session.id] != true) {
+                            sendMessageInSession(latestSess, conn, "Keep going")
+                        }
+                    }
+                }
             }
             val q = queuedPromptsMap[session.id].orEmpty()
             if (q.isNotEmpty()) {
@@ -561,6 +615,39 @@ fun MainScreen(
         if (trimmed.isEmpty()) return
         sessions = sessions.map { if (it.id == session.id) it.copy(title = trimmed) else it }
         store.saveSessions(sessions)
+    }
+
+    fun togglePinMessage(sessionId: String, messageId: String) {
+        sessions = sessions.map { s ->
+            if (s.id == sessionId) {
+                s.copy(messages = s.messages.map { m ->
+                    if (m.id == messageId) m.copy(isPinned = !m.isPinned) else m
+                })
+            } else s
+        }
+        store.saveSessions(sessions)
+    }
+
+    LaunchedEffect(pendingNotifSessionId, pendingNotifReply) {
+        val targetSid = pendingNotifSessionId ?: return@LaunchedEffect
+        val targetSess = sessions.find { it.id == targetSid }
+        if (targetSess != null) {
+            if (targetSess.projectId != activeProjectId) {
+                activeProjectId = targetSess.projectId
+                store.saveActiveProjectId(targetSess.projectId)
+            }
+            activeSessionId = targetSess.id
+            store.saveActiveSessionId(targetSess.id)
+            unreadDoneSessions.remove(targetSess.id)
+            val replyPair = pendingNotifReply
+            if (replyPair != null && replyPair.first == targetSess.id) {
+                val targetConn = connections.find { it.id == targetSess.connectionId }
+                if (targetConn != null) {
+                    sendMessageInSession(targetSess, targetConn, replyPair.second)
+                }
+            }
+        }
+        onConsumeNotifAction()
     }
 
     val lastRefreshAtMap = remember { mutableStateMapOf<String, Long>() }
@@ -928,6 +1015,9 @@ fun MainScreen(
                         }
                     }
                     Spacer(modifier = Modifier.weight(1f))
+                    IconButton(onClick = { showGlobalSearch = true }, modifier = Modifier.size(32.dp)) {
+                        Icon(Icons.Default.Search, contentDescription = "통합 검색 · 핀", modifier = Modifier.size(18.dp))
+                    }
                     Surface(
                         shape = RoundedCornerShape(10.dp),
                         color = MaterialTheme.colorScheme.primaryContainer,
@@ -1171,6 +1261,7 @@ fun MainScreen(
                             if (primaryConn != null) sendQueuedNow(primarySession, primaryConn, idx)
                         },
                         onRenameSession = { newTitle -> renameSession(primarySession, newTitle) },
+                        onTogglePinMessage = { msgId -> togglePinMessage(primarySession.id, msgId) },
                         modifier = Modifier.fillMaxSize()
                     )
                 }
@@ -1221,6 +1312,7 @@ fun MainScreen(
                                 if (primaryConn != null) sendQueuedNow(primarySession, primaryConn, idx)
                             },
                             onRenameSession = { newTitle -> renameSession(primarySession, newTitle) },
+                            onTogglePinMessage = { msgId -> togglePinMessage(primarySession.id, msgId) },
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .weight(1f)
@@ -1275,6 +1367,7 @@ fun MainScreen(
                                 if (primaryConn != null) sendQueuedNow(primarySession, primaryConn, idx)
                             },
                             onRenameSession = { newTitle -> renameSession(primarySession, newTitle) },
+                            onTogglePinMessage = { msgId -> togglePinMessage(primarySession.id, msgId) },
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .weight(1f)
@@ -1328,6 +1421,7 @@ fun MainScreen(
                                 if (primaryConn != null) sendQueuedNow(primarySession, primaryConn, idx)
                             },
                             onRenameSession = { newTitle -> renameSession(primarySession, newTitle) },
+                            onTogglePinMessage = { msgId -> togglePinMessage(primarySession.id, msgId) },
                             modifier = Modifier
                                 .fillMaxSize()
                                 .weight(1f)
@@ -1382,6 +1476,7 @@ fun MainScreen(
                                 if (primaryConn != null) sendQueuedNow(primarySession, primaryConn, idx)
                             },
                             onRenameSession = { newTitle -> renameSession(primarySession, newTitle) },
+                            onTogglePinMessage = { msgId -> togglePinMessage(primarySession.id, msgId) },
                             modifier = Modifier
                                 .fillMaxSize()
                                 .weight(1f)
@@ -1456,6 +1551,24 @@ fun MainScreen(
             onResetAgent = onResetAgentTokens,
             onResetAll = onResetAllTokens,
             onDismiss = { showTokenDashboard = false }
+        )
+    }
+
+    if (showGlobalSearch) {
+        GlobalSearchDialog(
+            projects = projects,
+            activeProjectId = activeProject.id,
+            sessions = sessions,
+            onSelectHit = { projId, sessId ->
+                if (projId != activeProjectId) {
+                    activeProjectId = projId
+                    store.saveActiveProjectId(projId)
+                }
+                activeSessionId = sessId
+                store.saveActiveSessionId(sessId)
+                unreadDoneSessions.remove(sessId)
+            },
+            onDismiss = { showGlobalSearch = false }
         )
     }
 

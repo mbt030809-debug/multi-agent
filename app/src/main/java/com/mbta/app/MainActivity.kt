@@ -33,6 +33,25 @@ class MainActivity : ComponentActivity() {
     private val tokenUsageMap = mutableStateMapOf<String, AgentTokenUsage>()
     private var themeMode by mutableStateOf(AppThemeMode.DARK)
     private var isAppInForeground = true
+    private var pendingNotifSessionId by mutableStateOf<String?>(null)
+    private var pendingNotifReply by mutableStateOf<Pair<String, String>?>(null)
+
+    private fun handleNotificationIntent(intent: android.content.Intent?) {
+        if (intent == null) return
+        val notifId = intent.getIntExtra(NotificationHelper.EXTRA_NOTIF_ID, -1)
+        if (notifId > 0) NotificationHelper.cancel(this, notifId)
+        val sid = intent.getStringExtra(NotificationHelper.EXTRA_SESSION_ID)
+        val quickReply = intent.getStringExtra(NotificationHelper.EXTRA_QUICK_REPLY)
+        if (!sid.isNullOrBlank()) {
+            pendingNotifSessionId = sid
+            if (!quickReply.isNullOrBlank()) {
+                pendingNotifReply = sid to quickReply
+            }
+            intent.removeExtra(NotificationHelper.EXTRA_SESSION_ID)
+            intent.removeExtra(NotificationHelper.EXTRA_QUICK_REPLY)
+            intent.removeExtra(NotificationHelper.EXTRA_NOTIF_ID)
+        }
+    }
 
     private val notifPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -67,6 +86,7 @@ class MainActivity : ComponentActivity() {
         }
 
         store = WorkspaceStore(this)
+        handleNotificationIntent(intent)
         themeMode = store.loadThemeMode()
         tokenUsageMap.putAll(store.loadTokenUsage())
         headlessWebBridge = HeadlessWebBridge(
@@ -119,10 +139,27 @@ class MainActivity : ComponentActivity() {
                         if (!isAppInForeground) {
                             NotificationHelper.notifyDone(this, title, body)
                         }
+                    },
+                    onNotifyEvent = { sessionId, title, body, isUrgent, actions ->
+                        if (!isAppInForeground) {
+                            NotificationHelper.notifyEvent(this, sessionId, title, body, isUrgent, actions)
+                        }
+                    },
+                    pendingNotifSessionId = pendingNotifSessionId,
+                    pendingNotifReply = pendingNotifReply,
+                    onConsumeNotifAction = {
+                        pendingNotifSessionId = null
+                        pendingNotifReply = null
                     }
                 )
             }
         }
+    }
+
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleNotificationIntent(intent)
     }
 
     override fun onResume() {

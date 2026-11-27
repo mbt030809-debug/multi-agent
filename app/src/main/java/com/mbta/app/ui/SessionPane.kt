@@ -52,6 +52,7 @@ import androidx.compose.material.icons.filled.CallSplit
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
@@ -140,7 +141,7 @@ private val englishYesNoQuestionRegex = Regex(
 )
 private val numberedOptionRegex = Regex("^\\s*([1-4])[.)]\\s+(.+)$")
 
-private fun detectQuickReplies(rawContent: String): List<String> {
+internal fun detectQuickReplies(rawContent: String): List<String> {
     if (rawContent.isBlank()) return emptyList()
     val cleaned = rawContent
         .replace(codeFenceRegex, "")
@@ -263,6 +264,7 @@ fun SessionPane(
     onRemoveQueued: (Int) -> Unit = {},
     onSendQueuedNow: (Int) -> Unit = {},
     onRenameSession: (String) -> Unit = {},
+    onTogglePinMessage: (String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var inputText by remember(session.id) { mutableStateOf("") }
@@ -627,7 +629,8 @@ fun SessionPane(
                         onRetryLast = onRetryLast,
                         onQuoteToInput = { quoted ->
                             inputText = if (inputText.isBlank()) quoted else "$inputText\n$quoted"
-                        }
+                        },
+                        onTogglePin = { onTogglePinMessage(msg.id) }
                     )
                 }
                 if (isSending && session.messages.lastOrNull()?.role != MessageRole.ASSISTANT) {
@@ -1215,7 +1218,8 @@ private fun ChatBubble(
     fontScale: Float = 1f,
     isStreaming: Boolean = false,
     onRetryLast: () -> Unit,
-    onQuoteToInput: (String) -> Unit = {}
+    onQuoteToInput: (String) -> Unit = {},
+    onTogglePin: () -> Unit = {}
 ) {
     when (message.role) {
         MessageRole.SYSTEM -> {
@@ -1259,10 +1263,19 @@ private fun ChatBubble(
                         }
                         Row(
                             modifier = Modifier.padding(top = 4.dp),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
                             ActionSquareBadge("C") { clipboard.setText(AnnotatedString(message.content)) }
                             ActionSquareBadge("P") { onQuoteToInput(message.content) }
+                            Icon(
+                                Icons.Default.PushPin,
+                                contentDescription = if (message.isPinned) "핀 해제" else "핀 고정",
+                                tint = if (message.isPinned) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.45f),
+                                modifier = Modifier
+                                    .size(15.dp)
+                                    .clickable { onTogglePin() }
+                            )
                         }
                     }
                 }
@@ -1297,7 +1310,18 @@ private fun ChatBubble(
                             } else {
                                 Spacer(modifier = Modifier.size(1.dp))
                             }
-                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    Icons.Default.PushPin,
+                                    contentDescription = if (message.isPinned) "핀 해제" else "핀 고정",
+                                    tint = if (message.isPinned) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f),
+                                    modifier = Modifier
+                                        .size(15.dp)
+                                        .clickable { onTogglePin() }
+                                )
                                 ActionSquareBadge("C") { clipboard.setText(AnnotatedString(message.content)) }
                                 ActionSquareBadge("P") { onQuoteToInput(message.content) }
                             }

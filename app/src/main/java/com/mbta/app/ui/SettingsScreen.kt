@@ -222,6 +222,42 @@ fun SettingsScreen(
             }
 
             item {
+                val uiPrefs = remember(context) { context.getSharedPreferences("mbta_ui_prefs", android.content.Context.MODE_PRIVATE) }
+                var autoResume by remember { mutableStateOf(uiPrefs.getBoolean("auto_resume_enabled", true)) }
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("멈춤 감지 & 자동 재개 (Auto-Resume)", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = "네트워크 오류·타임아웃·레이트 리밋으로 끊기면 자동으로 Keep going을 재전송하고(최대 2회), 2분 이상 응답이 없으면 알림을 보냅니다.",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = autoResume,
+                            onCheckedChange = { enabled ->
+                                autoResume = enabled
+                                uiPrefs.edit().putBoolean("auto_resume_enabled", enabled).apply()
+                            }
+                        )
+                    }
+                }
+            }
+
+            item {
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
                 Spacer(modifier = Modifier.height(6.dp))
                 Row(
