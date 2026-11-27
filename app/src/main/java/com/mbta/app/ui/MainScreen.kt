@@ -500,16 +500,46 @@ fun MainScreen(
                             }
                             triple.first to err
                         } else {
-                            val reply = AiApiClient.send(
-                                connection = effectiveMainConn,
-                                history = roundHistory,
-                                userMessage = currentPrompt,
-                                sessionId = session.id,
-                                cwd = effectiveDir,
-                                cliSessionId = session.cliSessionId,
-                                effort = session.selectedEffort,
-                                skipPermissions = session.skipPermissions
-                            )
+                            val isMainBridge = effectiveMainConn.kind == ConnectionKind.REMOTE_CONTROL || effectiveMainConn.kind == ConnectionKind.TERMUX_CLI
+                            val mainPollJob = if (isMainBridge) {
+                                scope.launch {
+                                    while (sendingMap[session.id] == true) {
+                                        kotlinx.coroutines.delay(1200L)
+                                        val lines = GitBridgeClient.fetchProgress(session.id)
+                                        val hasTextOutput = lines.any { it.startsWith("💬 ") }
+                                        val filtered = lines.filter { line ->
+                                            val t = line.trim()
+                                            if (t.matches(Regex("^⚙️.*\\((done|completed|finished)\\)$", RegexOption.IGNORE_CASE))) {
+                                                false
+                                            } else if (hasTextOutput && t.startsWith("⚙️ ")) {
+                                                false
+                                            } else {
+                                                true
+                                            }
+                                        }.fold(mutableListOf<String>()) { acc, line ->
+                                            if (acc.lastOrNull() != line) acc.add(line)
+                                            acc
+                                        }
+                                        if (filtered.isNotEmpty()) {
+                                            setPlaceholder("⏳ 작업 진행 로그:\n" + filtered.joinToString("\n"))
+                                        }
+                                    }
+                                }
+                            } else null
+                            val reply = try {
+                                AiApiClient.send(
+                                    connection = effectiveMainConn,
+                                    history = roundHistory,
+                                    userMessage = currentPrompt,
+                                    sessionId = session.id,
+                                    cwd = effectiveDir,
+                                    cliSessionId = session.cliSessionId,
+                                    effort = session.selectedEffort,
+                                    skipPermissions = session.skipPermissions
+                                )
+                            } finally {
+                                mainPollJob?.cancel()
+                            }
                             totalInTok += reply.inputTokens
                             totalOutTok += reply.outputTokens
                             if (reply.inputTokens > 0L || reply.outputTokens > 0L) {
@@ -558,7 +588,12 @@ fun MainScreen(
                             if (s.id == session.id) s.copy(subagentRuns = s.subagentRuns + runs) else s
                         }
                         store.saveSessions(sessions)
-                        setPlaceholder("⚡ 라운드 $round/$maxRounds · 서브에이전트 ${runs.size}개 실행 중 (${runs.joinToString(", ") { it.label }})...")
+                        val mainPlanNote = mainText.replace(
+                            Regex("<<SUBAGENTS>>[\\s\\S]*?<</SUBAGENTS>>", RegexOption.IGNORE_CASE),
+                            ""
+                        ).trim().take(280)
+                        val subStatusHeader = "⚡ 라운드 $round/$maxRounds · 서브에이전트 ${runs.size}개 실행 중 (${runs.joinToString(", ") { it.label }})..."
+                        setPlaceholder(if (mainPlanNote.isNotBlank()) "$mainPlanNote\n\n$subStatusHeader" else subStatusHeader)
 
                         val latestSess = sessions.find { it.id == session.id } ?: session
                         val completedRuns = if (subConn.usesHiddenWebBridge()) {
