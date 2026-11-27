@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -370,8 +371,22 @@ fun MainScreen(
                 while (sendingMap[session.id] == true) {
                     kotlinx.coroutines.delay(1200L)
                     val lines = GitBridgeClient.fetchProgress(session.id)
-                    if (lines.isNotEmpty()) {
-                        val logText = "⏳ 작업 진행 로그:\n" + lines.joinToString("\n")
+                    val hasTextOutput = lines.any { it.startsWith("💬 ") }
+                    val filtered = lines.filter { line ->
+                        val t = line.trim()
+                        if (t.matches(Regex("^⚙️.*\\((done|completed|finished)\\)$", RegexOption.IGNORE_CASE))) {
+                            false
+                        } else if (hasTextOutput && t.startsWith("⚙️ ")) {
+                            false
+                        } else {
+                            true
+                        }
+                    }.fold(mutableListOf<String>()) { acc, line ->
+                        if (acc.lastOrNull() != line) acc.add(line)
+                        acc
+                    }
+                    if (filtered.isNotEmpty()) {
+                        val logText = "⏳ 작업 진행 로그:\n" + filtered.joinToString("\n")
                         sessions = sessions.map { s ->
                             if (s.id == session.id) {
                                 s.copy(messages = s.messages.map { m ->
@@ -923,8 +938,14 @@ fun MainScreen(
                                     )
                                 }
                                 ProviderMarkIcon(connection = conn, size = 16.dp)
+                                val trimmedTitle = sess.title.trim()
+                                val isDefaultTitle = trimmedTitle.isBlank() ||
+                                    trimmedTitle.matches(Regex("^세션\\s*\\d+$")) ||
+                                    trimmedTitle == "기본 세션" ||
+                                    (conn != null && trimmedTitle == conn.name.trim())
+                                val tabLabel = if (isDefaultTitle) "${idx + 1}" else trimmedTitle
                                 Text(
-                                    text = "${idx + 1}",
+                                    text = tabLabel,
                                     fontSize = 10.sp,
                                     fontWeight = FontWeight.SemiBold,
                                     color = if (isSelected) {
@@ -932,7 +953,9 @@ fun MainScreen(
                                     } else {
                                         MaterialTheme.colorScheme.onSurfaceVariant
                                     },
-                                    maxLines = 1
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = if (isDefaultTitle) Modifier else Modifier.widthIn(max = 84.dp)
                                 )
                                 Icon(
                                     Icons.Default.Close,

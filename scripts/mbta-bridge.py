@@ -300,16 +300,34 @@ def run_cli(cmd, cwd=None, timeout=1800, progress_key="", stream_mode=False):
                     state = su.get("state", "")
                     delta = su.get("text_delta", "")
                     if delta:
-                        delta_buf = (delta_buf + delta)[-120:]
+                        delta_buf = (delta_buf + delta)[-300:]
                         with PROGRESS_LOCK:
                             arr = PROGRESS_MAP.setdefault(progress_key, [])
+                            arr[:] = [x for x in arr if not x.startswith("⚙️ ")]
                             msg = f"💬 {delta_buf.replace(chr(10), ' ')}"
                             if arr and arr[-1].startswith("💬 "):
                                 arr[-1] = msg
                             else:
                                 arr.append(msg)
                     elif st and st != "user_input":
-                        append_progress(progress_key, f"⚙️ {st} ({state})")
+                        if state in ("done", "completed", "finished", "idle", ""):
+                            continue
+                        detail = su.get("tool_name") or su.get("name") or su.get("summary") or su.get("title") or ""
+                        if detail:
+                            with PROGRESS_LOCK:
+                                arr = PROGRESS_MAP.setdefault(progress_key, [])
+                                item = f"🔧 {detail}"
+                                if not arr or arr[-1] != item:
+                                    arr.append(item)
+                        else:
+                            with PROGRESS_LOCK:
+                                arr = PROGRESS_MAP.setdefault(progress_key, [])
+                                if not any(x.startswith("💬 ") for x in arr):
+                                    label = "⚙️ 도구 작업 중..." if st == "tool" else f"⚙️ {st} 진행 중..."
+                                    if arr and arr[-1].startswith("⚙️ "):
+                                        arr[-1] = label
+                                    else:
+                                        arr.append(label)
                 elif ev == "result":
                     final_result = obj.get("result")
                 elif tp == "system" and obj.get("subtype") == "init":
