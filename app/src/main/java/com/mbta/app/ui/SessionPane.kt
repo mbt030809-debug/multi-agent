@@ -86,6 +86,7 @@ import com.mbta.app.model.formatTokens
 import com.mbta.app.model.isHiddenWebBridge
 import com.mbta.app.model.usesHiddenWebBridge
 import com.mbta.app.network.GitBridgeClient
+import com.mbta.app.webview.HeadlessWebBridge
 import kotlinx.coroutines.launch
 
 private data class PendingAttachment(
@@ -93,7 +94,6 @@ private data class PendingAttachment(
     val mimeType: String,
     val bytes: ByteArray
 )
-import com.mbta.app.webview.HeadlessWebBridge
 
 private data class SlashSkill(
     val command: String,
