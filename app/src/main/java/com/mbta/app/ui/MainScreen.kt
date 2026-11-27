@@ -799,7 +799,7 @@ fun MainScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .statusBarsPadding()
-                        .height(40.dp)
+                        .height(34.dp)
                         .padding(horizontal = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -911,9 +911,9 @@ fun MainScreen(
                 LazyRow(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(top = 1.dp, bottom = 2.dp),
+                        .padding(top = 0.dp, bottom = 2.dp),
                     contentPadding = PaddingValues(horizontal = 8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     itemsIndexed(validProjectSessions, key = { _, it -> it.id }) { idx, sess ->
@@ -940,7 +940,7 @@ fun MainScreen(
                                     store.saveSecondarySessionId(sess.id)
                                 }
                             },
-                            shape = RoundedCornerShape(8.dp),
+                            shape = RoundedCornerShape(10.dp),
                             color = if (isSelected) {
                                 MaterialTheme.colorScheme.primaryContainer
                             } else {
@@ -953,18 +953,18 @@ fun MainScreen(
                             )
                         ) {
                             Row(
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp),
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                horizontalArrangement = Arrangement.spacedBy(5.dp)
                             ) {
                                 if (dotColor != null) {
                                     Box(
                                         modifier = Modifier
-                                            .size(6.dp)
+                                            .size(7.dp)
                                             .background(dotColor, CircleShape)
                                     )
                                 }
-                                ProviderMarkIcon(connection = conn, size = 16.dp)
+                                ProviderMarkIcon(connection = conn, size = 19.dp)
                                 val trimmedTitle = sess.title.trim()
                                 val isDefaultTitle = trimmedTitle.isBlank() ||
                                     trimmedTitle.matches(Regex("^세션\\s*\\d+$")) ||
@@ -973,7 +973,7 @@ fun MainScreen(
                                 val tabLabel = if (isDefaultTitle) "${idx + 1}" else trimmedTitle
                                 Text(
                                     text = tabLabel,
-                                    fontSize = 10.sp,
+                                    fontSize = 12.sp,
                                     fontWeight = FontWeight.SemiBold,
                                     color = if (isSelected) {
                                         MaterialTheme.colorScheme.onPrimaryContainer
@@ -982,13 +982,13 @@ fun MainScreen(
                                     },
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
-                                    modifier = if (isDefaultTitle) Modifier else Modifier.widthIn(max = 84.dp)
+                                    modifier = if (isDefaultTitle) Modifier else Modifier.widthIn(max = 100.dp)
                                 )
                                 Icon(
                                     Icons.Default.Close,
                                     contentDescription = "세션 삭제",
                                     modifier = Modifier
-                                        .size(13.dp)
+                                        .size(15.dp)
                                         .clickable { sessionPendingDelete = sess },
                                     tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f)
                                 )
@@ -998,9 +998,9 @@ fun MainScreen(
                     item {
                         IconButton(
                             onClick = { showNewSessionDialog = true },
-                            modifier = Modifier.size(26.dp)
+                            modifier = Modifier.size(31.dp)
                         ) {
-                            Icon(Icons.Default.Add, contentDescription = "새 하위 세션", modifier = Modifier.size(16.dp))
+                            Icon(Icons.Default.Add, contentDescription = "새 하위 세션", modifier = Modifier.size(19.dp))
                         }
                     }
                 }
