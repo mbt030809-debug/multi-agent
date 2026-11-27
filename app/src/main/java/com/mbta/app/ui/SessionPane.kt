@@ -882,15 +882,15 @@ fun SessionPane(
                 Surface(
                     onClick = { onSendMessage("Keep going") },
                     shape = RoundedCornerShape(8.dp),
-                    color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.85f),
+                    color = androidx.compose.ui.graphics.Color.White,
                     modifier = Modifier.size(32.dp)
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Icon(
                             painter = painterResource(id = R.drawable.ic_whip_keep),
                             contentDescription = "Keep going",
-                            tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                            modifier = Modifier.size(22.dp)
+                            tint = androidx.compose.ui.graphics.Color.Black,
+                            modifier = Modifier.size(24.dp)
                         )
                     }
                 }

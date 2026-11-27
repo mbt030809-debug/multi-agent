@@ -605,6 +605,11 @@ class HeadlessWebBridge(
                         var testId = (el.getAttribute && el.getAttribute('data-testid')) || '';
                         var isUser = roleAttr === 'user' || tag === 'user-query' || testId === 'user-message' || cls.indexOf('user-message') !== -1 || cls.indexOf('user-query') !== -1;
                         var txt = (el.innerText || '').trim();
+                        if (isUser) {
+                            txt = txt.replace(/^(?:말씀하신\s*내용|You\s*said)\s*[:：]?\s*\n+/i, '').trim();
+                        } else {
+                            txt = txt.replace(/^(?:Gemini의\s*대답|Gemini\s*said)\s*[:：]?\s*\n+/i, '').trim();
+                        }
                         if (!txt || txt === lastTxt) continue;
                         lastTxt = txt;
                         out.push({ role: isUser ? 'user' : 'assistant', content: txt });
