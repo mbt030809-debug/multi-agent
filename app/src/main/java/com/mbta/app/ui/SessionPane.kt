@@ -254,6 +254,7 @@ fun SessionPane(
     queuedMessages: List<String> = emptyList(),
     onCancelSending: () -> Unit = {},
     onRemoveQueued: (Int) -> Unit = {},
+    onSendQueuedNow: (Int) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var inputText by remember(session.id) { mutableStateOf("") }
@@ -717,6 +718,14 @@ fun SessionPane(
                                     text = q.take(24) + if (q.length > 24) "…" else "",
                                     fontSize = 11.sp,
                                     maxLines = 1
+                                )
+                                Icon(
+                                    Icons.AutoMirrored.Filled.Send,
+                                    contentDescription = "바로 보내기",
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier
+                                        .size(14.dp)
+                                        .clickable { onSendQueuedNow(idx) }
                                 )
                                 Icon(
                                     Icons.Default.Close,

@@ -483,6 +483,17 @@ fun MainScreen(
         store.saveSessions(sessions)
     }
 
+    fun sendQueuedNow(session: AgentSession, conn: AiConnection, idx: Int) {
+        val cur = queuedPromptsMap[session.id].orEmpty()
+        val msg = cur.getOrNull(idx) ?: return
+        queuedPromptsMap[session.id] = cur.filterIndexed { i, _ -> i != idx }
+        if (sendingMap[session.id] == true) {
+            cancelSessionTask(session, conn)
+        }
+        val latest = sessions.find { it.id == session.id } ?: session
+        sendMessageInSession(latest, conn, msg)
+    }
+
     fun handoffSession(fromSession: AgentSession, targetConn: AiConnection) {
         val transcript = fromSession.messages
             .filter { it.role != MessageRole.SYSTEM }
@@ -1084,6 +1095,9 @@ fun MainScreen(
                             val cur = queuedPromptsMap[primarySession.id].orEmpty()
                             queuedPromptsMap[primarySession.id] = cur.filterIndexed { i, _ -> i != idx }
                         },
+                        onSendQueuedNow = { idx ->
+                            if (primaryConn != null) sendQueuedNow(primarySession, primaryConn, idx)
+                        },
                         modifier = Modifier.fillMaxSize()
                     )
                 }
@@ -1126,6 +1140,9 @@ fun MainScreen(
                             onRemoveQueued = { idx ->
                                 val cur = queuedPromptsMap[primarySession.id].orEmpty()
                                 queuedPromptsMap[primarySession.id] = cur.filterIndexed { i, _ -> i != idx }
+                            },
+                            onSendQueuedNow = { idx ->
+                                if (primaryConn != null) sendQueuedNow(primarySession, primaryConn, idx)
                             },
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -1173,6 +1190,9 @@ fun MainScreen(
                                 val cur = queuedPromptsMap[primarySession.id].orEmpty()
                                 queuedPromptsMap[primarySession.id] = cur.filterIndexed { i, _ -> i != idx }
                             },
+                            onSendQueuedNow = { idx ->
+                                if (primaryConn != null) sendQueuedNow(primarySession, primaryConn, idx)
+                            },
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .weight(1f)
@@ -1219,6 +1239,9 @@ fun MainScreen(
                                 val cur = queuedPromptsMap[primarySession.id].orEmpty()
                                 queuedPromptsMap[primarySession.id] = cur.filterIndexed { i, _ -> i != idx }
                             },
+                            onSendQueuedNow = { idx ->
+                                if (primaryConn != null) sendQueuedNow(primarySession, primaryConn, idx)
+                            },
                             modifier = Modifier
                                 .fillMaxSize()
                                 .weight(1f)
@@ -1264,6 +1287,9 @@ fun MainScreen(
                             onRemoveQueued = { idx ->
                                 val cur = queuedPromptsMap[primarySession.id].orEmpty()
                                 queuedPromptsMap[primarySession.id] = cur.filterIndexed { i, _ -> i != idx }
+                            },
+                            onSendQueuedNow = { idx ->
+                                if (primaryConn != null) sendQueuedNow(primarySession, primaryConn, idx)
                             },
                             modifier = Modifier
                                 .fillMaxSize()
