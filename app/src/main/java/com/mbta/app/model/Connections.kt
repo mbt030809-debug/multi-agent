@@ -69,7 +69,34 @@ fun defaultModelFor(kind: ConnectionKind): String = when (kind) {
     ConnectionKind.CLAUDE_API -> "claude-sonnet-4-20250514"
     ConnectionKind.OPENAI_API -> "gpt-4o"
     ConnectionKind.GEMINI_API -> "gemini-2.5-flash"
+    ConnectionKind.CLAUDE_WEB -> "Sonnet"
+    ConnectionKind.CHATGPT_WEB -> "GPT-4o"
+    ConnectionKind.GEMINI_WEB -> "Gemini 2.5 Pro"
+    ConnectionKind.REMOTE_WEB, ConnectionKind.REMOTE_CONTROL -> "Gemini 4 Neon"
     else -> ""
+}
+
+fun availableModelsFor(kind: ConnectionKind): List<String> = when (kind) {
+    ConnectionKind.CLAUDE_API -> listOf(
+        "claude-sonnet-4-20250514",
+        "claude-opus-4-20250514",
+        "claude-3-7-sonnet-latest",
+        "claude-3-5-haiku-latest"
+    )
+    ConnectionKind.OPENAI_API -> listOf("gpt-4o", "gpt-4.1", "o3-mini", "o4-mini")
+    ConnectionKind.GEMINI_API -> listOf("gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash")
+    ConnectionKind.CLAUDE_WEB -> listOf("Sonnet", "Opus", "Haiku")
+    ConnectionKind.CHATGPT_WEB -> listOf("GPT-4o", "o3", "o4-mini", "GPT-4.5")
+    ConnectionKind.GEMINI_WEB -> listOf("Gemini 2.5 Pro", "Gemini 2.5 Flash", "Gemini Hydrogen", "Gemini Neon")
+    ConnectionKind.REMOTE_WEB, ConnectionKind.REMOTE_CONTROL -> listOf(
+        "Gemini 4 Neon (Low)",
+        "Gemini 4 Neon (Medium)",
+        "Gemini 4 Neon (High)",
+        "Gemini 4 Hydrogen (Low)",
+        "Claude Sonnet",
+        "Claude Opus"
+    )
+    ConnectionKind.TERMUX_CLI -> emptyList()
 }
 
 fun defaultEndpointFor(kind: ConnectionKind): String = when (kind) {

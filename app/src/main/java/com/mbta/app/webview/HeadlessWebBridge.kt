@@ -207,6 +207,39 @@ class HeadlessWebBridge(
         CookieManager.getInstance().flush()
     }
 
+    fun switchWebModel(key: String, modelName: String) {
+        val wv = pool[key] ?: return
+        val quoted = JSONObject.quote(modelName.lowercase())
+        val js = """
+            (function() {
+                $DEEP_QUERY_JS
+                var target = $quoted;
+                var btns = queryAllDeep('button, [role="button"], [aria-haspopup]');
+                var picker = null;
+                for (var i = 0; i < btns.length; i++) {
+                    var t = (btns[i].innerText || btns[i].getAttribute('aria-label') || '').toLowerCase();
+                    if (/gemini|claude|gpt|sonnet|opus|haiku|neon|hydrogen|model|모델/.test(t)) {
+                        picker = btns[i];
+                        break;
+                    }
+                }
+                if (!picker) return;
+                picker.click();
+                setTimeout(function() {
+                    var items = queryAllDeep('[role="menuitem"], [role="option"], li, button');
+                    for (var j = 0; j < items.length; j++) {
+                        var txt = (items[j].innerText || '').toLowerCase();
+                        if (txt && (txt.indexOf(target) !== -1 || target.indexOf(txt.trim()) !== -1)) {
+                            items[j].click();
+                            return;
+                        }
+                    }
+                }, 350);
+            })();
+        """.trimIndent()
+        wv.evaluateJavascript(js, null)
+    }
+
     fun currentUrl(key: String): String? = pool[key]?.url
 
     fun checkLoginStatus(

@@ -62,6 +62,7 @@ import com.mbta.app.model.ConnectionKind
 import com.mbta.app.model.CustomSkill
 import com.mbta.app.model.RemoteMode
 import com.mbta.app.model.autoDetectConnection
+import com.mbta.app.model.availableModelsFor
 import com.mbta.app.model.defaultEndpointFor
 import com.mbta.app.model.defaultModelFor
 import com.mbta.app.model.displayLabel
@@ -706,6 +707,18 @@ private fun ConnectionEditorDialog(
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
+                    val presets = availableModelsFor(initial.kind)
+                    if (presets.isNotEmpty()) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            presets.take(3).forEach { m ->
+                                FilterChip(
+                                    selected = model == m,
+                                    onClick = { model = m },
+                                    label = { Text(m, fontSize = 10.sp) }
+                                )
+                            }
+                        }
+                    }
                 }
                 OutlinedTextField(
                     value = endpointUrl,

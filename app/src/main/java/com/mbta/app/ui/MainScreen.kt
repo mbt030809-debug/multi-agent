@@ -193,6 +193,11 @@ fun MainScreen(
         } else null
 
         val targetConn = mentionedConn ?: conn
+        val effectiveConn = if (mentionedConn == null && session.selectedModel.isNotBlank()) {
+            targetConn.copy(model = session.selectedModel)
+        } else {
+            targetConn
+        }
         val cleanPrompt = if (mentionedConn != null) {
             text.substring(mentionedConn.name.length + 2).trim()
         } else {
@@ -287,7 +292,7 @@ fun MainScreen(
         sendingMap[session.id] = true
 
         scope.launch {
-            val reply = AiApiClient.send(targetConn, historyBefore, effectivePrompt, session.id)
+            val reply = AiApiClient.send(effectiveConn, historyBefore, effectivePrompt, session.id)
             val assistantMsg = ChatMessage(
                 id = "msg_${UUID.randomUUID()}",
                 role = MessageRole.ASSISTANT,
@@ -350,6 +355,14 @@ fun MainScreen(
     fun clearSessionMessages(session: AgentSession) {
         sessions = sessions.map { if (it.id == session.id) it.copy(messages = emptyList()) else it }
         store.saveSessions(sessions)
+    }
+
+    fun selectModelForSession(session: AgentSession, conn: AiConnection, model: String) {
+        sessions = sessions.map { if (it.id == session.id) it.copy(selectedModel = model) else it }
+        store.saveSessions(sessions)
+        if (conn.kind.isHiddenWebBridge()) {
+            headlessWebBridge.switchWebModel(conn.id, model)
+        }
     }
 
     fun retryLastInSession(session: AgentSession, conn: AiConnection) {
@@ -813,6 +826,9 @@ fun MainScreen(
                         onClearSession = { clearSessionMessages(primarySession) },
                         onOpenOrchestration = { showOrchestrationDialog = true },
                         onShareMarkdown = { shareSessionAsMarkdown(context, activeProject, primarySession) },
+                        onSelectModel = { model ->
+                            if (primaryConn != null) selectModelForSession(primarySession, primaryConn, model)
+                        },
                         onHandoffTo = { target -> handoffSession(primarySession, target) },
                         onDeleteSession = { deleteSession(primarySession) },
                         onOpenTokenDashboard = { showTokenDashboard = true },
@@ -846,6 +862,12 @@ fun MainScreen(
                             onClearSession = { clearSessionMessages(primarySession) },
                             onOpenOrchestration = { showOrchestrationDialog = true },
                             onShareMarkdown = { shareSessionAsMarkdown(context, activeProject, primarySession) },
+                            onSelectModel = { model ->
+                                if (primaryConn != null) selectModelForSession(primarySession, primaryConn, model)
+                            },
+                        onSelectModel = { model ->
+                            if (primaryConn != null) selectModelForSession(primarySession, primaryConn, model)
+                        },
                             onHandoffTo = { target -> handoffSession(primarySession, target) },
                             onDeleteSession = { deleteSession(primarySession) },
                             onOpenTokenDashboard = { showTokenDashboard = true },
@@ -881,6 +903,10 @@ fun MainScreen(
                             onClearSession = { clearSessionMessages(secondarySession ?: primarySession) },
                             onOpenOrchestration = { showOrchestrationDialog = true },
                             onShareMarkdown = { shareSessionAsMarkdown(context, activeProject, secondarySession ?: primarySession) },
+                            onSelectModel = { model ->
+                                val targetSess = secondarySession ?: primarySession
+                                if (secondaryConn != null) selectModelForSession(targetSess, secondaryConn, model)
+                            },
                             onHandoffTo = { target -> handoffSession(secondarySession ?: primarySession, target) },
                             onDeleteSession = { deleteSession(secondarySession ?: primarySession) },
                             onOpenTokenDashboard = { showTokenDashboard = true },
@@ -917,6 +943,12 @@ fun MainScreen(
                             onClearSession = { clearSessionMessages(primarySession) },
                             onOpenOrchestration = { showOrchestrationDialog = true },
                             onShareMarkdown = { shareSessionAsMarkdown(context, activeProject, primarySession) },
+                            onSelectModel = { model ->
+                                if (primaryConn != null) selectModelForSession(primarySession, primaryConn, model)
+                            },
+                        onSelectModel = { model ->
+                            if (primaryConn != null) selectModelForSession(primarySession, primaryConn, model)
+                        },
                             onHandoffTo = { target -> handoffSession(primarySession, target) },
                             onDeleteSession = { deleteSession(primarySession) },
                             onOpenTokenDashboard = { showTokenDashboard = true },
@@ -952,6 +984,10 @@ fun MainScreen(
                             onClearSession = { clearSessionMessages(secondarySession ?: primarySession) },
                             onOpenOrchestration = { showOrchestrationDialog = true },
                             onShareMarkdown = { shareSessionAsMarkdown(context, activeProject, secondarySession ?: primarySession) },
+                            onSelectModel = { model ->
+                                val targetSess = secondarySession ?: primarySession
+                                if (secondaryConn != null) selectModelForSession(targetSess, secondaryConn, model)
+                            },
                             onHandoffTo = { target -> handoffSession(secondarySession ?: primarySession, target) },
                             onDeleteSession = { deleteSession(secondarySession ?: primarySession) },
                             onOpenTokenDashboard = { showTokenDashboard = true },

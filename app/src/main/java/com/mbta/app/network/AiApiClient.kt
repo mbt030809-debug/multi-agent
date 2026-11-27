@@ -294,6 +294,9 @@ object AiApiClient {
         val url = connection.endpointUrl.ifBlank { defaultEndpointFor(ConnectionKind.REMOTE_CONTROL) }
         val payload = buildJsonObject {
             put("prompt", JsonPrimitive(prompt))
+            if (connection.model.isNotBlank()) {
+                put("model", JsonPrimitive(connection.model))
+            }
             if (sessionId.isNotBlank()) {
                 put("mbta_session_id", JsonPrimitive(sessionId))
             }

@@ -36,6 +36,9 @@ import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -68,6 +71,8 @@ import com.mbta.app.model.ConnectionKind
 import com.mbta.app.model.CustomSkill
 import com.mbta.app.model.MessageRole
 import com.mbta.app.model.Project
+import com.mbta.app.model.availableModelsFor
+import com.mbta.app.model.defaultModelFor
 import com.mbta.app.model.displayLabel
 import com.mbta.app.model.formatTokens
 import com.mbta.app.model.isHiddenWebBridge
@@ -112,6 +117,7 @@ fun SessionPane(
     onClearSession: () -> Unit,
     onOpenOrchestration: () -> Unit,
     onShareMarkdown: () -> Unit,
+    onSelectModel: (String) -> Unit,
     onHandoffTo: (AiConnection) -> Unit,
     onDeleteSession: () -> Unit,
     onOpenTokenDashboard: () -> Unit,
@@ -121,6 +127,8 @@ fun SessionPane(
 ) {
     var inputText by remember(session.id) { mutableStateOf("") }
     var showHandoffDialog by remember { mutableStateOf(false) }
+    var showModelMenu by remember { mutableStateOf(false) }
+    var showCustomModelDialog by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
 
     LaunchedEffect(session.messages.size) {
@@ -166,17 +174,56 @@ fun SessionPane(
                 overflow = TextOverflow.Ellipsis
             )
             if (connection != null) {
-                Spacer(modifier = Modifier.size(6.dp))
-                Surface(
-                    shape = RoundedCornerShape(4.dp),
-                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f)
-                ) {
-                    Text(
-                        text = connection.kind.displayLabel(),
-                        fontSize = 10.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
-                    )
+                val models = availableModelsFor(connection.kind)
+                if (models.isNotEmpty()) {
+                    val activeModel = session.selectedModel.ifBlank {
+                        connection.model.ifBlank { defaultModelFor(connection.kind) }
+                    }
+                    Spacer(modifier = Modifier.size(6.dp))
+                    Box {
+                        Surface(
+                            shape = RoundedCornerShape(4.dp),
+                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.8f),
+                            modifier = Modifier.clickable { showModelMenu = true }
+                        ) {
+                            Text(
+                                text = "$activeModel ▾",
+                                fontSize = 10.sp,
+                                color = MaterialTheme.colorScheme.primary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = showModelMenu,
+                            onDismissRequest = { showModelMenu = false }
+                        ) {
+                            models.forEach { m ->
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            m,
+                                            fontWeight = if (m == activeModel) FontWeight.Bold else FontWeight.Normal,
+                                            fontSize = 13.sp
+                                        )
+                                    },
+                                    onClick = {
+                                        showModelMenu = false
+                                        onSelectModel(m)
+                                    }
+                                )
+                            }
+                            HorizontalDivider()
+                            DropdownMenuItem(
+                                text = { Text("직접 입력...", fontSize = 13.sp) },
+                                onClick = {
+                                    showModelMenu = false
+                                    showCustomModelDialog = true
+                                }
+                            )
+                        }
+                    }
                 }
             }
             Spacer(modifier = Modifier.weight(1f))
@@ -477,6 +524,35 @@ fun SessionPane(
                 }
             }
         }
+    }
+
+    if (showCustomModelDialog) {
+        var customModel by remember { mutableStateOf(session.selectedModel) }
+        AlertDialog(
+            onDismissRequest = { showCustomModelDialog = false },
+            title = { Text("모델명 직접 입력") },
+            text = {
+                OutlinedTextField(
+                    value = customModel,
+                    onValueChange = { customModel = it },
+                    label = { Text("모델명") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                Button(
+                    enabled = customModel.isNotBlank(),
+                    onClick = {
+                        onSelectModel(customModel.trim())
+                        showCustomModelDialog = false
+                    }
+                ) { Text("적용") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCustomModelDialog = false }) { Text("취소") }
+            }
+        )
     }
 
     if (showHandoffDialog) {

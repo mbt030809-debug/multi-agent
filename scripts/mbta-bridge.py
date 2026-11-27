@@ -164,6 +164,8 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
         if self.path == "/claude":
             key = f"claude:{mbta_session_id}" if mbta_session_id else ""
             cmd = ["claude", "-p", prompt, "--output-format", "json"]
+            if data.get("model"):
+                cmd.extend(["--model", data["model"]])
             if key:
                 with SESSION_LOCK:
                     cli_sid = load_sessions().get(key)
@@ -195,6 +197,8 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
         if self.path == "/agy":
             key = f"agy:{mbta_session_id}" if mbta_session_id else ""
             cmd = ["agy", "-p", prompt, "--output-format", "json"]
+            if data.get("model"):
+                cmd.extend(["--model", data["model"]])
             if key:
                 with SESSION_LOCK:
                     cli_sid = load_sessions().get(key)
