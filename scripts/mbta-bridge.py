@@ -552,7 +552,7 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
             if alive:
                 mins, secs = divmod(elapsed_sec, 60)
                 t_str = f"{mins}분 {secs}초" if mins > 0 else f"{secs}초"
-                lines = [f"프로세스 활성 · {t_str} 경과"] + lines
+                lines = [f"🟢 프로세스 활성 · {t_str} 경과"] + lines
             self._send_json(200, {"lines": lines, "alive": alive, "elapsed_sec": elapsed_sec})
         elif self.path.startswith("/session_messages"):
             from urllib.parse import urlparse, parse_qs
