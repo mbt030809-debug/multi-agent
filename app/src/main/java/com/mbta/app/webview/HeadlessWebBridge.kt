@@ -243,6 +243,33 @@ class HeadlessWebBridge(
         return true
     }
 
+    fun attachFileToWebInput(key: String, filename: String, mimeType: String, base64Data: String) {
+        val wv = pool[key] ?: return
+        val qName = JSONObject.quote(filename)
+        val qMime = JSONObject.quote(mimeType.ifBlank { "application/octet-stream" })
+        val qB64 = JSONObject.quote(base64Data)
+        val js = """
+            (function() {
+                try {
+                    $DEEP_QUERY_JS
+                    var inputs = queryAllDeep('input[type="file"]');
+                    if (!inputs || inputs.length === 0) return 'no_input';
+                    var inp = inputs[0];
+                    var bin = atob($qB64);
+                    var arr = new Uint8Array(bin.length);
+                    for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+                    var file = new File([arr], $qName, { type: $qMime });
+                    var dt = new DataTransfer();
+                    dt.items.add(file);
+                    inp.files = dt.files;
+                    inp.dispatchEvent(new Event('change', { bubbles: true }));
+                    return 'ok';
+                } catch(e) { return 'err:' + e; }
+            })();
+        """.trimIndent()
+        wv.evaluateJavascript(js, null)
+    }
+
     fun sendPrompt(
         key: String,
         kind: ConnectionKind,

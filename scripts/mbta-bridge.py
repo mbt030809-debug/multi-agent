@@ -7,6 +7,7 @@ Usage: python3 ~/multi-agent/scripts/mbta-bridge.py
 """
 import datetime
 import glob
+import base64
 import http.server
 import json
 import os
@@ -512,6 +513,22 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
             data = json.loads(raw)
         except Exception:
             self._send_json(400, {"error": "Invalid JSON"})
+            return
+
+        if self.path == "/upload":
+            raw_name = os.path.basename((data.get("filename") or "file.bin").strip())
+            safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", raw_name) or "file.bin"
+            try:
+                raw_bytes = base64.b64decode(data.get("base64") or "")
+            except Exception as e:
+                self._send_json(400, {"error": f"Invalid base64: {e}"})
+                return
+            up_dir = os.path.expanduser("~/mbta-uploads")
+            os.makedirs(up_dir, exist_ok=True)
+            full_path = os.path.join(up_dir, f"{int(time.time())}_{safe_name}")
+            with open(full_path, "wb") as f:
+                f.write(raw_bytes)
+            self._send_json(200, {"path": full_path})
             return
 
         if self.path == "/exec":

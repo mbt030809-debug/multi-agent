@@ -43,6 +43,24 @@ object GitBridgeClient {
         }
     }
 
+    suspend fun uploadFile(filename: String, bytes: ByteArray): String? = withContext(Dispatchers.IO) {
+        try {
+            val b64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+            val body = buildJsonObject {
+                put("filename", JsonPrimitive(filename))
+                put("base64", JsonPrimitive(b64))
+            }.toString()
+            val req = Request.Builder().url("$BASE/upload").post(body.toRequestBody(jsonMedia)).build()
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return@withContext null
+                val raw = resp.body?.string().orEmpty()
+                json.parseToJsonElement(raw).jsonObject["path"]?.jsonPrimitive?.contentOrNull
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     suspend fun fetchSessionMessages(
         kind: String,
         sessionId: String,

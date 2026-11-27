@@ -1,7 +1,10 @@
 package com.mbta.app.ui
 
+import android.provider.OpenableColumns
 import android.view.ViewGroup
 import android.widget.FrameLayout
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -28,7 +31,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.CallSplit
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Refresh
@@ -53,10 +58,12 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -77,6 +84,15 @@ import com.mbta.app.model.defaultModelFor
 import com.mbta.app.model.displayLabel
 import com.mbta.app.model.formatTokens
 import com.mbta.app.model.isHiddenWebBridge
+import com.mbta.app.model.usesHiddenWebBridge
+import com.mbta.app.network.GitBridgeClient
+import kotlinx.coroutines.launch
+
+private data class PendingAttachment(
+    val name: String,
+    val mimeType: String,
+    val bytes: ByteArray
+)
 import com.mbta.app.webview.HeadlessWebBridge
 
 private data class SlashSkill(
@@ -129,10 +145,28 @@ fun SessionPane(
     modifier: Modifier = Modifier
 ) {
     var inputText by remember(session.id) { mutableStateOf("") }
+    var attachments by remember(session.id) { mutableStateOf<List<PendingAttachment>>(emptyList()) }
     var showHandoffDialog by remember { mutableStateOf(false) }
     var showModelMenu by remember { mutableStateOf(false) }
     var showCustomModelDialog by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
+    val context = LocalContext.current
+    val paneScope = rememberCoroutineScope()
+    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        runCatching {
+            val mime = context.contentResolver.getType(uri) ?: "application/octet-stream"
+            var name = "attachment"
+            context.contentResolver.query(uri, null, null, null, null)?.use { c ->
+                val idx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                if (idx >= 0 && c.moveToFirst()) name = c.getString(idx) ?: name
+            }
+            val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: return@runCatching
+            if (bytes.size <= 10 * 1024 * 1024) {
+                attachments = attachments + PendingAttachment(name, mime, bytes)
+            }
+        }
+    }
 
     LaunchedEffect(session.messages.size) {
         if (session.messages.isNotEmpty()) {
@@ -502,14 +536,52 @@ fun SessionPane(
                 }
             }
 
+            if (attachments.isNotEmpty()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = 10.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    attachments.forEachIndexed { idx, att ->
+                        Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            color = MaterialTheme.colorScheme.secondaryContainer
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Text("📎 ${att.name}", fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Icon(
+                                    Icons.Default.Close,
+                                    contentDescription = "제거",
+                                    modifier = Modifier
+                                        .size(14.dp)
+                                        .clickable { attachments = attachments.filterIndexed { i, _ -> i != idx } }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(MaterialTheme.colorScheme.surface)
                     .padding(horizontal = 10.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
+                IconButton(
+                    onClick = { filePicker.launch(arrayOf("*/*")) },
+                    modifier = Modifier.size(36.dp)
+                ) {
+                    Icon(Icons.Default.AttachFile, contentDescription = "파일 첨부", modifier = Modifier.size(20.dp))
+                }
                 OutlinedTextField(
                     value = inputText,
                     onValueChange = { inputText = it },
@@ -523,12 +595,38 @@ fun SessionPane(
                     modifier = Modifier.weight(1f)
                 )
                 IconButton(
-                    enabled = inputText.isNotBlank() && !isSending,
+                    enabled = (inputText.isNotBlank() || attachments.isNotEmpty()) && !isSending,
                     onClick = {
                         val text = inputText.trim()
-                        if (text.isNotEmpty()) {
-                            inputText = ""
-                            onSendMessage(text)
+                        val pendingAtts = attachments
+                        inputText = ""
+                        attachments = emptyList()
+                        if (pendingAtts.isEmpty()) {
+                            if (text.isNotEmpty()) onSendMessage(text)
+                        } else {
+                            paneScope.launch {
+                                val extra = StringBuilder()
+                                val textExts = setOf("txt", "md", "kt", "java", "py", "js", "ts", "json", "xml", "yml", "yaml", "sh", "log", "csv", "html", "css", "c", "cpp", "h", "rs", "go")
+                                var webAttached = false
+                                for (att in pendingAtts) {
+                                    val ext = att.name.substringAfterLast('.', "").lowercase()
+                                    if ((att.mimeType.startsWith("text/") || ext in textExts) && att.bytes.size <= 65536) {
+                                        extra.append("\n\n[첨부파일: ${att.name}]\n```\n${att.bytes.toString(Charsets.UTF_8)}\n```")
+                                    } else if (connection.usesHiddenWebBridge()) {
+                                        val b64 = android.util.Base64.encodeToString(att.bytes, android.util.Base64.NO_WRAP)
+                                        headlessWebBridge.attachFileToWebInput(connection.id, att.name, att.mimeType, b64)
+                                        webAttached = true
+                                    } else {
+                                        val savedPath = GitBridgeClient.uploadFile(att.name, att.bytes)
+                                        if (savedPath != null) {
+                                            extra.append("\n\n[첨부파일 경로: $savedPath]")
+                                        }
+                                    }
+                                }
+                                if (webAttached) kotlinx.coroutines.delay(400L)
+                                val combined = (text + extra.toString()).trim().ifBlank { "첨부한 파일을 확인해줘." }
+                                onSendMessage(combined)
+                            }
                         }
                     }
                 ) {
