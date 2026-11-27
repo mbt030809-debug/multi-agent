@@ -1676,15 +1676,24 @@ private fun ExistingSessionPickerDialog(
                         }
                     }
                     if (loading) {
-                        Text(
-                            if (selectedConn?.usesHiddenWebBridge() == true) {
-                                "사이드바를 자동으로 열어 세션 목록을 불러오는 중..."
-                            } else {
-                                "세션 목록 불러오는 중..."
-                            },
-                            fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            androidx.compose.material3.CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                strokeWidth = 2.dp
+                            )
+                            Text(
+                                if (selectedConn?.usesHiddenWebBridge() == true) {
+                                    "사이드바를 자동으로 열어 세션 목록을 불러오는 중..."
+                                } else {
+                                    "세션 목록 불러오는 중..."
+                                },
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     } else if (items.isEmpty()) {
                         Text(
                             "불러올 기존 세션이 없습니다. (웹 연결은 먼저 로그인되어 있어야 합니다)",

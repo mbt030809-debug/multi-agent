@@ -5,6 +5,12 @@ import android.view.ViewGroup
 import android.widget.FrameLayout
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.StartOffset
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -22,13 +28,16 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
@@ -45,12 +54,12 @@ import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -378,10 +387,6 @@ fun SessionPane(
             }
         }
 
-        if (isSending) {
-            LinearProgressIndicator(modifier = Modifier.fillMaxWidth().height(2.dp))
-        }
-
         if (connection == null) {
             Box(
                 modifier = Modifier
@@ -437,16 +442,36 @@ fun SessionPane(
                 contentPadding = PaddingValues(12.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                items(session.messages, key = { it.id }) { msg ->
+                itemsIndexed(session.messages, key = { _, m -> m.id }) { idx, msg ->
                     ChatBubble(
                         message = msg,
                         isCli = connection.kind == ConnectionKind.TERMUX_CLI,
                         fontScale = zoomScale,
+                        isStreaming = isSending && idx == session.messages.lastIndex && msg.role == MessageRole.ASSISTANT,
                         onRetryLast = onRetryLast,
                         onQuoteToInput = { quoted ->
                             inputText = if (inputText.isBlank()) quoted else "$inputText\n$quoted"
                         }
                     )
+                }
+                if (isSending && session.messages.lastOrNull()?.role != MessageRole.ASSISTANT) {
+                    item(key = "waiting_spinner") {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = MaterialTheme.colorScheme.surfaceVariant
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                                    Text("응답 기다리는 중...", fontSize = (13f * zoomScale).sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
@@ -805,10 +830,42 @@ fun SessionPane(
 }
 
 @Composable
+private fun WavingDotsIndicator() {
+    val transition = rememberInfiniteTransition(label = "dots")
+    val offsets = listOf(0, 130, 260).map { delayMs ->
+        transition.animateFloat(
+            initialValue = 0f,
+            targetValue = -5f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 380),
+                repeatMode = RepeatMode.Reverse,
+                initialStartOffset = StartOffset(delayMs)
+            ),
+            label = "dot_$delayMs"
+        )
+    }
+    Row(
+        modifier = Modifier.padding(top = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        offsets.forEach { anim ->
+            Box(
+                modifier = Modifier
+                    .size(5.dp)
+                    .offset(y = anim.value.dp)
+                    .background(MaterialTheme.colorScheme.primary, CircleShape)
+            )
+        }
+    }
+}
+
+@Composable
 private fun ChatBubble(
     message: ChatMessage,
     isCli: Boolean,
     fontScale: Float = 1f,
+    isStreaming: Boolean = false,
     onRetryLast: () -> Unit,
     onQuoteToInput: (String) -> Unit = {}
 ) {
@@ -819,12 +876,20 @@ private fun ChatBubble(
                 color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text(
-                    text = message.content,
-                    fontSize = (11f * fontScale).sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(10.dp)
-                )
+                Row(
+                    modifier = Modifier.padding(10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    if (message.content.contains("불러오는 중")) {
+                        CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+                    }
+                    Text(
+                        text = message.content,
+                        fontSize = (11f * fontScale).sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
         }
         MessageRole.USER -> {
@@ -907,8 +972,26 @@ private fun ChatBubble(
                             }
                         }
                         Spacer(modifier = Modifier.height(2.dp))
-                        SelectionContainer {
-                            FormattedMessageContent(text = message.content, isCli = isCli, fontScale = fontScale)
+                        if (isStreaming && (message.content == "응답 대기 중..." || message.content == "⏳ 작업 중...")) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.padding(vertical = 2.dp)
+                            ) {
+                                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                                Text(
+                                    text = message.content,
+                                    fontSize = (13f * fontScale).sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        } else {
+                            SelectionContainer {
+                                FormattedMessageContent(text = message.content, isCli = isCli, fontScale = fontScale)
+                            }
+                            if (isStreaming) {
+                                WavingDotsIndicator()
+                            }
                         }
                         if (message.isError) {
                             TextButton(
