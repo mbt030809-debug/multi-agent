@@ -49,6 +49,9 @@ fun ConnectionKind.isHiddenWebBridge(): Boolean =
         this == ConnectionKind.GEMINI_WEB ||
         this == ConnectionKind.REMOTE_WEB
 
+/** 웹 연결의 세션별 WebView 풀 키 — 세션마다 독립된 WebView/대화를 쓰도록 분리 */
+fun webSessionKey(connId: String, sessionId: String): String = "$connId#$sessionId"
+
 fun AiConnection.usesHiddenWebBridge(): Boolean =
     kind.isHiddenWebBridge() ||
         (kind == ConnectionKind.REMOTE_CONTROL && remoteMode == RemoteMode.WEB_EMBED)

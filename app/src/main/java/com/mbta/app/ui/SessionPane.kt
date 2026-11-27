@@ -1083,7 +1083,7 @@ fun SessionPane(
                         expandedQuestionMsgId = null
                         android.widget.Toast.makeText(context, "⚡ 권한 자동 승인됨", android.widget.Toast.LENGTH_SHORT).show()
                         if (connection != null && connection.usesHiddenWebBridge() && headlessWebBridge != null) {
-                            headlessWebBridge.clickWebActionButton(connection.id, "허용") { clicked ->
+                            headlessWebBridge.clickWebActionButton(com.mbta.app.model.webSessionKey(connection.id, session.id), "허용") { clicked ->
                                 if (!clicked) onSendMessage("허용")
                             }
                         } else {
@@ -1214,7 +1214,7 @@ fun SessionPane(
                                                 dismissedQuestionMsgId = lastMsg.id
                                                 expandedQuestionMsgId = null
                                                 if ((isApprove || isDeny) && connection != null && connection.usesHiddenWebBridge() && headlessWebBridge != null) {
-                                                    headlessWebBridge.clickWebActionButton(connection.id, choice) { clicked ->
+                                                    headlessWebBridge.clickWebActionButton(com.mbta.app.model.webSessionKey(connection.id, session.id), choice) { clicked ->
                                                         if (clicked) {
                                                             android.widget.Toast.makeText(context, "'$choice' 버튼을 클릭했습니다.", android.widget.Toast.LENGTH_SHORT).show()
                                                         } else {
@@ -1437,7 +1437,7 @@ fun SessionPane(
                                     } else if (connection.usesHiddenWebBridge()) {
                                         val b64 = android.util.Base64.encodeToString(att.bytes, android.util.Base64.NO_WRAP)
                                         val attached = headlessWebBridge.attachFileToWebInputSuspend(
-                                            key = connection.id,
+                                            key = com.mbta.app.model.webSessionKey(connection.id, session.id),
                                             url = connection.endpointUrl,
                                             filename = att.name,
                                             mimeType = att.mimeType,

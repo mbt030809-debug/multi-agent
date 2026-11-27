@@ -286,7 +286,7 @@ fun MainScreen(
         val sess = sessions.find { it.id == activeSessionId } ?: return@LaunchedEffect
         val conn = connections.find { it.id == sess.connectionId } ?: return@LaunchedEffect
         if (conn.usesHiddenWebBridge() && sess.webConversationUrl.isNotBlank()) {
-            headlessWebBridge.navigateIfNeeded(conn.id, sess.webConversationUrl)
+            headlessWebBridge.navigateIfNeeded(com.mbta.app.model.webSessionKey(conn.id, sess.id), sess.webConversationUrl)
         }
         refreshQuotaForConnection(conn, force = false)
     }
@@ -503,7 +503,7 @@ fun MainScreen(
                     for (round in 1..(maxRounds + 1)) {
                         val (mainText, mainErr) = if (effectiveMainConn.usesHiddenWebBridge()) {
                             val (triple, err) = headlessWebBridge.sendPromptSuspend(
-                                key = effectiveMainConn.id,
+                                key = com.mbta.app.model.webSessionKey(effectiveMainConn.id, session.id),
                                 kind = effectiveMainConn.kind,
                                 url = effectiveMainConn.endpointUrl,
                                 prompt = currentPrompt
@@ -743,7 +743,7 @@ fun MainScreen(
             sendingMap[session.id] = true
 
             headlessWebBridge.sendPrompt(
-                key = targetConn.id,
+                key = com.mbta.app.model.webSessionKey(targetConn.id, session.id),
                 kind = targetConn.kind,
                 url = targetConn.endpointUrl,
                 prompt = effectivePrompt,
@@ -758,7 +758,7 @@ fun MainScreen(
                     }
                 },
                 onDone = { finalText, inTok, outTok ->
-                    val curUrl = headlessWebBridge.currentUrl(targetConn.id).orEmpty()
+                    val curUrl = headlessWebBridge.currentUrl(com.mbta.app.model.webSessionKey(targetConn.id, session.id)).orEmpty()
                     val newConvUrl = if (isSavableConversationUrl(curUrl, targetConn.endpointUrl) && curUrl != session.webConversationUrl) {
                         curUrl
                     } else {
@@ -955,7 +955,7 @@ fun MainScreen(
         }
         sendingMap[session.id] = false
         if (conn.usesHiddenWebBridge()) {
-            headlessWebBridge.cancelActiveRequest(conn.id)
+            headlessWebBridge.cancelActiveRequest(com.mbta.app.model.webSessionKey(conn.id, session.id))
         } else if (conn.kind == ConnectionKind.REMOTE_CONTROL || conn.kind == ConnectionKind.TERMUX_CLI) {
             scope.launch { GitBridgeClient.cancelSession(session.id) }
         }
@@ -1078,8 +1078,8 @@ fun MainScreen(
             store.saveSessions(sessions)
 
             if (targetConn.usesHiddenWebBridge()) {
-                headlessWebBridge.getOrCreateWebView(targetConn.id, targetConn.endpointUrl)
-                headlessWebBridge.navigateIfNeeded(targetConn.id, targetConn.endpointUrl)
+                headlessWebBridge.getOrCreateWebView(com.mbta.app.model.webSessionKey(targetConn.id, fromSession.id), targetConn.endpointUrl)
+                headlessWebBridge.navigateIfNeeded(com.mbta.app.model.webSessionKey(targetConn.id, fromSession.id), targetConn.endpointUrl)
             }
             if (autoSend) {
                 sendMessageInSession(replaced, targetConn, contextBody)
@@ -1088,6 +1088,7 @@ fun MainScreen(
     }
 
     fun deleteSession(session: AgentSession) {
+        headlessWebBridge.releaseWebView(com.mbta.app.model.webSessionKey(session.connectionId.orEmpty(), session.id))
         val remainingInProject = validProjectSessions.filterNot { it.id == session.id }
         sessions = sessions.filterNot { it.id == session.id }
         if (activeSessionId == session.id) {
@@ -1106,7 +1107,7 @@ fun MainScreen(
         sessions = sessions.map { if (it.id == session.id) it.copy(selectedModel = model) else it }
         store.saveSessions(sessions)
         if (conn.usesHiddenWebBridge()) {
-            headlessWebBridge.switchWebModel(conn.id, model)
+            headlessWebBridge.switchWebModel(com.mbta.app.model.webSessionKey(conn.id, session.id), model)
         }
     }
 
@@ -1199,7 +1200,7 @@ fun MainScreen(
                     val replyText = replyPair.second
                     val isPermChoice = replyText in setOf("허용", "허용 안 함", "항상 허용", "거부")
                     if (isPermChoice && targetConn.usesHiddenWebBridge()) {
-                        headlessWebBridge.clickWebActionButton(targetConn.id, replyText) { clicked ->
+                        headlessWebBridge.clickWebActionButton(com.mbta.app.model.webSessionKey(targetConn.id, targetSess.id), replyText) { clicked ->
                             if (!clicked) sendMessageInSession(targetSess, targetConn, replyText)
                         }
                     } else {
@@ -1234,7 +1235,7 @@ fun MainScreen(
             }
         }
         if (conn.usesHiddenWebBridge()) {
-            val liveUrl = headlessWebBridge.currentUrl(conn.id).orEmpty()
+            val liveUrl = headlessWebBridge.currentUrl(com.mbta.app.model.webSessionKey(conn.id, sess.id)).orEmpty()
             val targetUrl = sess.webConversationUrl.ifBlank {
                 if (isSavableConversationUrl(liveUrl, conn.endpointUrl)) liveUrl else ""
             }
@@ -1244,7 +1245,7 @@ fun MainScreen(
                     store.saveSessions(sessions)
                 }
                 headlessWebBridge.fetchWebSessionMessages(
-                    key = conn.id,
+                    key = com.mbta.app.model.webSessionKey(conn.id, sess.id),
                     kind = conn.kind,
                     url = targetUrl,
                     agentName = conn.name,
@@ -1289,6 +1290,14 @@ fun MainScreen(
         } else null
     }.distinctBy { it.first }
 
+    // 세션별 독립 WebView: 화면에 보이거나 응답 중인 웹 세션만 호스트에 붙임 (동시 실행 지원)
+    val sessionWebTargets = sessions.filter { s ->
+        s.id == primarySession?.id || s.id == secondarySession?.id || sendingMap[s.id] == true
+    }.mapNotNull { s ->
+        val c = connections.find { it.id == s.connectionId }
+        if (c != null && c.enabled && c.usesHiddenWebBridge()) com.mbta.app.model.webSessionKey(c.id, s.id) to s.webConversationUrl.ifBlank { c.endpointUrl } else null
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
         // Layer 0: Hidden full-viewport host for active WebView bridges
         AndroidView(
@@ -1305,6 +1314,9 @@ fun MainScreen(
                 if (loginConnection == null) {
                     connections.filter { it.enabled && it.usesHiddenWebBridge() }.forEach { conn ->
                         headlessWebBridge.attachToHiddenHost(host, conn.id, conn.endpointUrl)
+                    }
+                    sessionWebTargets.forEach { (key, url) ->
+                        headlessWebBridge.attachToHiddenHost(host, key, url)
                     }
                 }
             }

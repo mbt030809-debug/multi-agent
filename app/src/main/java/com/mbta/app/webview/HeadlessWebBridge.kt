@@ -526,6 +526,16 @@ class HeadlessWebBridge(
 
     fun currentUrl(key: String): String? = pool[key]?.url
 
+    /** 세션 삭제 시 해당 세션 전용 WebView 해제 */
+    fun releaseWebView(key: String) {
+        activeReqByKey.remove(key)?.let { pending.remove(it) }
+        val wv = pool.remove(key) ?: return
+        loadedUrls.remove(key)
+        targetUrls.remove(key)
+        (wv.parent as? ViewGroup)?.removeView(wv)
+        wv.destroy()
+    }
+
     fun clickWebActionButton(key: String, label: String, onResult: (Boolean) -> Unit = {}) {
         val wv = pool[key]
         if (wv == null) {
