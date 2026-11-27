@@ -406,8 +406,14 @@ object AiApiClient {
         cliSessionId: String = ""
     ): AiReply {
         val url = connection.endpointUrl.ifBlank { defaultEndpointFor(ConnectionKind.REMOTE_CONTROL) }
+        val isLocalBridge = (url.contains("127.0.0.1:8765/agy") || url.contains("127.0.0.1:8765/claude") ||
+            url.contains("localhost:8765/agy") || url.contains("localhost:8765/claude"))
+        val bridgeEndpoint = if (url.lowercase().contains("/claude")) "/claude" else "/agy"
         val payload = buildJsonObject {
             put("prompt", JsonPrimitive(prompt))
+            if (isLocalBridge) {
+                put("endpoint", JsonPrimitive(bridgeEndpoint))
+            }
             if (connection.model.isNotBlank()) {
                 put("model", JsonPrimitive(connection.model))
             }
@@ -432,6 +438,52 @@ object AiApiClient {
                 }
             })
         }.toString()
+
+        if (isLocalBridge) {
+            val startReq = Request.Builder()
+                .url("http://127.0.0.1:8765/start_job")
+                .addHeader("content-type", "application/json")
+                .post(payload.toRequestBody(jsonMediaType))
+                .build()
+            val jobId = runCatching {
+                client.newCall(startReq).execute().use { resp ->
+                    if (!resp.isSuccessful) return@use null
+                    val bodyStr = resp.body?.string().orEmpty()
+                    json.parseToJsonElement(bodyStr).jsonObject["job_id"]?.jsonPrimitive?.contentOrNull
+                }
+            }.getOrNull()
+
+            if (!jobId.isNullOrBlank()) {
+                while (!Thread.currentThread().isInterrupted) {
+                    try {
+                        Thread.sleep(1500L)
+                    } catch (_: InterruptedException) {
+                        return AiReply(text = "", error = "작업이 취소되었습니다.")
+                    }
+                    val pollReq = Request.Builder()
+                        .url("http://127.0.0.1:8765/job_status?job_id=$jobId")
+                        .get()
+                        .build()
+                    val pollResult = runCatching {
+                        client.newCall(pollReq).execute().use { resp ->
+                            if (!resp.isSuccessful) return@use null
+                            json.parseToJsonElement(resp.body?.string().orEmpty()).jsonObject
+                        }
+                    }.getOrNull() ?: continue
+                    val status = pollResult["status"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                    if (status == "done") {
+                        val text = pollResult["response"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                        val inTok = pollResult["input_tokens"]?.jsonPrimitive?.longOrNull ?: 0L
+                        val outTok = pollResult["output_tokens"]?.jsonPrimitive?.longOrNull ?: 0L
+                        return AiReply(text = text, inputTokens = inTok, outputTokens = outTok)
+                    } else if (status == "error") {
+                        val err = pollResult["error"]?.jsonPrimitive?.contentOrNull ?: "로컬 브릿지 실행 오류"
+                        return AiReply(text = "", error = err)
+                    }
+                }
+                return AiReply(text = "", error = "작업이 취소되었습니다.")
+            }
+        }
 
         val reqBuilder = Request.Builder()
             .url(url)

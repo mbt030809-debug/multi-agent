@@ -9,6 +9,7 @@ import datetime
 import glob
 import base64
 import http.server
+import uuid
 import json
 import os
 import re
@@ -129,6 +130,8 @@ PROGRESS_LOCK = threading.Lock()
 PROGRESS_MAP = {}
 ACTIVE_PROCS = {}
 MODELS_CACHE = {}
+JOBS_LOCK = threading.Lock()
+JOBS_MAP = {}
 
 
 def fetch_agy_models():
@@ -243,7 +246,7 @@ def load_claude_messages(sid, limit=40):
     return msgs[-limit:]
 
 
-def run_cli(cmd, cwd=None, timeout=300, progress_key=""):
+def run_cli(cmd, cwd=None, timeout=1800, progress_key=""):
     work_dir = cwd if (cwd and os.path.isdir(cwd)) else None
     if not progress_key:
         return subprocess.run(cmd, cwd=work_dir, capture_output=True, text=True, timeout=timeout)
@@ -490,6 +493,13 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                 models = fetch_claude_models() if kind == "claude" else fetch_agy_models()
                 MODELS_CACHE[kind] = (now, models)
             self._send_json(200, {"models": models})
+        elif self.path.startswith("/job_status"):
+            from urllib.parse import urlparse, parse_qs
+            qs = parse_qs(urlparse(self.path).query)
+            jid = (qs.get("job_id") or [""])[0]
+            with JOBS_LOCK:
+                job = dict(JOBS_MAP.get(jid, {"status": "error", "error": "job not found"}))
+            self._send_json(200, job)
         elif self.path.startswith("/sessions"):
             kind = "claude" if "kind=claude" in self.path else ("agy" if "kind=agy" in self.path else "all")
             items = []
@@ -628,6 +638,48 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
             env.pop("GITHUB_TOKEN", None)
             p = subprocess.run(["git", "-C", cwd, "push"], env=env, capture_output=True, text=True, timeout=60)
             self._send_json(200, {"ok": p.returncode == 0, "output": (p.stdout + p.stderr).strip()})
+            return
+
+        if self.path == "/start_job":
+            import urllib.request
+            job_id = str(uuid.uuid4())
+            endpoint = data.get("endpoint") or "/agy"
+            if endpoint not in ("/claude", "/agy"):
+                endpoint = "/agy"
+            with JOBS_LOCK:
+                JOBS_MAP[job_id] = {"status": "running"}
+
+            def _worker():
+                try:
+                    req_body = json.dumps(data).encode("utf-8")
+                    req = urllib.request.Request(
+                        f"http://127.0.0.1:8765{endpoint}",
+                        data=req_body,
+                        headers={"Content-Type": "application/json"},
+                        method="POST",
+                    )
+                    with urllib.request.urlopen(req, timeout=1850) as resp:
+                        res = json.loads(resp.read().decode("utf-8"))
+                    with JOBS_LOCK:
+                        JOBS_MAP[job_id] = {
+                            "status": "done",
+                            "response": res.get("response", ""),
+                            "input_tokens": res.get("input_tokens", 0),
+                            "output_tokens": res.get("output_tokens", 0),
+                        }
+                except Exception as e:
+                    err_msg = str(e)
+                    if hasattr(e, "read"):
+                        try:
+                            err_body = json.loads(e.read().decode("utf-8"))
+                            err_msg = err_body.get("error", err_msg)
+                        except Exception:
+                            pass
+                    with JOBS_LOCK:
+                        JOBS_MAP[job_id] = {"status": "error", "error": err_msg}
+
+            threading.Thread(target=_worker, daemon=True).start()
+            self._send_json(200, {"job_id": job_id})
             return
 
         prompt = data.get("prompt", "")
