@@ -344,17 +344,18 @@ class HeadlessWebBridge(
     ) {
         val wv = getOrCreateWebView(key, url)
         val navigated = navigateIfNeeded(key, url)
-        val delayMs = if (navigated) 2500L else 300L
+        val delayMs = if (navigated) 1200L else 300L
         val selector = when (kind) {
             ConnectionKind.CHATGPT_WEB -> "[data-message-author-role=\"user\"], [data-message-author-role=\"assistant\"]"
-            ConnectionKind.CLAUDE_WEB -> "[data-testid=\"user-message\"], .font-user-message, .font-claude-response, .font-claude-message"
-            ConnectionKind.GEMINI_WEB -> "user-query, model-response"
-            else -> "[data-message-author-role], article"
+            ConnectionKind.CLAUDE_WEB -> "[data-testid=\"user-message\"], .font-user-message, .font-claude-response, .font-claude-message, [data-testid=\"assistant-message\"]"
+            ConnectionKind.GEMINI_WEB -> "user-query, model-response, .user-query-container, message-content"
+            else -> "[data-message-author-role], user-query, model-response, article"
         }
         val js = """
             (function() {
                 try {
-                    var nodes = document.querySelectorAll('$selector');
+                    $DEEP_QUERY_JS
+                    var nodes = queryAllDeep('$selector');
                     var out = [];
                     for (var i = 0; i < nodes.length; i++) {
                         var el = nodes[i];
@@ -362,7 +363,7 @@ class HeadlessWebBridge(
                         var roleAttr = (el.getAttribute && el.getAttribute('data-message-author-role')) || '';
                         var cls = (el.className || '').toString().toLowerCase();
                         var testId = (el.getAttribute && el.getAttribute('data-testid')) || '';
-                        var isUser = roleAttr === 'user' || tag === 'user-query' || testId === 'user-message' || cls.indexOf('user-message') !== -1;
+                        var isUser = roleAttr === 'user' || tag === 'user-query' || testId === 'user-message' || cls.indexOf('user-message') !== -1 || cls.indexOf('user-query') !== -1;
                         var txt = (el.innerText || '').trim();
                         if (!txt) continue;
                         out.push({ role: isUser ? 'user' : 'assistant', content: txt });
@@ -371,7 +372,7 @@ class HeadlessWebBridge(
                 } catch(e) { return '[]'; }
             })();
         """.trimIndent()
-        mainHandler.postDelayed({
+        fun attemptFetch(attempt: Int) {
             wv.evaluateJavascript(js) { raw ->
                 val list = mutableListOf<com.mbta.app.model.ChatMessage>()
                 try {
@@ -397,9 +398,14 @@ class HeadlessWebBridge(
                         )
                     }
                 } catch (_: Exception) {}
-                onResult(list)
+                if (list.isNotEmpty() || attempt >= 11) {
+                    onResult(list)
+                } else {
+                    mainHandler.postDelayed({ attemptFetch(attempt + 1) }, 700L)
+                }
             }
-        }, delayMs)
+        }
+        mainHandler.postDelayed({ attemptFetch(0) }, delayMs)
     }
 
     fun fetchWebSessions(
