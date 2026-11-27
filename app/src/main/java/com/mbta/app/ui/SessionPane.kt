@@ -303,19 +303,31 @@ fun SessionPane(
         uiPrefs.edit().putFloat("chat_zoom_scale", clamped).apply()
     }
     val paneScope = rememberCoroutineScope()
-    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri == null) return@rememberLauncherForActivityResult
-        runCatching {
-            val mime = context.contentResolver.getType(uri) ?: "application/octet-stream"
-            var name = "attachment"
-            context.contentResolver.query(uri, null, null, null, null)?.use { c ->
-                val idx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                if (idx >= 0 && c.moveToFirst()) name = c.getString(idx) ?: name
+    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isEmpty()) return@rememberLauncherForActivityResult
+        val added = mutableListOf<PendingAttachment>()
+        var skippedLarge = 0
+        for (uri in uris) {
+            runCatching {
+                val mime = context.contentResolver.getType(uri) ?: "application/octet-stream"
+                var name = "attachment"
+                context.contentResolver.query(uri, null, null, null, null)?.use { c ->
+                    val idx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (idx >= 0 && c.moveToFirst()) name = c.getString(idx) ?: name
+                }
+                val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: return@runCatching
+                if (bytes.size <= 10 * 1024 * 1024) {
+                    added.add(PendingAttachment(name, mime, bytes, uri))
+                } else {
+                    skippedLarge++
+                }
             }
-            val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: return@runCatching
-            if (bytes.size <= 10 * 1024 * 1024) {
-                attachments = attachments + PendingAttachment(name, mime, bytes, uri)
-            }
+        }
+        if (added.isNotEmpty()) {
+            attachments = attachments + added
+        }
+        if (skippedLarge > 0) {
+            android.widget.Toast.makeText(context, "10MB 초과 파일 ${skippedLarge}개는 제외되었습니다.", android.widget.Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -933,8 +945,24 @@ fun SessionPane(
                         .fillMaxWidth()
                         .horizontalScroll(rememberScrollState())
                         .padding(horizontal = 10.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
+                    if (attachments.size >= 2) {
+                        Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.7f),
+                            modifier = Modifier.clickable { attachments = emptyList() }
+                        ) {
+                            Text(
+                                text = "${attachments.size}개 · 전체삭제",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
+                        }
+                    }
                     attachments.forEachIndexed { idx, att ->
                         Surface(
                             shape = RoundedCornerShape(16.dp),
@@ -945,7 +973,13 @@ fun SessionPane(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
-                                Text("📎 ${att.name}", fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text(
+                                    text = "📎 ${att.name}",
+                                    fontSize = 11.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.widthIn(max = 160.dp)
+                                )
                                 Icon(
                                     Icons.Default.Close,
                                     contentDescription = "제거",
@@ -1134,6 +1168,7 @@ fun SessionPane(
                                         )
                                         if (attached) {
                                             webAttached = true
+                                            kotlinx.coroutines.delay(350L)
                                         } else {
                                             extra.append("\n[📎 첨부 실패: ${att.name}]")
                                         }
