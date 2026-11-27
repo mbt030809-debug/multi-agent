@@ -538,7 +538,7 @@ fun SessionPane(
                             } while (event.changes.any { it.pressed })
                         }
                     },
-                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                contentPadding = PaddingValues(start = 10.dp, end = 10.dp, top = 3.dp, bottom = 6.dp),
                 verticalArrangement = Arrangement.spacedBy(5.dp)
             ) {
                 itemsIndexed(session.messages, key = { _, m -> m.id }) { idx, msg ->
@@ -837,7 +837,7 @@ fun SessionPane(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(MaterialTheme.colorScheme.surface)
-                    .padding(horizontal = 8.dp, vertical = 3.dp),
+                    .padding(start = 8.dp, end = 8.dp, top = 1.dp, bottom = 3.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
