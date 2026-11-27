@@ -53,6 +53,13 @@ fun AiConnection.usesHiddenWebBridge(): Boolean =
     kind.isHiddenWebBridge() ||
         (kind == ConnectionKind.REMOTE_CONTROL && remoteMode == RemoteMode.WEB_EMBED)
 
+fun AiConnection.usesDirectInteractiveWeb(): Boolean {
+    val url = endpointUrl.lowercase()
+    return (kind == ConnectionKind.REMOTE_WEB ||
+        (kind == ConnectionKind.REMOTE_CONTROL && remoteMode == RemoteMode.WEB_EMBED)) &&
+        (url.contains("antigravity.google.com") || url.contains("claude.ai/code"))
+}
+
 fun ConnectionKind.isNativeChat(): Boolean =
     this == ConnectionKind.CLAUDE_API ||
         this == ConnectionKind.OPENAI_API ||

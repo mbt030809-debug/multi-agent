@@ -86,6 +86,7 @@ import com.mbta.app.model.defaultContextLimitForKind
 import com.mbta.app.model.displayLabel
 import com.mbta.app.model.formatTokens
 import com.mbta.app.model.isHiddenWebBridge
+import com.mbta.app.model.usesDirectInteractiveWeb
 import com.mbta.app.model.usesHiddenWebBridge
 import com.mbta.app.network.AiApiClient
 import com.mbta.app.network.GitBridgeClient
@@ -521,7 +522,15 @@ fun MainScreen(
             },
             update = { host ->
                 if (loginConnection == null) {
-                    connections.filter { it.enabled && it.usesHiddenWebBridge() }.forEach { conn ->
+                    val interactiveVisibleIds = buildSet {
+                        if (!showSettings) {
+                            if (primaryConn?.usesDirectInteractiveWeb() == true) add(primaryConn.id)
+                            if (splitMode != SplitMode.SINGLE && secondaryConn?.usesDirectInteractiveWeb() == true) {
+                                add(secondaryConn.id)
+                            }
+                        }
+                    }
+                    connections.filter { it.enabled && it.usesHiddenWebBridge() && it.id !in interactiveVisibleIds }.forEach { conn ->
                         headlessWebBridge.attachToHiddenHost(host, conn.id, conn.endpointUrl)
                     }
                 }
@@ -872,6 +881,7 @@ fun MainScreen(
                             onOpenTokenDashboard = { showTokenDashboard = true },
                             onOpenSettings = { showSettings = true },
                             onLoginConnection = { conn -> loginConnection = conn },
+                            headlessWebBridge = headlessWebBridge,
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .weight(1f)
@@ -911,6 +921,7 @@ fun MainScreen(
                             onOpenTokenDashboard = { showTokenDashboard = true },
                             onOpenSettings = { showSettings = true },
                             onLoginConnection = { conn -> loginConnection = conn },
+                            headlessWebBridge = headlessWebBridge,
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .weight(1f)
@@ -950,6 +961,7 @@ fun MainScreen(
                             onOpenTokenDashboard = { showTokenDashboard = true },
                             onOpenSettings = { showSettings = true },
                             onLoginConnection = { conn -> loginConnection = conn },
+                            headlessWebBridge = headlessWebBridge,
                             modifier = Modifier
                                 .fillMaxSize()
                                 .weight(1f)
@@ -989,6 +1001,7 @@ fun MainScreen(
                             onOpenTokenDashboard = { showTokenDashboard = true },
                             onOpenSettings = { showSettings = true },
                             onLoginConnection = { conn -> loginConnection = conn },
+                            headlessWebBridge = headlessWebBridge,
                             modifier = Modifier
                                 .fillMaxSize()
                                 .weight(1f)
