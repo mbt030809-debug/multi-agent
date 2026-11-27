@@ -1398,20 +1398,15 @@ fun SessionPane(
                         )
                     }
                 }
-                Surface(
+                IconButton(
                     onClick = { onSendMessage("Keep going") },
-                    shape = RoundedCornerShape(8.dp),
-                    color = androidx.compose.ui.graphics.Color.White,
-                    modifier = Modifier.size(32.dp)
+                    modifier = Modifier.size(34.dp)
                 ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            painter = painterResource(id = R.drawable.ic_whip_keep),
-                            contentDescription = "Keep going",
-                            tint = androidx.compose.ui.graphics.Color.Black,
-                            modifier = Modifier.size(24.dp)
-                        )
-                    }
+                    Icon(
+                        painter = painterResource(id = R.drawable.ic_whip_keep),
+                        contentDescription = "Keep going",
+                        modifier = Modifier.size(22.dp)
+                    )
                 }
                 if (isSending) {
                     IconButton(onClick = onCancelSending) {
