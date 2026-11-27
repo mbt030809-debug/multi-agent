@@ -865,9 +865,6 @@ fun MainScreen(
                             onSelectModel = { model ->
                                 if (primaryConn != null) selectModelForSession(primarySession, primaryConn, model)
                             },
-                        onSelectModel = { model ->
-                            if (primaryConn != null) selectModelForSession(primarySession, primaryConn, model)
-                        },
                             onHandoffTo = { target -> handoffSession(primarySession, target) },
                             onDeleteSession = { deleteSession(primarySession) },
                             onOpenTokenDashboard = { showTokenDashboard = true },
@@ -946,9 +943,6 @@ fun MainScreen(
                             onSelectModel = { model ->
                                 if (primaryConn != null) selectModelForSession(primarySession, primaryConn, model)
                             },
-                        onSelectModel = { model ->
-                            if (primaryConn != null) selectModelForSession(primarySession, primaryConn, model)
-                        },
                             onHandoffTo = { target -> handoffSession(primarySession, target) },
                             onDeleteSession = { deleteSession(primarySession) },
                             onOpenTokenDashboard = { showTokenDashboard = true },
