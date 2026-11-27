@@ -123,14 +123,14 @@ import kotlin.math.roundToInt
 private val codeFenceRegex = Regex("```[\\s\\S]*?```")
 private val inlineCodeRegex = Regex("`[^`\\n]+`")
 private val urlRegex = Regex("https?://\\S+")
-private val permissionPromptRegex = Regex(
+private val permissionCardRegex = Regex(
+    "(?:flagged\\s+as\\s+potentially\\s+unsafe|위험\\s*요소\\s*검토|민감하다고\\s*생각하실\\s*수도\\s*있는\\s*작업)",
+    RegexOption.IGNORE_CASE
+)
+private val permissionLastLineRegex = Regex(
     "(?:\\[y/n]|\\(y/n\\)|\\(yes/no\\)|allow\\s+once|always\\s+allow|" +
-        "flagged\\s+as\\s+potentially\\s+unsafe|위험\\s*요소\\s*검토|" +
-        "정말\\s*이\\s*작업을\\s*진행하시겠습니까|이\\s*작업을\\s*진행하시겠습니까|" +
-        "민감하다고\\s*생각하실\\s*수도\\s*있는\\s*작업|" +
-        "do\\s+you\\s+want\\s+to\\s+(?:allow|approve|grant|run|execute|proceed)|" +
-        "would\\s+you\\s+like\\s+to\\s+(?:allow|approve|grant|proceed)|" +
-        "(?:권한|허용|승인)[^\\n?.!]{0,16}(?:할까요|하시겠습니까|해\\s*드릴까요|해도\\s*될까요|필요합니다\\s*\\?))",
+        "^(?:do\\s+you\\s+want\\s+to|would\\s+you\\s+like\\s+to)\\s+(?:allow|approve|grant|run|execute)\\b|" +
+        "^(?:이\\s*작업을|명령\\s*실행을|권한을|파일\\s*(?:수정|삭제)을).{0,20}(?:허용|승인)(?:할까요|하시겠습니까)\\s*\\??$)",
     RegexOption.IGNORE_CASE
 )
 private val openEndedSignoffRegex = Regex(
@@ -159,15 +159,19 @@ internal fun detectQuickReplies(rawContent: String): List<String> {
     if (nonBlankLines.isEmpty()) return emptyList()
 
     val permBlock = nonBlankLines.takeLast(12).joinToString("\n")
-    val tailFour = nonBlankLines.takeLast(4).map { it.lowercase() }
+    val tailThree = nonBlankLines.takeLast(3).map { it.lowercase() }
     val lastLine = nonBlankLines.last()
+    val isBulletOrQuotedLast = lastLine.startsWith("-") || lastLine.startsWith("*") || lastLine.startsWith("•") || lastLine.startsWith("\"") || lastLine.startsWith("'")
 
-    // 1. 실제 권한/승인/위험 명령 확인 프롬프트 감지 (웹 UI 카드 포함)
+    // 1. 실제 권한/승인/위험 명령 확인 프롬프트만 엄격하게 감지 (일반 대화의 '허용' 단어 오탐 방지)
     val hasExplicitAllowDenyPair =
-        (tailFour.any { it == "허용" } && tailFour.any { it == "허용 안 함" || it == "거부" }) ||
-            (tailFour.any { it == "allow" || it == "approve" } && tailFour.any { it == "deny" || it == "don't allow" || it == "reject" })
-    if (hasExplicitAllowDenyPair || permissionPromptRegex.containsMatchIn(permBlock)) {
-        return if (permBlock.contains("허용 안 함")) {
+        (tailThree.any { it == "허용" } && tailThree.any { it == "허용 안 함" || it == "거부" }) ||
+            (tailThree.any { it == "allow" || it == "approve" } && tailThree.any { it == "deny" || it == "don't allow" || it == "reject" })
+    val isWebApprovalCard = hasExplicitAllowDenyPair ||
+        (permissionCardRegex.containsMatchIn(permBlock) && (tailThree.any { it == "허용" || it == "allow" || it == "허용 안 함" || it == "deny" }))
+    val isDirectCliPermPrompt = !isBulletOrQuotedLast && permissionLastLineRegex.containsMatchIn(lastLine)
+    if (isWebApprovalCard || isDirectCliPermPrompt) {
+        return if (permBlock.contains("허용 안 함") || tailThree.any { it == "허용 안 함" }) {
             listOf("허용", "허용 안 함")
         } else {
             listOf("허용", "항상 허용", "거부")
