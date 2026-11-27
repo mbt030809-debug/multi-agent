@@ -1038,6 +1038,36 @@ fun MainScreen(
         store.saveSessions(sessions)
     }
 
+    fun attachOrchestrationToSession(
+        session: AgentSession,
+        enabled: Boolean,
+        subConnId: String?,
+        subModel: String,
+        subEffort: String,
+        maxParallel: Int,
+        maxRounds: Int
+    ) {
+        sessions = sessions.map { s ->
+            if (s.id == session.id) {
+                s.copy(
+                    isOrchestration = enabled,
+                    subConnectionId = if (enabled) subConnId else null,
+                    subModel = if (enabled) subModel else "",
+                    subEffort = if (enabled) subEffort else "",
+                    maxParallelSubagents = maxParallel.coerceIn(1, 8),
+                    maxDelegationRounds = maxRounds.coerceIn(1, 6)
+                )
+            } else s
+        }
+        store.saveSessions(sessions)
+        if (enabled && subConnId != null) {
+            val subConn = enabledConnections.find { it.id == subConnId }
+            if (subConn != null && subConn.usesHiddenWebBridge()) {
+                headlessWebBridge.getOrCreateWebView(subConn.id, subConn.endpointUrl)
+            }
+        }
+    }
+
     fun togglePinMessage(sessionId: String, messageId: String) {
         sessions = sessions.map { s ->
             if (s.id == sessionId) {
@@ -1694,6 +1724,9 @@ fun MainScreen(
                         onTogglePinMessage = { msgId -> togglePinMessage(primarySession.id, msgId) },
                         onStopSubagent = { runId -> stopSubagentRun(primarySession.id, runId) },
                         onRetrySubagent = { runId -> retrySubagentRun(primarySession.id, runId) },
+                        onAttachOrchestration = { en, subId, subM, subE, maxP, maxR ->
+                            attachOrchestrationToSession(primarySession, en, subId, subM, subE, maxP, maxR)
+                        },
                         modifier = Modifier.fillMaxSize()
                     )
                 }
@@ -1747,6 +1780,9 @@ fun MainScreen(
                             onTogglePinMessage = { msgId -> togglePinMessage(primarySession.id, msgId) },
                             onStopSubagent = { runId -> stopSubagentRun(primarySession.id, runId) },
                             onRetrySubagent = { runId -> retrySubagentRun(primarySession.id, runId) },
+                            onAttachOrchestration = { en, subId, subM, subE, maxP, maxR ->
+                                attachOrchestrationToSession(primarySession, en, subId, subM, subE, maxP, maxR)
+                            },
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .weight(1f)
@@ -1804,6 +1840,9 @@ fun MainScreen(
                             onTogglePinMessage = { msgId -> togglePinMessage(primarySession.id, msgId) },
                             onStopSubagent = { runId -> stopSubagentRun((secondarySession ?: primarySession).id, runId) },
                             onRetrySubagent = { runId -> retrySubagentRun((secondarySession ?: primarySession).id, runId) },
+                            onAttachOrchestration = { en, subId, subM, subE, maxP, maxR ->
+                                attachOrchestrationToSession(secondarySession ?: primarySession, en, subId, subM, subE, maxP, maxR)
+                            },
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .weight(1f)
@@ -1860,6 +1899,9 @@ fun MainScreen(
                             onTogglePinMessage = { msgId -> togglePinMessage(primarySession.id, msgId) },
                             onStopSubagent = { runId -> stopSubagentRun(primarySession.id, runId) },
                             onRetrySubagent = { runId -> retrySubagentRun(primarySession.id, runId) },
+                            onAttachOrchestration = { en, subId, subM, subE, maxP, maxR ->
+                                attachOrchestrationToSession(primarySession, en, subId, subM, subE, maxP, maxR)
+                            },
                             modifier = Modifier
                                 .fillMaxSize()
                                 .weight(1f)
@@ -1917,6 +1959,9 @@ fun MainScreen(
                             onTogglePinMessage = { msgId -> togglePinMessage(primarySession.id, msgId) },
                             onStopSubagent = { runId -> stopSubagentRun((secondarySession ?: primarySession).id, runId) },
                             onRetrySubagent = { runId -> retrySubagentRun((secondarySession ?: primarySession).id, runId) },
+                            onAttachOrchestration = { en, subId, subM, subE, maxP, maxR ->
+                                attachOrchestrationToSession(secondarySession ?: primarySession, en, subId, subM, subE, maxP, maxR)
+                            },
                             modifier = Modifier
                                 .fillMaxSize()
                                 .weight(1f)
