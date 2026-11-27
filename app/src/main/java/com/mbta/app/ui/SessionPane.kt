@@ -9,6 +9,8 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -57,12 +59,14 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
@@ -89,6 +93,7 @@ import com.mbta.app.model.usesHiddenWebBridge
 import com.mbta.app.network.GitBridgeClient
 import com.mbta.app.webview.HeadlessWebBridge
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 private data class PendingAttachment(
     val name: String,
@@ -155,6 +160,13 @@ fun SessionPane(
     var showCustomModelDialog by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
     val context = LocalContext.current
+    val uiPrefs = remember(context) { context.getSharedPreferences("mbta_ui_prefs", android.content.Context.MODE_PRIVATE) }
+    var zoomScale by remember { mutableFloatStateOf(uiPrefs.getFloat("chat_zoom_scale", 1f).coerceIn(0.7f, 1.8f)) }
+    fun updateZoom(newScale: Float) {
+        val clamped = newScale.coerceIn(0.7f, 1.8f)
+        zoomScale = clamped
+        uiPrefs.edit().putFloat("chat_zoom_scale", clamped).apply()
+    }
     val paneScope = rememberCoroutineScope()
     val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
@@ -279,6 +291,36 @@ fun SessionPane(
                 Surface(
                     shape = RoundedCornerShape(6.dp),
                     color = MaterialTheme.colorScheme.surface.copy(alpha = 0.75f),
+                    modifier = Modifier.padding(end = 4.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = "−",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.clickable { updateZoom(zoomScale - 0.1f) }.padding(horizontal = 2.dp)
+                        )
+                        Text(
+                            text = "${(zoomScale * 100).roundToInt()}%",
+                            fontSize = 10.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.clickable { updateZoom(1f) }
+                        )
+                        Text(
+                            text = "+",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.clickable { updateZoom(zoomScale + 0.1f) }.padding(horizontal = 2.dp)
+                        )
+                    }
+                }
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.75f),
                     modifier = Modifier
                         .padding(end = 4.dp)
                         .clickable { onOpenTokenDashboard() }
@@ -398,7 +440,21 @@ fun SessionPane(
                 state = listState,
                 modifier = Modifier
                     .weight(1f)
-                    .fillMaxWidth(),
+                    .fillMaxWidth()
+                    .pointerInput(Unit) {
+                        awaitEachGesture {
+                            do {
+                                val event = awaitPointerEvent()
+                                if (event.changes.count { it.pressed } >= 2) {
+                                    val zoom = event.calculateZoom()
+                                    if (zoom != 1f) {
+                                        updateZoom(zoomScale * zoom)
+                                        event.changes.forEach { it.consume() }
+                                    }
+                                }
+                            } while (event.changes.any { it.pressed })
+                        }
+                    },
                 contentPadding = PaddingValues(12.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
@@ -406,6 +462,7 @@ fun SessionPane(
                     ChatBubble(
                         message = msg,
                         isCli = connection.kind == ConnectionKind.TERMUX_CLI,
+                        fontScale = zoomScale,
                         onRetryLast = onRetryLast,
                         onQuoteToInput = { quoted ->
                             inputText = if (inputText.isBlank()) quoted else "$inputText\n$quoted"
@@ -772,6 +829,7 @@ fun SessionPane(
 private fun ChatBubble(
     message: ChatMessage,
     isCli: Boolean,
+    fontScale: Float = 1f,
     onRetryLast: () -> Unit,
     onQuoteToInput: (String) -> Unit = {}
 ) {
@@ -784,7 +842,7 @@ private fun ChatBubble(
             ) {
                 Text(
                     text = message.content,
-                    fontSize = 11.sp,
+                    fontSize = (11f * fontScale).sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(10.dp)
                 )
@@ -802,7 +860,7 @@ private fun ChatBubble(
                         SelectionContainer {
                             Text(
                                 text = if (isCli) "$ ${message.content}" else message.content,
-                                fontSize = 14.sp,
+                                fontSize = (14f * fontScale).sp,
                                 fontFamily = if (isCli) FontFamily.Monospace else FontFamily.Default,
                                 color = MaterialTheme.colorScheme.onPrimaryContainer
                             )
@@ -871,7 +929,7 @@ private fun ChatBubble(
                         }
                         Spacer(modifier = Modifier.height(2.dp))
                         SelectionContainer {
-                            FormattedMessageContent(text = message.content, isCli = isCli)
+                            FormattedMessageContent(text = message.content, isCli = isCli, fontScale = fontScale)
                         }
                         if (message.isError) {
                             TextButton(
@@ -900,7 +958,7 @@ private fun ChatBubble(
 }
 
 @Composable
-private fun FormattedMessageContent(text: String, isCli: Boolean) {
+private fun FormattedMessageContent(text: String, isCli: Boolean, fontScale: Float = 1f) {
     val clipboard = LocalClipboardManager.current
     val segments = remember(text) {
         val result = mutableListOf<Triple<Boolean, String, String>>()
@@ -929,7 +987,7 @@ private fun FormattedMessageContent(text: String, isCli: Boolean) {
             if (!isCode) {
                 Text(
                     text = body,
-                    fontSize = 14.sp,
+                    fontSize = (14f * fontScale).sp,
                     fontFamily = if (isCli) FontFamily.Monospace else FontFamily.Default,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -961,7 +1019,7 @@ private fun FormattedMessageContent(text: String, isCli: Boolean) {
                         Box(modifier = Modifier.horizontalScroll(rememberScrollState())) {
                             Text(
                                 text = body,
-                                fontSize = 12.sp,
+                                fontSize = (12f * fontScale).sp,
                                 fontFamily = FontFamily.Monospace,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
