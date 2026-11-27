@@ -92,6 +92,7 @@ fun SettingsScreen(
     onDeleteSkill: (String) -> Unit,
     onLoginConnection: (AiConnection) -> Unit,
     onCheckUpdate: () -> Unit,
+    onCopyDiagnostics: () -> Unit = {},
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
@@ -132,8 +133,13 @@ fun SettingsScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text("앱 테마", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-                    OutlinedButton(onClick = onCheckUpdate) {
-                        Text("업데이트 확인 (v${AppUpdater.getCurrentVersionName(context)})", fontSize = 11.sp)
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        OutlinedButton(onClick = onCopyDiagnostics) {
+                            Text("진단 로그 복사", fontSize = 11.sp)
+                        }
+                        OutlinedButton(onClick = onCheckUpdate) {
+                            Text("업데이트 확인 (v${AppUpdater.getCurrentVersionName(context)})", fontSize = 11.sp)
+                        }
                     }
                 }
                 Spacer(modifier = Modifier.height(6.dp))

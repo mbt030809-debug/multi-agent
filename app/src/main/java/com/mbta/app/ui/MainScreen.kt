@@ -554,11 +554,13 @@ fun MainScreen(
             },
             update = { host ->
                 if (loginConnection == null) {
+                    val pConn = primarySession?.let { s -> enabledConnections.find { it.id == s.connectionId } }
+                    val sConn = secondarySession?.let { s -> enabledConnections.find { it.id == s.connectionId } }
                     val interactiveVisibleIds = buildSet {
                         if (!showSettings) {
-                            if (primaryConn?.usesDirectInteractiveWeb() == true) add(primaryConn.id)
-                            if (splitMode != SplitMode.SINGLE && secondaryConn?.usesDirectInteractiveWeb() == true) {
-                                add(secondaryConn.id)
+                            if (pConn?.usesDirectInteractiveWeb() == true) add(pConn.id)
+                            if (splitMode != SplitMode.SINGLE && sConn?.usesDirectInteractiveWeb() == true) {
+                                add(sConn.id)
                             }
                         }
                     }
@@ -616,6 +618,24 @@ fun MainScreen(
                         store.saveCustomSkills(customSkills)
                     },
                     onLoginConnection = { conn -> loginConnection = conn },
+                    onCopyDiagnostics = {
+                        val baseLogs = headlessWebBridge.getLogsText()
+                        val activeWebKey = primarySession?.connectionId?.takeIf { cid ->
+                            connections.find { it.id == cid }?.usesHiddenWebBridge() == true
+                        }
+                        val copyToClip: (String) -> Unit = { fullText ->
+                            val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                            cm.setPrimaryClip(android.content.ClipData.newPlainText("MbtA Diagnostics", fullText))
+                            android.widget.Toast.makeText(context, "진단 로그가 클립보드에 복사되었습니다.", android.widget.Toast.LENGTH_SHORT).show()
+                        }
+                        if (activeWebKey != null) {
+                            headlessWebBridge.dumpDomDiagnostics(activeWebKey) { domDump ->
+                                copyToClip("$baseLogs\n\nDOM Dump ($activeWebKey):\n$domDump")
+                            }
+                        } else {
+                            copyToClip(baseLogs)
+                        }
+                    },
                     onCheckUpdate = {
                         scope.launch {
                             val info = AppUpdater.checkLatestRelease(context)
@@ -880,6 +900,7 @@ fun MainScreen(
                         onOpenTokenDashboard = { showTokenDashboard = true },
                         onOpenSettings = { showSettings = true },
                         onLoginConnection = { conn -> loginConnection = conn },
+                        headlessWebBridge = headlessWebBridge,
                         modifier = Modifier.fillMaxSize()
                     )
                 }

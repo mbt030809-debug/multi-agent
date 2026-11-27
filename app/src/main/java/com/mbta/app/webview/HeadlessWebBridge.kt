@@ -32,6 +32,47 @@ class HeadlessWebBridge(
     private val loadedUrls = mutableMapOf<String, Boolean>()
     private val targetUrls = mutableMapOf<String, String>()
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val logs = ArrayDeque<String>()
+
+    private fun log(msg: String) {
+        val ts = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(java.util.Date())
+        synchronized(logs) {
+            if (logs.size >= 60) logs.removeFirst()
+            logs.addLast("[$ts] $msg")
+        }
+    }
+
+    fun getLogsText(): String {
+        val poolInfo = pool.entries.joinToString("\n") { (k, wv) -> "  pool[$k] url=${wv.url} loaded=${loadedUrls[k]}" }
+        val logLines = synchronized(logs) { logs.joinToString("\n") }
+        return "=== MbtA WebBridge Diagnostics ===\nActive WebViews:\n$poolInfo\n\nRecent Events:\n$logLines"
+    }
+
+    fun dumpDomDiagnostics(key: String, onResult: (String) -> Unit) {
+        val wv = pool[key]
+        if (wv == null) {
+            onResult("WebView($key) not in pool")
+            return
+        }
+        val js = """
+            (function(){
+                try {
+                    var iframes = Array.from(document.querySelectorAll('iframe')).map(function(f){
+                        var r = f.getBoundingClientRect();
+                        var sameOrigin = false;
+                        try { sameOrigin = !!f.contentDocument; } catch(e) {}
+                        return (f.src || '(no src)').slice(0, 80) + ' [' + Math.round(r.width) + 'x' + Math.round(r.height) + ', sameOrigin=' + sameOrigin + ']';
+                    });
+                    var edits = document.querySelectorAll('textarea, input, [contenteditable]').length;
+                    var txt = ((document.body && document.body.innerText) || '').replace(/\s+/g, ' ').trim().slice(0, 250);
+                    return 'href=' + location.href + '\nreadyState=' + document.readyState + '\niframes(' + iframes.length + ')=' + iframes.join(' | ') + '\neditable=' + edits + '\nbodyText=' + txt;
+                } catch(e) { return 'dump error: ' + e; }
+            })();
+        """.trimIndent()
+        wv.evaluateJavascript(js) { res ->
+            onResult(res ?: "null")
+        }
+    }
 
     private data class PendingRequest(
         val inputTokens: Long,
@@ -53,6 +94,7 @@ class HeadlessWebBridge(
         @JavascriptInterface
         fun onDone(requestId: String, finalText: String) {
             mainHandler.post {
+                log("onDone req=$requestId len=${finalText.length}")
                 val req = pending.remove(requestId) ?: return@post
                 val outTokens = ceil(finalText.length / 3.0).toLong().coerceAtLeast(1L)
                 req.onDone(finalText, req.inputTokens, outTokens)
@@ -62,6 +104,7 @@ class HeadlessWebBridge(
         @JavascriptInterface
         fun onError(requestId: String, code: String, message: String) {
             mainHandler.post {
+                log("onError req=$requestId code=$code msg=$message")
                 val req = pending.remove(requestId) ?: return@post
                 req.onError(message)
             }
@@ -72,6 +115,7 @@ class HeadlessWebBridge(
     fun getOrCreateWebView(key: String, url: String): WebView {
         pool[key]?.let { return it }
         targetUrls[key] = url
+        log("createWebView key=$key url=$url")
 
         val webView = WebView(context).apply {
             layoutParams = ViewGroup.LayoutParams(
@@ -101,6 +145,7 @@ class HeadlessWebBridge(
             webViewClient = object : WebViewClient() {
                 override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
                     super.onPageStarted(view, url, favicon)
+                    log("onPageStarted key=$key url=$url")
                     view?.evaluateJavascript(
                         """
                         (function(){
@@ -123,6 +168,7 @@ class HeadlessWebBridge(
                 override fun onPageFinished(view: WebView?, loadedUrl: String?) {
                     super.onPageFinished(view, loadedUrl)
                     loadedUrls[key] = true
+                    log("onPageFinished key=$key url=$loadedUrl")
                     CookieManager.getInstance().flush()
                 }
 
@@ -184,6 +230,7 @@ class HeadlessWebBridge(
         if (cur == target) return false
         targetUrls[key] = desiredUrl
         loadedUrls[key] = false
+        log("navigateIfNeeded key=$key to=$desiredUrl")
         wv.loadUrl(desiredUrl)
         return true
     }
@@ -201,6 +248,7 @@ class HeadlessWebBridge(
         val wv = getOrCreateWebView(key, conversationUrl.ifBlank { url })
         val navigated = if (conversationUrl.isNotBlank()) navigateIfNeeded(key, conversationUrl) else false
         val reqId = UUID.randomUUID().toString()
+        log("sendPrompt key=$key kind=${kind.name} navigated=$navigated loaded=${loadedUrls[key]} wvUrl=${wv.url}")
         val estInput = ceil(prompt.length / 3.0).toLong().coerceAtLeast(1L)
         pending[reqId] = PendingRequest(estInput, onChunk, onDone, onError)
 
@@ -580,9 +628,18 @@ class HeadlessWebBridge(
                         clearInterval(waitTimer);
                         if (window.MbtABridge) {
                             var loc = (location.hostname || '') + (location.pathname || '');
-                            var iframes = document.querySelectorAll('iframe').length;
+                            var iframeEls = document.querySelectorAll('iframe');
+                            var iframes = iframeEls.length;
+                            var iframeInfo = '';
+                            if (iframes > 0) {
+                                try {
+                                    var f0 = iframeEls[0];
+                                    var r0 = f0.getBoundingClientRect();
+                                    iframeInfo = ', f0=' + (f0.src || '').slice(0, 60) + ' [' + Math.round(r0.width) + 'x' + Math.round(r0.height) + ']';
+                                } catch(e) {}
+                            }
                             var ta = queryAllDeep('textarea, input, [contenteditable]').length;
-                            window.MbtABridge.onError(reqId, 'NEED_LOGIN', '입력창을 찾을 수 없습니다 (' + loc + ', iframe=' + iframes + ', editable=' + ta + '). 상단 👁️ 버튼으로 화면 상태를 확인해주세요.');
+                            window.MbtABridge.onError(reqId, 'NEED_LOGIN', '입력창을 찾을 수 없습니다 (' + loc + ', iframe=' + iframes + iframeInfo + ', editable=' + ta + '). 상단 👁️ 버튼으로 화면 상태를 확인해주세요.');
                         }
                     }
                 }, 400);
