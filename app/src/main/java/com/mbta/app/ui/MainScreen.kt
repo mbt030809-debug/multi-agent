@@ -927,7 +927,7 @@ fun MainScreen(
                             sendingMap[sess.id] == true -> Color(0xFFF59E0B)
                             sess.messages.lastOrNull()?.isError == true -> Color(0xFFEF4444)
                             unreadDoneSessions[sess.id] == true -> Color(0xFF22C55E)
-                            else -> null
+                            else -> Color.Black
                         }
                         Surface(
                             onClick = {
@@ -957,13 +957,11 @@ fun MainScreen(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(5.dp)
                             ) {
-                                if (dotColor != null) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(7.dp)
-                                            .background(dotColor, CircleShape)
-                                    )
-                                }
+                                Box(
+                                    modifier = Modifier
+                                        .size(7.dp)
+                                        .background(dotColor, CircleShape)
+                                )
                                 ProviderMarkIcon(connection = conn, size = 19.dp)
                                 val trimmedTitle = sess.title.trim()
                                 val isDefaultTitle = trimmedTitle.isBlank() ||
