@@ -84,6 +84,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
+import com.mbta.app.R
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -878,17 +880,19 @@ fun SessionPane(
                     }
                 }
                 Surface(
-                    onClick = { onSendMessage("계속 진행해줘 (Keep going)") },
+                    onClick = { onSendMessage("Keep going") },
                     shape = RoundedCornerShape(8.dp),
-                    color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.85f)
+                    color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.85f),
+                    modifier = Modifier.size(32.dp)
                 ) {
-                    Text(
-                        text = "Keep",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onSecondaryContainer,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                    )
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            painter = painterResource(id = R.drawable.ic_whip_keep),
+                            contentDescription = "Keep going",
+                            tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
                 }
                 if (isSending) {
                     IconButton(onClick = onCancelSending) {
