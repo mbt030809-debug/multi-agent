@@ -708,11 +708,9 @@ fun SessionPane(
                     modifier = Modifier.weight(1f)
                 )
                 Surface(
+                    onClick = { onSendMessage("계속 진행해줘 (Keep going)") },
                     shape = RoundedCornerShape(8.dp),
-                    color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.85f),
-                    modifier = Modifier.clickable(enabled = !isSending) {
-                        onSendMessage("계속 진행해줘 (Keep going)")
-                    }
+                    color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.85f)
                 ) {
                     Text(
                         text = "Keep",

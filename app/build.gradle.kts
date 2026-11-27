@@ -13,8 +13,8 @@ android {
         applicationId = "com.mbta.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 41
-        versionName = "0.8.31"
+        versionCode = 42
+        versionName = "0.8.32"
     }
 
     signingConfigs {
