@@ -478,22 +478,18 @@ fun SessionPane(
                 }
                 val totalTok = tokenUsage?.totalTokens ?: sessionCtxTokens
                 val remPct = tokenUsage?.quotaPercent
-                val usedPct = if (ctxLimit != null && ctxLimit > 0L) {
-                    ((sessionCtxTokens.toDouble() / ctxLimit.toDouble()) * 100.0).coerceIn(0.0, 100.0)
+                val remCtxPct = if (ctxLimit != null && ctxLimit > 0L) {
+                    (((ctxLimit - sessionCtxTokens).coerceAtLeast(0L).toDouble() / ctxLimit.toDouble()) * 100.0).coerceIn(0.0, 100.0)
                 } else null
-                val pctLabel = usedPct?.let { p ->
-                    if (p > 0.0 && p < 10.0) String.format(java.util.Locale.US, "%.1f%%", p)
-                    else "${p.roundToInt()}%"
-                }
+                val effectiveRemPct = remPct?.toDouble() ?: remCtxPct
                 val badgeText = when {
-                    remPct != null && pctLabel != null -> "$pctLabel · 잔여 $remPct%"
-                    remPct != null -> "${formatTokens(totalTok)} · 잔여 $remPct%"
-                    pctLabel != null -> pctLabel
+                    remPct != null -> "남음 $remPct%"
+                    remCtxPct != null -> "남음 ${remCtxPct.roundToInt()}%"
                     else -> formatTokens(totalTok)
                 }
                 val badgeColor = when {
-                    (remPct != null && remPct <= 10) || (usedPct != null && usedPct >= 85.0) -> MaterialTheme.colorScheme.error
-                    (remPct != null && remPct <= 25) || (usedPct != null && usedPct >= 65.0) -> androidx.compose.ui.graphics.Color(0xFFFF9800)
+                    effectiveRemPct != null && effectiveRemPct <= 15.0 -> MaterialTheme.colorScheme.error
+                    effectiveRemPct != null && effectiveRemPct <= 35.0 -> androidx.compose.ui.graphics.Color(0xFFFF9800)
                     else -> MaterialTheme.colorScheme.primary
                 }
                 Surface(

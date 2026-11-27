@@ -31,9 +31,10 @@ import androidx.compose.ui.unit.sp
 import com.mbta.app.model.AgentTokenUsage
 import com.mbta.app.model.AiConnection
 import com.mbta.app.model.TokenSource
-import com.mbta.app.model.defaultContextLimitForKind
+import com.mbta.app.model.defaultContextLimitFor
 import com.mbta.app.model.displayLabel
 import com.mbta.app.model.formatTokens
+import kotlin.math.roundToInt
 
 @Composable
 fun TokenDashboardDialog(
@@ -95,10 +96,24 @@ fun TokenDashboardDialog(
                         items(connections, key = { it.id }) { conn ->
                             val usage = tokenUsageMap[conn.id] ?: AgentTokenUsage(
                                 panelId = conn.id,
-                                contextLimit = defaultContextLimitForKind(conn.kind),
+                                contextLimit = defaultContextLimitFor(conn),
                                 source = TokenSource.API_EXACT
                             )
-                            val limit = usage.customLimit ?: usage.contextLimit ?: defaultContextLimitForKind(conn.kind)
+                            val limit = usage.customLimit ?: usage.contextLimit ?: defaultContextLimitFor(conn)
+                            val remPctFloat: Float? = when {
+                                usage.quotaPercent != null -> usage.quotaPercent.toFloat().coerceIn(0f, 100f)
+                                limit != null && limit > 0L -> (((limit - usage.totalTokens).coerceAtLeast(0L).toDouble() / limit.toDouble()) * 100.0).toFloat().coerceIn(0f, 100f)
+                                else -> null
+                            }
+                            val remLabel = remPctFloat?.let { p ->
+                                if (p < 10f && p > 0f) String.format(java.util.Locale.US, "남음 %.1f%%", p)
+                                else "남음 ${p.roundToInt()}%"
+                            }
+                            val remColor = when {
+                                remPctFloat != null && remPctFloat <= 15f -> MaterialTheme.colorScheme.error
+                                remPctFloat != null && remPctFloat <= 35f -> androidx.compose.ui.graphics.Color(0xFFFF9800)
+                                else -> MaterialTheme.colorScheme.primary
+                            }
 
                             Surface(
                                 shape = RoundedCornerShape(8.dp),
@@ -116,6 +131,21 @@ fun TokenDashboardDialog(
                                             fontSize = 14.sp,
                                             modifier = Modifier.weight(1f)
                                         )
+                                        if (remLabel != null) {
+                                            Surface(
+                                                shape = RoundedCornerShape(4.dp),
+                                                color = remColor.copy(alpha = 0.14f),
+                                                modifier = Modifier.padding(end = 4.dp)
+                                            ) {
+                                                Text(
+                                                    text = remLabel,
+                                                    fontSize = 10.sp,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    color = remColor,
+                                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                )
+                                            }
+                                        }
                                         Surface(
                                             shape = RoundedCornerShape(4.dp),
                                             color = MaterialTheme.colorScheme.surfaceVariant
@@ -144,17 +174,22 @@ fun TokenDashboardDialog(
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
 
-                                    if (usage.quotaPercent != null) {
+                                    if (remPctFloat != null) {
                                         Spacer(modifier = Modifier.height(6.dp))
-                                        val progress = (usage.quotaPercent / 100f).coerceIn(0f, 1f)
                                         LinearProgressIndicator(
-                                            progress = { progress },
+                                            progress = { (remPctFloat / 100f).coerceIn(0f, 1f) },
+                                            color = remColor,
                                             modifier = Modifier
                                                 .fillMaxWidth()
                                                 .height(5.dp)
                                         )
+                                        val subLabel = if (usage.quotaPercent != null) {
+                                            "${usage.quotaLabel.ifBlank { "계정 쿼터" }} · $remLabel"
+                                        } else {
+                                            "한도 ${formatTokens(limit ?: 0L)} 기준 · $remLabel"
+                                        }
                                         Text(
-                                            text = "${usage.quotaLabel.ifBlank { "자동 한도" }} · 잔여 ${usage.quotaPercent}%",
+                                            text = subLabel,
                                             fontSize = 10.sp,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                                             modifier = Modifier.padding(top = 2.dp)
