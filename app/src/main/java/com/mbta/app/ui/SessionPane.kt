@@ -175,7 +175,6 @@ fun SessionPane(
     var showModelMenu by remember { mutableStateOf(false) }
     var showCustomModelDialog by remember { mutableStateOf(false) }
     var dismissedQuestionMsgId by remember(session.id) { mutableStateOf("") }
-    var questionReplyText by remember(session.id) { mutableStateOf("") }
     val listState = rememberLazyListState()
     val context = LocalContext.current
     val uiPrefs = remember(context) { context.getSharedPreferences("mbta_ui_prefs", android.content.Context.MODE_PRIVATE) }
@@ -677,6 +676,74 @@ fun SessionPane(
                 }
             }
 
+            val lastMsg = session.messages.lastOrNull()
+            val tailText = remember(lastMsg?.id, lastMsg?.content) {
+                lastMsg?.content?.lines()?.filter { it.isNotBlank() }?.takeLast(6)?.joinToString("\n").orEmpty()
+            }
+            val isPermissionPrompt = remember(lastMsg?.id, tailText) {
+                Regex("(허용|승인|권한|동의|거부|allow|approve|permission|confirm|authorize|y/n|yes/no)", RegexOption.IGNORE_CASE)
+                    .containsMatchIn(tailText)
+            }
+            val isQuestionMsg = !isSending && lastMsg != null && lastMsg.role == MessageRole.ASSISTANT && !lastMsg.isError &&
+                lastMsg.id != dismissedQuestionMsgId && (
+                    isPermissionPrompt ||
+                        tailText.contains("?") ||
+                        Regex("(할까요|드릴까요|원하시나요|선택해|선택하|알려주세요|어떻게 할까요|진행할까요|하시겠습니까|할지|말지)", RegexOption.IGNORE_CASE)
+                            .containsMatchIn(tailText)
+                    )
+            if (isQuestionMsg && lastMsg != null) {
+                val quickChoices = remember(lastMsg.id, isPermissionPrompt) {
+                    val numbered = Regex("^\\s*[1-4][.)]\\s+(.+)$", RegexOption.MULTILINE)
+                        .findAll(lastMsg.content)
+                        .map { it.groupValues[1].trim().take(36) }
+                        .toList()
+                    when {
+                        numbered.isNotEmpty() -> numbered
+                        isPermissionPrompt -> listOf("허용", "항상 허용", "거부")
+                        else -> listOf("네, 진행해줘", "아니요")
+                    }
+                }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(MaterialTheme.colorScheme.surface)
+                        .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    quickChoices.forEach { choice ->
+                        Surface(
+                            onClick = {
+                                dismissedQuestionMsgId = lastMsg.id
+                                onSendMessage(choice)
+                            },
+                            shape = RoundedCornerShape(16.dp),
+                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.75f),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.28f))
+                        ) {
+                            Text(
+                                text = choice,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                            )
+                        }
+                    }
+                    Icon(
+                        Icons.Default.Close,
+                        contentDescription = "선택지 닫기",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f),
+                        modifier = Modifier
+                            .size(18.dp)
+                            .clickable { dismissedQuestionMsgId = lastMsg.id }
+                    )
+                }
+            }
+
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -784,74 +851,6 @@ fun SessionPane(
                 }
             }
         }
-    }
-
-    val lastMsg = session.messages.lastOrNull()
-    val isQuestionMsg = !isSending && lastMsg != null && lastMsg.role == MessageRole.ASSISTANT && !lastMsg.isError &&
-        lastMsg.id != dismissedQuestionMsgId && run {
-            val tail = lastMsg.content.lines().filter { it.isNotBlank() }.takeLast(3).joinToString("\n")
-            tail.contains("?") || Regex("(할까요|드릴까요|원하시나요|선택해|알려주세요|어떻게 할까요|진행할까요)").containsMatchIn(tail)
-        }
-    if (isQuestionMsg && lastMsg != null) {
-        val quickChoices = remember(lastMsg.id) {
-            val numbered = Regex("^\\s*[1-4][.)]\\s+(.+)$", RegexOption.MULTILINE)
-                .findAll(lastMsg.content)
-                .map { it.groupValues[1].trim().take(36) }
-                .toList()
-            if (numbered.isNotEmpty()) numbered else listOf("네, 진행해줘", "아니요")
-        }
-        AlertDialog(
-            onDismissRequest = { dismissedQuestionMsgId = lastMsg.id },
-            title = { Text("AI 질문") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        text = lastMsg.content.takeLast(350),
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Row(
-                        modifier = Modifier.horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        quickChoices.forEach { choice ->
-                            OutlinedButton(
-                                onClick = {
-                                    dismissedQuestionMsgId = lastMsg.id
-                                    questionReplyText = ""
-                                    onSendMessage(choice)
-                                },
-                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                                modifier = Modifier.height(30.dp)
-                            ) {
-                                Text(choice, fontSize = 11.sp, maxLines = 1)
-                            }
-                        }
-                    }
-                    OutlinedTextField(
-                        value = questionReplyText,
-                        onValueChange = { questionReplyText = it },
-                        label = { Text("직접 답변 입력") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-            },
-            confirmButton = {
-                Button(
-                    enabled = questionReplyText.isNotBlank(),
-                    onClick = {
-                        val ans = questionReplyText.trim()
-                        dismissedQuestionMsgId = lastMsg.id
-                        questionReplyText = ""
-                        onSendMessage(ans)
-                    }
-                ) { Text("답변 보내기") }
-            },
-            dismissButton = {
-                TextButton(onClick = { dismissedQuestionMsgId = lastMsg.id }) { Text("닫기") }
-            }
-        )
     }
 
     if (showCustomModelDialog) {
