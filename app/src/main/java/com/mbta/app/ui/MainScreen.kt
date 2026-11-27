@@ -1001,7 +1001,8 @@ fun MainScreen(
         scope.launch {
             val nonSys = fromSession.messages.filter { it.role != MessageRole.SYSTEM }
             val pinned = nonSys.filter { it.isPinned }
-            val effectiveDir = fromSession.worktreePath.ifBlank { activeProject.workDir }
+            val handoffProject = projects.find { it.id == fromSession.projectId } ?: activeProject
+            val effectiveDir = fromSession.worktreePath.ifBlank { handoffProject.workDir }
             val gitSnapshot = if (includeGit && effectiveDir.isNotBlank()) {
                 val st = GitBridgeClient.fetchStatus(effectiveDir)
                 if (st.isGit) {
@@ -1016,6 +1017,9 @@ fun MainScreen(
 
             val contextBody = buildString {
                 append("[세션 인수인계 — 기존 세션 '${fromSession.title}' (${prevConn?.name ?: "이전 AI"} → ${targetConn.name})]\n")
+                append("[현재 프로젝트] ${handoffProject.name}")
+                if (effectiveDir.isNotBlank()) append(" · 작업 경로: $effectiveDir")
+                append("\n※ 이어서 작업할 대상은 위 프로젝트입니다. 아래 과거 대화에 등장하는 다른 프로젝트·앱(예: 키보드 앱)은 이미 끝났거나 별개 작업이므로, 사용자가 명시하지 않는 한 그쪽으로 작업하지 마세요. 최근 대화 원문과 핀 고정 내용을 최우선으로 따르세요.\n")
                 if (pinned.isNotEmpty()) {
                     append("\n### 📌 핀 고정된 핵심 내용\n")
                     pinned.forEach { m ->
@@ -1024,9 +1028,10 @@ fun MainScreen(
                     }
                 }
                 if (smartSummary && nonSys.size > 4) {
-                    val older = nonSys.dropLast(4)
+                    val olderAll = nonSys.dropLast(4)
+                    val older = olderAll.takeLast(60)
                     val recent = nonSys.takeLast(4)
-                    append("\n### 이전 대화 핵심 흐름 (${older.size}개 메시지 압축)\n")
+                    append("\n### 이전 대화 핵심 흐름 (최근 ${older.size}개 메시지 압축${if (olderAll.size > older.size) ", 더 오래된 ${olderAll.size - older.size}개 생략" else ""})\n")
                     older.forEach { m ->
                         val who = if (m.role == MessageRole.USER) "User" else (m.agentName.ifBlank { "Assistant" })
                         val compact = m.content.replace(Regex("\\s+"), " ").trim().take(240)
