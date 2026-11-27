@@ -350,27 +350,23 @@ fun SessionPane(
                 }
             }
         } else {
-            SelectionContainer(
+            LazyColumn(
+                state = listState,
                 modifier = Modifier
                     .weight(1f)
-                    .fillMaxWidth()
+                    .fillMaxWidth(),
+                contentPadding = PaddingValues(12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                LazyColumn(
-                    state = listState,
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    items(session.messages, key = { it.id }) { msg ->
-                        ChatBubble(
-                            message = msg,
-                            isCli = connection.kind == ConnectionKind.TERMUX_CLI,
-                            onRetryLast = onRetryLast,
-                            onQuoteToInput = { quoted ->
-                                inputText = if (inputText.isBlank()) quoted else "$inputText\n$quoted"
-                            }
-                        )
-                    }
+                items(session.messages, key = { it.id }) { msg ->
+                    ChatBubble(
+                        message = msg,
+                        isCli = connection.kind == ConnectionKind.TERMUX_CLI,
+                        onRetryLast = onRetryLast,
+                        onQuoteToInput = { quoted ->
+                            inputText = if (inputText.isBlank()) quoted else "$inputText\n$quoted"
+                        }
+                    )
                 }
             }
 
@@ -644,12 +640,14 @@ private fun ChatBubble(
                     modifier = Modifier.widthIn(max = 300.dp)
                 ) {
                     Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-                        Text(
-                            text = if (isCli) "$ ${message.content}" else message.content,
-                            fontSize = 14.sp,
-                            fontFamily = if (isCli) FontFamily.Monospace else FontFamily.Default,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer
-                        )
+                        SelectionContainer {
+                            Text(
+                                text = if (isCli) "$ ${message.content}" else message.content,
+                                fontSize = 14.sp,
+                                fontFamily = if (isCli) FontFamily.Monospace else FontFamily.Default,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                        }
                         Row(
                             modifier = Modifier.padding(top = 4.dp),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -713,7 +711,9 @@ private fun ChatBubble(
                             }
                         }
                         Spacer(modifier = Modifier.height(2.dp))
-                        FormattedMessageContent(text = message.content, isCli = isCli)
+                        SelectionContainer {
+                            FormattedMessageContent(text = message.content, isCli = isCli)
+                        }
                         if (message.isError) {
                             TextButton(
                                 onClick = onRetryLast,
