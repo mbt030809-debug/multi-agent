@@ -31,6 +31,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AccountTree
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.CompareArrows
 import androidx.compose.material.icons.filled.Edit
@@ -142,6 +143,7 @@ fun MainScreen(
     var editingProject by remember { mutableStateOf<Project?>(null) }
     var showNewSessionDialog by remember { mutableStateOf(false) }
     var showExistingSessionDialog by remember { mutableStateOf(false) }
+    var sessionPendingDelete by remember { mutableStateOf<AgentSession?>(null) }
 
     val sendingMap = remember { mutableStateMapOf<String, Boolean>() }
     val activeJobs = remember { mutableStateMapOf<String, kotlinx.coroutines.Job>() }
@@ -888,6 +890,15 @@ fun MainScreen(
                                 }
                                 val label = if (connName != null) "$statusDot${sess.title} · $connName" else "$statusDot${sess.title}"
                                 Text(label, maxLines = 1)
+                            },
+                            trailingIcon = {
+                                Icon(
+                                    Icons.Default.Close,
+                                    contentDescription = "세션 삭제",
+                                    modifier = Modifier
+                                        .size(16.dp)
+                                        .clickable { sessionPendingDelete = sess }
+                                )
                             }
                         )
                     }
@@ -1465,6 +1476,28 @@ fun MainScreen(
                     store.saveSessions(sessions)
                     activeSessionId = newSess.id
                     store.saveActiveSessionId(newSess.id)
+                }
+            }
+        )
+    }
+
+    val delTarget = sessionPendingDelete
+    if (delTarget != null) {
+        AlertDialog(
+            onDismissRequest = { sessionPendingDelete = null },
+            title = { Text("세션 삭제") },
+            text = { Text("'${delTarget.title}' 세션을 삭제하시겠습니까?\n대화 기록이 함께 삭제됩니다.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    deleteSession(delTarget)
+                    sessionPendingDelete = null
+                }) {
+                    Text("삭제", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { sessionPendingDelete = null }) {
+                    Text("취소")
                 }
             }
         )

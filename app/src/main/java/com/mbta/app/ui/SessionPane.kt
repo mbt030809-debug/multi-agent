@@ -300,36 +300,6 @@ fun SessionPane(
                 Surface(
                     shape = RoundedCornerShape(6.dp),
                     color = MaterialTheme.colorScheme.surface.copy(alpha = 0.75f),
-                    modifier = Modifier.padding(end = 4.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        Text(
-                            text = "−",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.clickable { updateZoom(zoomScale - 0.1f) }.padding(horizontal = 2.dp)
-                        )
-                        Text(
-                            text = "${(zoomScale * 100).roundToInt()}%",
-                            fontSize = 10.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.clickable { updateZoom(1f) }
-                        )
-                        Text(
-                            text = "+",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.clickable { updateZoom(zoomScale + 0.1f) }.padding(horizontal = 2.dp)
-                        )
-                    }
-                }
-                Surface(
-                    shape = RoundedCornerShape(6.dp),
-                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.75f),
                     modifier = Modifier
                         .padding(end = 4.dp)
                         .clickable { onOpenTokenDashboard() }
