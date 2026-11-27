@@ -86,6 +86,7 @@ import com.mbta.app.model.defaultContextLimitForKind
 import com.mbta.app.model.displayLabel
 import com.mbta.app.model.formatTokens
 import com.mbta.app.model.isHiddenWebBridge
+import com.mbta.app.model.usesHiddenWebBridge
 import com.mbta.app.network.AiApiClient
 import com.mbta.app.network.GitBridgeClient
 import com.mbta.app.util.AppUpdater
@@ -150,7 +151,7 @@ fun MainScreen(
     }
 
     fun refreshLoginStatuses() {
-        connections.filter { it.kind.isHiddenWebBridge() }.forEach { conn ->
+        connections.filter { it.usesHiddenWebBridge() }.forEach { conn ->
             headlessWebBridge.checkLoginStatus(conn.id, conn.kind, conn.endpointUrl) { ok ->
                 if (ok) {
                     loginStatusMap[conn.id] = true
@@ -226,7 +227,7 @@ fun MainScreen(
             content = text
         )
         val historyBefore = session.messages
-        if (targetConn.kind.isHiddenWebBridge()) {
+        if (targetConn.usesHiddenWebBridge()) {
             val placeholderId = "msg_${UUID.randomUUID()}"
             val placeholder = ChatMessage(
                 id = placeholderId,
@@ -360,7 +361,7 @@ fun MainScreen(
     fun selectModelForSession(session: AgentSession, conn: AiConnection, model: String) {
         sessions = sessions.map { if (it.id == session.id) it.copy(selectedModel = model) else it }
         store.saveSessions(sessions)
-        if (conn.kind.isHiddenWebBridge()) {
+        if (conn.usesHiddenWebBridge()) {
             headlessWebBridge.switchWebModel(conn.id, model)
         }
     }
@@ -411,7 +412,7 @@ fun MainScreen(
                     }
                 }
 
-                if (conn.kind.isHiddenWebBridge()) {
+                if (conn.usesHiddenWebBridge()) {
                     val (triple, errMsg) = headlessWebBridge.sendPromptSuspend(
                         key = conn.id,
                         kind = conn.kind,
@@ -501,7 +502,7 @@ fun MainScreen(
 
     val activeWebSessions = listOfNotNull(primarySession, secondarySession).distinctBy { it.id }.mapNotNull { sess ->
         val conn = enabledConnections.find { it.id == sess.connectionId }
-        if (conn != null && conn.kind.isHiddenWebBridge()) {
+        if (conn != null && conn.usesHiddenWebBridge()) {
             Triple(conn.id, conn.endpointUrl, sess)
         } else null
     }.distinctBy { it.first }
@@ -520,7 +521,7 @@ fun MainScreen(
             },
             update = { host ->
                 if (loginConnection == null) {
-                    connections.filter { it.enabled && it.kind.isHiddenWebBridge() }.forEach { conn ->
+                    connections.filter { it.enabled && it.usesHiddenWebBridge() }.forEach { conn ->
                         headlessWebBridge.attachToHiddenHost(host, conn.id, conn.endpointUrl)
                     }
                 }
@@ -1263,7 +1264,7 @@ fun MainScreen(
                         connectionId = conn.id,
                         worktreePath = wtPath
                     )
-                    if (conn.kind.isHiddenWebBridge()) {
+                    if (conn.usesHiddenWebBridge()) {
                         headlessWebBridge.getOrCreateWebView(conn.id, conn.endpointUrl)
                     }
                     sessions = sessions + newSess

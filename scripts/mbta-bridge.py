@@ -48,6 +48,27 @@ def extract_json_payload(stdout_text):
     return None
 
 
+def normalize_agy_model(raw_model):
+    m = (raw_model or "").strip()
+    if not m:
+        return ""
+    mapping = {
+        "gemini 4 neon": "gemini-4-neon-medium",
+        "gemini 4 neon (low)": "gemini-4-neon-low",
+        "gemini 4 neon (medium)": "gemini-4-neon-medium",
+        "gemini 4 neon (high)": "gemini-4-neon-high",
+        "gemini 4 neon (xhigh)": "gemini-4-neon-xhigh",
+        "gemini 4 hydrogen (low)": "gemini-4-hydrogen-low",
+        "gemini 4 hydrogen (medium)": "gemini-4-hydrogen-medium",
+        "gemini 4 hydrogen (high)": "gemini-4-hydrogen-high",
+        "claude sonnet": "claude-sonnet-5-5-medium",
+        "claude sonnet 5.5 (medium)": "claude-sonnet-5-5-medium",
+        "claude opus": "claude-opus-5-5-medium",
+        "claude opus 5.5 (medium)": "claude-opus-5-5-medium",
+    }
+    return mapping.get(m.lower(), m)
+
+
 def run_cli(cmd, cwd=None, timeout=240):
     work_dir = cwd if (cwd and os.path.isdir(cwd)) else None
     return subprocess.run(cmd, cwd=work_dir, capture_output=True, text=True, timeout=timeout)
@@ -202,15 +223,21 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
         if self.path == "/agy":
             key = f"agy:{mbta_session_id}" if mbta_session_id else ""
             cwd = (data.get("cwd") or "").strip()
+            model = normalize_agy_model(data.get("model") or "")
             cmd = ["agy", "-p", prompt, "--output-format", "json"]
-            if data.get("model"):
-                cmd.extend(["--model", data["model"]])
+            if model:
+                cmd.extend(["--model", model])
             if key:
                 with SESSION_LOCK:
                     cli_sid = load_sessions().get(key)
                 if cli_sid:
                     cmd.extend(["--resume", cli_sid])
             proc = run_cli(cmd, cwd=cwd)
+            if proc.returncode != 0 and "invalid model selection" in ((proc.stderr or "") + (proc.stdout or "")).lower():
+                fallback_cmd = ["agy", "-p", prompt, "--output-format", "json"]
+                if key and cli_sid:
+                    fallback_cmd.extend(["--resume", cli_sid])
+                proc = run_cli(fallback_cmd, cwd=cwd)
             if proc.returncode != 0:
                 self._send_json(500, {"error": proc.stderr or proc.stdout or "agy failed"})
                 return

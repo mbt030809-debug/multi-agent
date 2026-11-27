@@ -49,6 +49,10 @@ fun ConnectionKind.isHiddenWebBridge(): Boolean =
         this == ConnectionKind.GEMINI_WEB ||
         this == ConnectionKind.REMOTE_WEB
 
+fun AiConnection.usesHiddenWebBridge(): Boolean =
+    kind.isHiddenWebBridge() ||
+        (kind == ConnectionKind.REMOTE_CONTROL && remoteMode == RemoteMode.WEB_EMBED)
+
 fun ConnectionKind.isNativeChat(): Boolean =
     this == ConnectionKind.CLAUDE_API ||
         this == ConnectionKind.OPENAI_API ||
@@ -73,7 +77,7 @@ fun defaultModelFor(kind: ConnectionKind): String = when (kind) {
     ConnectionKind.CLAUDE_WEB -> "Sonnet"
     ConnectionKind.CHATGPT_WEB -> "GPT-4o"
     ConnectionKind.GEMINI_WEB -> "Gemini 2.5 Pro"
-    ConnectionKind.REMOTE_WEB, ConnectionKind.REMOTE_CONTROL -> "Gemini 4 Neon"
+    ConnectionKind.REMOTE_WEB, ConnectionKind.REMOTE_CONTROL -> "Gemini 4 Neon (Medium)"
     else -> ""
 }
 
@@ -94,8 +98,8 @@ fun availableModelsFor(kind: ConnectionKind): List<String> = when (kind) {
         "Gemini 4 Neon (Medium)",
         "Gemini 4 Neon (High)",
         "Gemini 4 Hydrogen (Low)",
-        "Claude Sonnet",
-        "Claude Opus"
+        "Claude Sonnet 5.5 (Medium)",
+        "Claude Opus 5.5 (Medium)"
     )
     ConnectionKind.TERMUX_CLI -> emptyList()
 }

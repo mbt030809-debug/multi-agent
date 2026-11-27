@@ -30,6 +30,7 @@ class HeadlessWebBridge(
 ) {
     private val pool = mutableMapOf<String, WebView>()
     private val loadedUrls = mutableMapOf<String, Boolean>()
+    private val targetUrls = mutableMapOf<String, String>()
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private data class PendingRequest(
@@ -69,7 +70,15 @@ class HeadlessWebBridge(
 
     @SuppressLint("SetJavaScriptEnabled")
     fun getOrCreateWebView(key: String, url: String): WebView {
-        pool[key]?.let { return it }
+        pool[key]?.let { existing ->
+            if (url.isNotBlank() && targetUrls[key] != url) {
+                targetUrls[key] = url
+                loadedUrls[key] = false
+                existing.loadUrl(url)
+            }
+            return existing
+        }
+        targetUrls[key] = url
 
         val webView = WebView(context).apply {
             layoutParams = ViewGroup.LayoutParams(
@@ -97,6 +106,27 @@ class HeadlessWebBridge(
             addJavascriptInterface(JsBridge(), "MbtABridge")
 
             webViewClient = object : WebViewClient() {
+                override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
+                    super.onPageStarted(view, url, favicon)
+                    view?.evaluateJavascript(
+                        """
+                        (function(){
+                          if (window.__mbtaShadowHooked) return;
+                          window.__mbtaShadowHooked = true;
+                          var orig = Element.prototype.attachShadow;
+                          if (orig) {
+                            Element.prototype.attachShadow = function(init) {
+                              var root = orig.call(this, init);
+                              try { this.__mbtaShadowRoot = root; } catch(e) {}
+                              return root;
+                            };
+                          }
+                        })();
+                        """.trimIndent(),
+                        null
+                    )
+                }
+
                 override fun onPageFinished(view: WebView?, loadedUrl: String?) {
                     super.onPageFinished(view, loadedUrl)
                     loadedUrls[key] = true
@@ -376,7 +406,29 @@ class HeadlessWebBridge(
                             if (!node) continue;
                             if (node.isContentEditable && isVisible(node)) return node;
                             var ph = (node.getAttribute && (node.getAttribute('placeholder') || node.getAttribute('data-placeholder') || node.getAttribute('aria-label'))) || '';
-                            if (/ask anything|message|물어보기|입력/i.test(ph) && isVisible(node)) return node;
+                            if (/ask anything|@ to mention|message|물어보기|입력/i.test(ph) && isVisible(node)) return node;
+                        } catch(e) {}
+                    }
+                    for (var m = 0; m < all.length; m++) {
+                        try {
+                            var txtNode = all[m];
+                            if (!txtNode || !isVisible(txtNode)) continue;
+                            var txt = (txtNode.innerText || txtNode.textContent || '').trim();
+                            if (txt.length > 0 && txt.length <= 80 && /ask anything|@ to mention|물어보기/i.test(txt)) {
+                                var p = txtNode;
+                                for (var up = 0; up < 4 && p; up++) {
+                                    if (p.querySelector) {
+                                        var cand = p.querySelector('[contenteditable], textarea, input:not([type="hidden"]), [role="textbox"]');
+                                        if (cand && isVisible(cand)) return cand;
+                                    }
+                                    p = p.parentElement;
+                                }
+                                txtNode.click();
+                                var ae = document.activeElement;
+                                if (ae && (ae.isContentEditable || ae.tagName === 'TEXTAREA' || ae.tagName === 'INPUT' || ae.getAttribute('role') === 'textbox')) {
+                                    return ae;
+                                }
+                            }
                         } catch(e) {}
                     }
                     return null;
@@ -421,23 +473,44 @@ class HeadlessWebBridge(
                     setTimeout(function() {
                         var sendBtn = findFirst([
                             'button[data-testid="send-button"]',
-                            'button[aria-label*="Send"]',
-                            'button[aria-label*="Submit"]',
+                            'button[aria-label*="send" i]',
+                            'button[aria-label*="submit" i]',
+                            'button[aria-label*="run" i]',
                             'button[aria-label*="전송"]',
                             'button[aria-label*="보내기"]',
                             'button.send-button',
                             'button[type="submit"]'
                         ]);
+                        if (!sendBtn) {
+                            var scopeEl = (inputEl.closest && inputEl.closest('form')) || (inputEl.parentElement && inputEl.parentElement.parentElement && inputEl.parentElement.parentElement.parentElement);
+                            if (scopeEl && scopeEl.querySelectorAll) {
+                                var btns = scopeEl.querySelectorAll('button');
+                                for (var b = btns.length - 1; b >= 0; b--) {
+                                    var btn = btns[b];
+                                    if (!btn || btn.disabled || !isVisible(btn)) continue;
+                                    var bLabel = ((btn.getAttribute('aria-label') || '') + ' ' + (btn.innerText || '')).toLowerCase();
+                                    if (/attach|upload|mic|voice|record|plus|add|menu|model|gemini|claude/.test(bLabel)) continue;
+                                    sendBtn = btn;
+                                    break;
+                                }
+                            }
+                        }
+                        function fireEnter(el) {
+                            var opts = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true };
+                            el.dispatchEvent(new KeyboardEvent('keydown', opts));
+                            el.dispatchEvent(new KeyboardEvent('keypress', opts));
+                            el.dispatchEvent(new KeyboardEvent('keyup', opts));
+                        }
                         if (sendBtn && !sendBtn.disabled) {
                             sendBtn.click();
                             setTimeout(function() {
                                 var rem = (inputEl.value !== undefined ? inputEl.value : inputEl.innerText) || '';
                                 if (rem.trim().length > 0) {
-                                    inputEl.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
+                                    fireEnter(inputEl);
                                 }
                             }, 350);
                         } else {
-                            inputEl.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
+                            fireEnter(inputEl);
                         }
 
                         var lastText = '';
@@ -463,6 +536,9 @@ class HeadlessWebBridge(
                                 var bodyText = document.body.innerText || '';
                                 if (bodyText.length > beforeBodyLen + promptText.length + 5) {
                                     candidate = bodyText.slice(beforeBodyLen).trim();
+                                    if (candidate.indexOf(promptText) === 0) {
+                                        candidate = candidate.slice(promptText.length).trim();
+                                    }
                                 }
                             }
 
@@ -493,7 +569,7 @@ class HeadlessWebBridge(
                         return;
                     }
                     waitTries++;
-                    if (waitTries >= 15) {
+                    if (waitTries >= 25) {
                         clearInterval(waitTimer);
                         if (window.MbtABridge) {
                             var loc = (location.hostname || '') + (location.pathname || '');
@@ -523,6 +599,7 @@ class HeadlessWebBridge(
                         var all = root.querySelectorAll('*');
                         for (var j = 0; j < all.length; j++) {
                             if (all[j].shadowRoot) walk(all[j].shadowRoot);
+                            if (all[j].__mbtaShadowRoot && all[j].__mbtaShadowRoot !== all[j].shadowRoot) walk(all[j].__mbtaShadowRoot);
                             if (all[j].tagName === 'IFRAME') {
                                 try {
                                     if (all[j].contentDocument) walk(all[j].contentDocument);
