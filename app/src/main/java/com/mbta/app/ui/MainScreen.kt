@@ -994,7 +994,15 @@ fun MainScreen(
             if (replyPair != null && replyPair.first == targetSess.id) {
                 val targetConn = connections.find { it.id == targetSess.connectionId }
                 if (targetConn != null) {
-                    sendMessageInSession(targetSess, targetConn, replyPair.second)
+                    val replyText = replyPair.second
+                    val isPermChoice = replyText in setOf("허용", "허용 안 함", "항상 허용", "거부")
+                    if (isPermChoice && targetConn.usesHiddenWebBridge()) {
+                        headlessWebBridge.clickWebActionButton(targetConn.id, replyText) { clicked ->
+                            if (!clicked) sendMessageInSession(targetSess, targetConn, replyText)
+                        }
+                    } else {
+                        sendMessageInSession(targetSess, targetConn, replyText)
+                    }
                 }
             }
         }

@@ -526,6 +526,55 @@ class HeadlessWebBridge(
 
     fun currentUrl(key: String): String? = pool[key]?.url
 
+    fun clickWebActionButton(key: String, label: String, onResult: (Boolean) -> Unit = {}) {
+        val wv = pool[key]
+        if (wv == null) {
+            onResult(false)
+            return
+        }
+        val norm = label.trim().lowercase()
+        val candidates = when (norm) {
+            "허용" -> listOf("허용", "allow", "allow once", "approve", "run")
+            "허용 안 함", "거부" -> listOf("허용 안 함", "거부", "deny", "don't allow", "do not allow", "reject")
+            "항상 허용" -> listOf("항상 허용", "always allow", "allow always")
+            else -> listOf(norm)
+        }
+        val candJson = org.json.JSONArray(candidates).toString()
+        val js = """
+            (function() {
+                try {
+                    $DEEP_QUERY_JS
+                    var cands = $candJson;
+                    var btns = queryAllDeep('button, [role="button"]');
+                    for (var pass = 0; pass < 2; pass++) {
+                        for (var i = btns.length - 1; i >= 0; i--) {
+                            var b = btns[i];
+                            if (b.disabled || b.getAttribute('aria-disabled') === 'true') continue;
+                            var r = b.getBoundingClientRect();
+                            if (r.width <= 0 || r.height <= 0) continue;
+                            var t = ((b.innerText || b.textContent || b.getAttribute('aria-label') || '') + '').replace(/\s+/g, ' ').trim().toLowerCase();
+                            if (!t || t.length > 40) continue;
+                            for (var j = 0; j < cands.length; j++) {
+                                var c = cands[j];
+                                if ((pass === 0 && t === c) || (pass === 1 && t.indexOf(c) !== -1 && c.length >= 2)) {
+                                    b.scrollIntoView({block: 'center'});
+                                    b.click();
+                                    return '1';
+                                }
+                            }
+                        }
+                    }
+                    return '0';
+                } catch(e) { return '0'; }
+            })();
+        """.trimIndent()
+        wv.evaluateJavascript(js) { res ->
+            val ok = res?.contains("1") == true
+            log("clickWebActionButton($key, '$label') -> $ok")
+            onResult(ok)
+        }
+    }
+
     fun fetchClaudeWebUsagePercent(key: String, onResult: (Int?, String) -> Unit) {
         val wv = pool[key]
         if (wv == null) {

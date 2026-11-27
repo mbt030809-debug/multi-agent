@@ -123,8 +123,11 @@ private val inlineCodeRegex = Regex("`[^`\\n]+`")
 private val urlRegex = Regex("https?://\\S+")
 private val permissionPromptRegex = Regex(
     "(?:\\[y/n]|\\(y/n\\)|\\(yes/no\\)|allow\\s+once|always\\s+allow|" +
-        "do\\s+you\\s+want\\s+to\\s+(?:allow|approve|grant|run|execute)|" +
-        "would\\s+you\\s+like\\s+to\\s+(?:allow|approve|grant)|" +
+        "flagged\\s+as\\s+potentially\\s+unsafe|위험\\s*요소\\s*검토|" +
+        "정말\\s*이\\s*작업을\\s*진행하시겠습니까|이\\s*작업을\\s*진행하시겠습니까|" +
+        "민감하다고\\s*생각하실\\s*수도\\s*있는\\s*작업|" +
+        "do\\s+you\\s+want\\s+to\\s+(?:allow|approve|grant|run|execute|proceed)|" +
+        "would\\s+you\\s+like\\s+to\\s+(?:allow|approve|grant|proceed)|" +
         "(?:권한|허용|승인)[^\\n?.!]{0,16}(?:할까요|하시겠습니까|해\\s*드릴까요|해도\\s*될까요|필요합니다\\s*\\?))",
     RegexOption.IGNORE_CASE
 )
@@ -153,13 +156,20 @@ internal fun detectQuickReplies(rawContent: String): List<String> {
     val nonBlankLines = cleaned.lines().map { it.trim() }.filter { it.isNotEmpty() }
     if (nonBlankLines.isEmpty()) return emptyList()
 
-    val tailLines = nonBlankLines.takeLast(3)
-    val tailText = tailLines.joinToString("\n")
+    val permBlock = nonBlankLines.takeLast(12).joinToString("\n")
+    val tailFour = nonBlankLines.takeLast(4).map { it.lowercase() }
     val lastLine = nonBlankLines.last()
 
-    // 1. 실제 권한/승인 요청 프롬프트인 경우에만 허용/거부 필 표시
-    if (permissionPromptRegex.containsMatchIn(tailText)) {
-        return listOf("허용", "항상 허용", "거부")
+    // 1. 실제 권한/승인/위험 명령 확인 프롬프트 감지 (웹 UI 카드 포함)
+    val hasExplicitAllowDenyPair =
+        (tailFour.any { it == "허용" } && tailFour.any { it == "허용 안 함" || it == "거부" }) ||
+            (tailFour.any { it == "allow" || it == "approve" } && tailFour.any { it == "deny" || it == "don't allow" || it == "reject" })
+    if (hasExplicitAllowDenyPair || permissionPromptRegex.containsMatchIn(permBlock)) {
+        return if (permBlock.contains("허용 안 함")) {
+            listOf("허용", "허용 안 함")
+        } else {
+            listOf("허용", "항상 허용", "거부")
+        }
     }
 
     // 2. 마지막 문장이 의례적인 마무리 인사/열린 질문이면 표시하지 않음
@@ -951,10 +961,12 @@ fun SessionPane(
 
             val lastMsg = session.messages.lastOrNull()
             val quickChoices = remember(lastMsg?.id, lastMsg?.content, isSending, dismissedQuestionMsgId) {
-                if (isSending || lastMsg == null || lastMsg.role != MessageRole.ASSISTANT || lastMsg.isError || lastMsg.id == dismissedQuestionMsgId) {
+                if (lastMsg == null || lastMsg.role != MessageRole.ASSISTANT || lastMsg.isError || lastMsg.id == dismissedQuestionMsgId) {
                     emptyList()
                 } else {
-                    detectQuickReplies(lastMsg.content)
+                    val detected = detectQuickReplies(lastMsg.content)
+                    val isPermAction = detected.firstOrNull() == "허용"
+                    if (!isSending || isPermAction) detected else emptyList()
                 }
             }
             if (quickChoices.isNotEmpty() && lastMsg != null) {
@@ -968,20 +980,47 @@ fun SessionPane(
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     quickChoices.forEach { choice ->
+                        val isApprove = choice == "허용" || choice == "항상 허용"
+                        val isDeny = choice == "허용 안 함" || choice == "거부"
+                        val chipBg = when {
+                            isApprove -> MaterialTheme.colorScheme.primaryContainer
+                            isDeny -> MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.85f)
+                            else -> MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.75f)
+                        }
+                        val chipFg = when {
+                            isApprove -> MaterialTheme.colorScheme.primary
+                            isDeny -> MaterialTheme.colorScheme.error
+                            else -> MaterialTheme.colorScheme.onSecondaryContainer
+                        }
+                        val chipBorder = when {
+                            isApprove -> MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)
+                            isDeny -> MaterialTheme.colorScheme.error.copy(alpha = 0.45f)
+                            else -> MaterialTheme.colorScheme.outline.copy(alpha = 0.28f)
+                        }
                         Surface(
                             onClick = {
                                 dismissedQuestionMsgId = lastMsg.id
-                                onSendMessage(choice)
+                                if ((isApprove || isDeny) && connection != null && connection.usesHiddenWebBridge() && headlessWebBridge != null) {
+                                    headlessWebBridge.clickWebActionButton(connection.id, choice) { clicked ->
+                                        if (clicked) {
+                                            android.widget.Toast.makeText(context, "'$choice' 버튼을 클릭했습니다.", android.widget.Toast.LENGTH_SHORT).show()
+                                        } else {
+                                            onSendMessage(choice)
+                                        }
+                                    }
+                                } else {
+                                    onSendMessage(choice)
+                                }
                             },
                             shape = RoundedCornerShape(16.dp),
-                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.75f),
-                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.28f))
+                            color = chipBg,
+                            border = BorderStroke(1.dp, chipBorder)
                         ) {
                             Text(
                                 text = choice,
                                 fontSize = 11.sp,
-                                fontWeight = FontWeight.Medium,
-                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                fontWeight = if (isApprove || isDeny) FontWeight.SemiBold else FontWeight.Medium,
+                                color = chipFg,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
