@@ -918,14 +918,20 @@ fun SessionPane(
 @Composable
 private fun ActionSquareBadge(
     letter: String,
-    tint: androidx.compose.ui.graphics.Color = MaterialTheme.colorScheme.primary,
+    tint: androidx.compose.ui.graphics.Color? = null,
     onClick: () -> Unit
 ) {
+    val badgeColor = tint ?: when (letter) {
+        "C" -> androidx.compose.ui.graphics.Color(0xFF4FC3F7)
+        "P" -> androidx.compose.ui.graphics.Color(0xFF81C784)
+        "I" -> androidx.compose.ui.graphics.Color(0xFFFFB74D)
+        else -> MaterialTheme.colorScheme.primary
+    }
     Surface(
         onClick = onClick,
         shape = RoundedCornerShape(4.dp),
-        color = tint.copy(alpha = 0.12f),
-        border = BorderStroke(1.dp, tint.copy(alpha = 0.6f)),
+        color = badgeColor.copy(alpha = 0.14f),
+        border = BorderStroke(1.dp, badgeColor.copy(alpha = 0.65f)),
         modifier = Modifier.size(22.dp)
     ) {
         Box(contentAlignment = Alignment.Center) {
@@ -933,7 +939,7 @@ private fun ActionSquareBadge(
                 text = letter,
                 fontSize = 11.sp,
                 fontWeight = FontWeight.Bold,
-                color = tint
+                color = badgeColor
             )
         }
     }
@@ -1023,16 +1029,8 @@ private fun ChatBubble(
                             modifier = Modifier.padding(top = 4.dp),
                             horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            ActionSquareBadge(
-                                letter = "C",
-                                tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                                onClick = { clipboard.setText(AnnotatedString(message.content)) }
-                            )
-                            ActionSquareBadge(
-                                letter = "P",
-                                tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                                onClick = { onQuoteToInput(message.content) }
-                            )
+                            ActionSquareBadge("C") { clipboard.setText(AnnotatedString(message.content)) }
+                            ActionSquareBadge("P") { onQuoteToInput(message.content) }
                         }
                     }
                 }
@@ -1213,7 +1211,7 @@ private fun FormattedMessageContent(text: String, isCli: Boolean, fontScale: Flo
                         modifier = Modifier.weight(1f)
                     )
                     ActionSquareBadge("C") { clipboard.setText(AnnotatedString(u)) }
-                    ActionSquareBadge("I", tint = MaterialTheme.colorScheme.tertiary) {
+                    ActionSquareBadge("I") {
                         runCatching {
                             val intent = Intent(Intent.ACTION_VIEW, Uri.parse(u)).apply {
                                 setPackage("com.sec.android.app.sbrowser")
