@@ -151,6 +151,9 @@ fun availableEffortsFor(
         return variantEfforts.sortedBy { e -> order.indexOfFirst { it.equals(e, ignoreCase = true) }.let { if (it < 0) 99 else it } }
     }
     val urlLower = connection.endpointUrl.lowercase()
+    if (connection.usesHiddenWebBridge() && urlLower.contains("claude.ai/code")) {
+        return if (mLower.contains("haiku")) emptyList() else listOf("low", "medium", "high", "extra", "max")
+    }
     return when (connection.kind) {
         ConnectionKind.REMOTE_CONTROL -> {
             if (urlLower.contains("/claude")) {

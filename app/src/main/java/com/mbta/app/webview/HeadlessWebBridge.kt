@@ -524,6 +524,53 @@ class HeadlessWebBridge(
         wv.evaluateJavascript(js, null)
     }
 
+    /** claude.ai/code 모델 메뉴 하단 '노력(effort)' 항목을 눌러 적용 (낮음/중간/높음/엑스트라/최대) */
+    fun switchWebEffort(key: String, effort: String) {
+        val wv = pool[key] ?: return
+        val cands = when (effort.lowercase()) {
+            "low" -> listOf("낮음", "low")
+            "medium" -> listOf("중간", "medium")
+            "high" -> listOf("높음", "high")
+            "extra", "xhigh" -> listOf("엑스트라", "extra", "xhigh")
+            "max" -> listOf("최대", "max")
+            else -> return
+        }
+        val arr = cands.joinToString(",") { JSONObject.quote(it) }
+        val js = """
+            (function() {
+                $DEEP_QUERY_JS
+                var cands = [$arr];
+                function findPicker() {
+                    var btns = queryAllDeep('button, [role="button"], [aria-haspopup]');
+                    for (var i = 0; i < btns.length; i++) {
+                        var t = (btns[i].innerText || btns[i].getAttribute('aria-label') || '').toLowerCase();
+                        if (/sonnet|opus|haiku|fable|claude|모델|model/.test(t)) return btns[i];
+                    }
+                    return null;
+                }
+                function clickEffort() {
+                    var items = queryAllDeep('[role="menuitem"], [role="option"], [role="menuitemradio"], li, button, div');
+                    for (var j = 0; j < items.length; j++) {
+                        var el = items[j];
+                        if (el.children && el.children.length > 4) continue;
+                        var txt = (el.innerText || '').trim().split('\n')[0].trim().toLowerCase();
+                        if (!txt) continue;
+                        for (var k = 0; k < cands.length; k++) {
+                            if (txt === cands[k]) { el.click(); return true; }
+                        }
+                    }
+                    return false;
+                }
+                if (clickEffort()) return;
+                var picker = findPicker();
+                if (!picker) return;
+                picker.click();
+                setTimeout(clickEffort, 400);
+            })();
+        """.trimIndent()
+        wv.evaluateJavascript(js, null)
+    }
+
     fun currentUrl(key: String): String? = pool[key]?.url
 
     /** 세션 삭제 시 해당 세션 전용 WebView 해제 */

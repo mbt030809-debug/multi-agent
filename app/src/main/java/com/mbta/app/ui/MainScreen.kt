@@ -1131,6 +1131,9 @@ fun MainScreen(
             if (it.id == session.id) it.copy(selectedModel = updatedModel, selectedEffort = effort) else it
         }
         store.saveSessions(sessions)
+        if (conn.usesHiddenWebBridge()) {
+            headlessWebBridge.switchWebEffort(com.mbta.app.model.webSessionKey(conn.id, session.id), effort)
+        }
     }
 
     fun renameSession(session: AgentSession, newTitle: String) {
