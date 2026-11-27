@@ -41,7 +41,10 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AttachFile
@@ -434,8 +437,8 @@ fun SessionPane(
                             } while (event.changes.any { it.pressed })
                         }
                     },
-                contentPadding = PaddingValues(12.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                verticalArrangement = Arrangement.spacedBy(5.dp)
             ) {
                 itemsIndexed(session.messages, key = { _, m -> m.id }) { idx, msg ->
                     ChatBubble(
@@ -675,28 +678,48 @@ fun SessionPane(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(MaterialTheme.colorScheme.surface)
-                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                    .padding(horizontal = 8.dp, vertical = 3.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 IconButton(
                     onClick = { filePicker.launch(arrayOf("*/*")) },
-                    modifier = Modifier.size(36.dp)
+                    modifier = Modifier.size(32.dp)
                 ) {
-                    Icon(Icons.Default.AttachFile, contentDescription = "파일 첨부", modifier = Modifier.size(20.dp))
+                    Icon(Icons.Default.AttachFile, contentDescription = "파일 첨부", modifier = Modifier.size(18.dp))
                 }
-                OutlinedTextField(
-                    value = inputText,
-                    onValueChange = { inputText = it },
-                    placeholder = {
-                        Text(
-                            if (connection.kind == ConnectionKind.TERMUX_CLI) "Termux 명령어 입력..."
-                            else "${connection.name}에게 메시지 입력..."
-                        )
-                    },
-                    maxLines = 4,
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)),
                     modifier = Modifier.weight(1f)
-                )
+                ) {
+                    Box(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                        contentAlignment = Alignment.CenterStart
+                    ) {
+                        if (inputText.isEmpty()) {
+                            Text(
+                                text = if (connection.kind == ConnectionKind.TERMUX_CLI) "Termux 명령어 입력..."
+                                else "${connection.name}에게 메시지 입력...",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                                maxLines = 1
+                            )
+                        }
+                        BasicTextField(
+                            value = inputText,
+                            onValueChange = { inputText = it },
+                            maxLines = 4,
+                            textStyle = TextStyle(
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurface
+                            ),
+                            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
                 Surface(
                     onClick = { onSendMessage("계속 진행해줘 (Keep going)") },
                     shape = RoundedCornerShape(8.dp),
@@ -707,7 +730,7 @@ fun SessionPane(
                         fontSize = 11.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onSecondaryContainer,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                     )
                 }
                 if (isSending) {
@@ -983,7 +1006,7 @@ private fun ChatBubble(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Row(
-                    modifier = Modifier.padding(10.dp),
+                    modifier = Modifier.padding(6.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
@@ -992,7 +1015,7 @@ private fun ChatBubble(
                     }
                     Text(
                         text = message.content,
-                        fontSize = (11f * fontScale).sp,
+                        fontSize = (9.5f * fontScale).sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
@@ -1006,11 +1029,11 @@ private fun ChatBubble(
                     color = MaterialTheme.colorScheme.primaryContainer,
                     modifier = Modifier.widthIn(max = 300.dp)
                 ) {
-                    Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                    Column(modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp)) {
                         SelectionContainer {
                             Text(
                                 text = if (isCli) "$ ${message.content}" else message.content,
-                                fontSize = (14f * fontScale).sp,
+                                fontSize = (11.5f * fontScale).sp,
                                 fontFamily = if (isCli) FontFamily.Monospace else FontFamily.Default,
                                 color = MaterialTheme.colorScheme.onPrimaryContainer
                             )
@@ -1039,7 +1062,7 @@ private fun ChatBubble(
                     color = bubbleColor,
                     modifier = Modifier.widthIn(max = 320.dp)
                 ) {
-                    Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                    Column(modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp)) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
@@ -1048,7 +1071,7 @@ private fun ChatBubble(
                             if (message.agentName.isNotBlank()) {
                                 Text(
                                     text = message.agentName,
-                                    fontSize = 11.sp,
+                                    fontSize = 10.sp,
                                     fontWeight = FontWeight.SemiBold,
                                     color = if (message.isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
                                 )
@@ -1070,7 +1093,7 @@ private fun ChatBubble(
                                 CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                                 Text(
                                     text = message.content,
-                                    fontSize = (13f * fontScale).sp,
+                                    fontSize = (10.5f * fontScale).sp,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
@@ -1094,10 +1117,10 @@ private fun ChatBubble(
                             }
                         }
                         if (message.inputTokens > 0L || message.outputTokens > 0L) {
-                            Spacer(modifier = Modifier.height(4.dp))
+                            Spacer(modifier = Modifier.height(2.dp))
                             Text(
                                 text = "입력 ${formatTokens(message.inputTokens)} · 출력 ${formatTokens(message.outputTokens)}",
-                                fontSize = 10.sp,
+                                fontSize = 9.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                             )
                         }
@@ -1138,7 +1161,7 @@ private fun FormattedMessageContent(text: String, isCli: Boolean, fontScale: Flo
             if (!isCode) {
                 Text(
                     text = body,
-                    fontSize = (14f * fontScale).sp,
+                    fontSize = (11.5f * fontScale).sp,
                     fontFamily = if (isCli) FontFamily.Monospace else FontFamily.Default,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -1149,7 +1172,7 @@ private fun FormattedMessageContent(text: String, isCli: Boolean, fontScale: Flo
                     border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Column(modifier = Modifier.padding(8.dp)) {
+                    Column(modifier = Modifier.padding(6.dp)) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
@@ -1161,7 +1184,7 @@ private fun FormattedMessageContent(text: String, isCli: Boolean, fontScale: Flo
                         Box(modifier = Modifier.horizontalScroll(rememberScrollState())) {
                             Text(
                                 text = body,
-                                fontSize = (12f * fontScale).sp,
+                                fontSize = (10f * fontScale).sp,
                                 fontFamily = FontFamily.Monospace,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
