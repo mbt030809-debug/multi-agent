@@ -177,10 +177,16 @@ fun SessionPane(
                 overflow = TextOverflow.Ellipsis
             )
             if (connection != null) {
-                val models = availableModelsFor(connection.kind)
+                var dynamicModels by remember(connection.id, connection.endpointUrl) { mutableStateOf<List<String>>(emptyList()) }
+                LaunchedEffect(showModelMenu, connection.id) {
+                    if (showModelMenu) {
+                        dynamicModels = com.mbta.app.network.AiApiClient.fetchAvailableModels(connection)
+                    }
+                }
+                val models = dynamicModels.ifEmpty { availableModelsFor(connection) }
                 if (models.isNotEmpty()) {
                     val activeModel = session.selectedModel.ifBlank {
-                        connection.model.ifBlank { defaultModelFor(connection.kind) }
+                        connection.model.ifBlank { defaultModelFor(connection) }
                     }
                     Spacer(modifier = Modifier.size(6.dp))
                     Box {

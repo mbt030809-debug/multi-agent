@@ -104,6 +104,26 @@ fun availableModelsFor(kind: ConnectionKind): List<String> = when (kind) {
     ConnectionKind.TERMUX_CLI -> emptyList()
 }
 
+fun defaultModelFor(connection: AiConnection): String {
+    val lower = connection.endpointUrl.lowercase()
+    if ((connection.kind == ConnectionKind.REMOTE_CONTROL || connection.kind == ConnectionKind.REMOTE_WEB) &&
+        (lower.contains("/claude") || lower.contains("claude.ai"))
+    ) {
+        return "sonnet"
+    }
+    return defaultModelFor(connection.kind)
+}
+
+fun availableModelsFor(connection: AiConnection): List<String> {
+    val lower = connection.endpointUrl.lowercase()
+    if ((connection.kind == ConnectionKind.REMOTE_CONTROL || connection.kind == ConnectionKind.REMOTE_WEB) &&
+        (lower.contains("/claude") || lower.contains("claude.ai"))
+    ) {
+        return listOf("sonnet", "opus", "haiku", "claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5")
+    }
+    return availableModelsFor(connection.kind)
+}
+
 fun defaultEndpointFor(kind: ConnectionKind): String = when (kind) {
     ConnectionKind.CLAUDE_WEB -> "https://claude.ai"
     ConnectionKind.CHATGPT_WEB -> "https://chatgpt.com"

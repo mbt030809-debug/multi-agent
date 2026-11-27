@@ -126,6 +126,47 @@ def extract_claude_title(jsonl_path):
 
 PROGRESS_LOCK = threading.Lock()
 PROGRESS_MAP = {}
+MODELS_CACHE = {}
+
+
+def fetch_agy_models():
+    try:
+        proc = subprocess.run(["agy", "models"], capture_output=True, text=True, timeout=15)
+        out = []
+        for line in (proc.stdout or "").splitlines():
+            line = line.strip()
+            if not line or line.startswith("Fetching") or line.startswith("ERROR:"):
+                continue
+            parts = re.split(r"\t|\s{2,}", line, maxsplit=1)
+            if len(parts) == 2 and parts[1].strip():
+                out.append(parts[1].strip())
+        if out:
+            return out
+    except Exception:
+        pass
+    return [
+        "Gemini 4 Neon (Medium)",
+        "Gemini 4 Neon (High)",
+        "Gemini 4 Neon (Low)",
+        "Gemini 4 Hydrogen (Low)",
+        "Claude Sonnet 5.5 (Medium)",
+        "Claude Opus 5.5 (Medium)",
+    ]
+
+
+def fetch_claude_models():
+    models = ["sonnet", "opus", "haiku", "claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5"]
+    try:
+        cfg_path = os.path.expanduser("~/.claude/settings.json")
+        if os.path.exists(cfg_path):
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            m = (cfg.get("model") or "").strip()
+            if m and m not in models:
+                models.insert(0, m)
+    except Exception:
+        pass
+    return models
 
 
 def append_progress(key, line):
@@ -429,6 +470,18 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
             sid = (qs.get("id") or [""])[0]
             msgs = load_agy_messages(sid) if kind == "agy" else load_claude_messages(sid)
             self._send_json(200, {"messages": msgs})
+        elif self.path.startswith("/models"):
+            from urllib.parse import urlparse, parse_qs
+            qs = parse_qs(urlparse(self.path).query)
+            kind = (qs.get("kind") or ["agy"])[0]
+            now = time.time()
+            cached = MODELS_CACHE.get(kind)
+            if cached and now - cached[0] < 600:
+                models = cached[1]
+            else:
+                models = fetch_claude_models() if kind == "claude" else fetch_agy_models()
+                MODELS_CACHE[kind] = (now, models)
+            self._send_json(200, {"models": models})
         elif self.path.startswith("/sessions"):
             kind = "claude" if "kind=claude" in self.path else ("agy" if "kind=agy" in self.path else "all")
             items = []

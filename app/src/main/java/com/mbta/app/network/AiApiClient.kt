@@ -42,6 +42,81 @@ object AiApiClient {
     private val json = Json { ignoreUnknownKeys = true }
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
 
+    suspend fun fetchAvailableModels(connection: AiConnection): List<String> = withContext(Dispatchers.IO) {
+        val fallback = com.mbta.app.model.availableModelsFor(connection)
+        try {
+            when (connection.kind) {
+                ConnectionKind.REMOTE_CONTROL -> {
+                    val kind = if (connection.endpointUrl.lowercase().contains("/claude")) "claude" else "agy"
+                    val req = Request.Builder().url("http://127.0.0.1:8765/models?kind=$kind").get().build()
+                    client.newCall(req).execute().use { resp ->
+                        if (!resp.isSuccessful) return@withContext fallback
+                        val arr = json.parseToJsonElement(resp.body?.string().orEmpty()).jsonObject["models"]?.jsonArray
+                        val list = arr?.mapNotNull { it.jsonPrimitive.contentOrNull }?.filter { it.isNotBlank() }.orEmpty()
+                        list.ifEmpty { fallback }
+                    }
+                }
+                ConnectionKind.OPENAI_API -> {
+                    if (connection.apiKey.isBlank()) return@withContext fallback
+                    val req = Request.Builder()
+                        .url("https://api.openai.com/v1/models")
+                        .addHeader("Authorization", "Bearer ${connection.apiKey.trim()}")
+                        .get()
+                        .build()
+                    client.newCall(req).execute().use { resp ->
+                        if (!resp.isSuccessful) return@withContext fallback
+                        val arr = json.parseToJsonElement(resp.body?.string().orEmpty()).jsonObject["data"]?.jsonArray
+                        val list = arr?.mapNotNull { it.jsonObject["id"]?.jsonPrimitive?.contentOrNull }
+                            ?.filter { it.matches(Regex("^(gpt-|o1|o3|o4|chatgpt-).*")) }
+                            ?.sortedDescending()
+                            ?.take(20)
+                            .orEmpty()
+                        list.ifEmpty { fallback }
+                    }
+                }
+                ConnectionKind.CLAUDE_API -> {
+                    if (connection.apiKey.isBlank()) return@withContext fallback
+                    val req = Request.Builder()
+                        .url("https://api.anthropic.com/v1/models")
+                        .addHeader("x-api-key", connection.apiKey.trim())
+                        .addHeader("anthropic-version", "2023-06-01")
+                        .get()
+                        .build()
+                    client.newCall(req).execute().use { resp ->
+                        if (!resp.isSuccessful) return@withContext fallback
+                        val arr = json.parseToJsonElement(resp.body?.string().orEmpty()).jsonObject["data"]?.jsonArray
+                        val list = arr?.mapNotNull { it.jsonObject["id"]?.jsonPrimitive?.contentOrNull }
+                            ?.take(20)
+                            .orEmpty()
+                        list.ifEmpty { fallback }
+                    }
+                }
+                ConnectionKind.GEMINI_API -> {
+                    if (connection.apiKey.isBlank()) return@withContext fallback
+                    val req = Request.Builder()
+                        .url("https://generativelanguage.googleapis.com/v1beta/models?key=${connection.apiKey.trim()}")
+                        .get()
+                        .build()
+                    client.newCall(req).execute().use { resp ->
+                        if (!resp.isSuccessful) return@withContext fallback
+                        val arr = json.parseToJsonElement(resp.body?.string().orEmpty()).jsonObject["models"]?.jsonArray
+                        val list = arr?.mapNotNull { el ->
+                            val obj = el.jsonObject
+                            val methods = obj["supportedGenerationMethods"]?.jsonArray?.mapNotNull { it.jsonPrimitive.contentOrNull }.orEmpty()
+                            if ("generateContent" in methods) {
+                                obj["name"]?.jsonPrimitive?.contentOrNull?.removePrefix("models/")
+                            } else null
+                        }?.take(20).orEmpty()
+                        list.ifEmpty { fallback }
+                    }
+                }
+                else -> fallback
+            }
+        } catch (_: Exception) {
+            fallback
+        }
+    }
+
     suspend fun send(
         connection: AiConnection,
         history: List<ChatMessage>,

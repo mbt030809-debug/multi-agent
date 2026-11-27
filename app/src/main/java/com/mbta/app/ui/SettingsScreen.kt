@@ -663,7 +663,7 @@ private fun SmartAddConnectionDialog(
                                 name = customName.trim().ifEmpty { detected.suggestedName },
                                 kind = detected.kind,
                                 apiKey = detected.apiKey,
-                                model = defaultModelFor(detected.kind),
+                                model = defaultModelFor(AiConnection(id = "", name = "", kind = detected.kind, endpointUrl = detected.endpointUrl)),
                                 endpointUrl = detected.endpointUrl,
                                 enabled = true
                             )
@@ -682,7 +682,7 @@ private fun SmartAddConnectionDialog(
                                     name = customName.trim().ifEmpty { d.suggestedName },
                                     kind = d.kind,
                                     apiKey = d.apiKey,
-                                    model = defaultModelFor(d.kind),
+                                    model = defaultModelFor(AiConnection(id = "", name = "", kind = d.kind, endpointUrl = d.endpointUrl)),
                                     endpointUrl = d.endpointUrl,
                                     enabled = true
                                 )
@@ -762,7 +762,7 @@ private fun ConnectionEditorDialog(
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
-                    val presets = availableModelsFor(initial.kind)
+                    val presets = availableModelsFor(initial.copy(endpointUrl = endpointUrl))
                     if (presets.isNotEmpty()) {
                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             presets.take(3).forEach { m ->
@@ -792,11 +792,13 @@ private fun ConnectionEditorDialog(
                         TextButton(onClick = {
                             name = "Antigravity"
                             endpointUrl = "http://127.0.0.1:8765/agy"
+                            model = "Gemini 4 Neon (Medium)"
                             remoteMode = RemoteMode.BRIDGE_API
                         }) { Text("Agy 로컬", fontSize = 11.sp) }
                         TextButton(onClick = {
                             name = "Claude Code"
                             endpointUrl = "http://127.0.0.1:8765/claude"
+                            model = "sonnet"
                             remoteMode = RemoteMode.BRIDGE_API
                         }) { Text("Claude 로컬", fontSize = 11.sp) }
                     }
