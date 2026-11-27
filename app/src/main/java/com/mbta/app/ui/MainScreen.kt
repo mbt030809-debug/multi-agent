@@ -292,7 +292,7 @@ fun MainScreen(
         sendingMap[session.id] = true
 
         scope.launch {
-            val reply = AiApiClient.send(effectiveConn, historyBefore, effectivePrompt, session.id)
+            val reply = AiApiClient.send(effectiveConn, historyBefore, effectivePrompt, session.id, cwd = effectiveDir)
             val assistantMsg = ChatMessage(
                 id = "msg_${UUID.randomUUID()}",
                 role = MessageRole.ASSISTANT,
@@ -449,7 +449,8 @@ fun MainScreen(
                     store.saveSessions(sessions)
                     continue
                 } else {
-                    val reply = AiApiClient.send(conn, emptyList(), stepPrompt, orchSess.id)
+                    val orchDir = orchSess.worktreePath.ifBlank { activeProject.workDir }
+                    val reply = AiApiClient.send(conn, emptyList(), stepPrompt, orchSess.id, cwd = orchDir)
                     if (reply.error != null) {
                         val errBubble = ChatMessage(
                             id = "msg_${UUID.randomUUID()}",

@@ -46,7 +46,8 @@ object AiApiClient {
         connection: AiConnection,
         history: List<ChatMessage>,
         userMessage: String,
-        sessionId: String = ""
+        sessionId: String = "",
+        cwd: String = ""
     ): AiReply = withContext(Dispatchers.IO) {
         if (connection.kind != ConnectionKind.TERMUX_CLI &&
             connection.kind != ConnectionKind.REMOTE_CONTROL &&
@@ -64,7 +65,7 @@ object AiApiClient {
                 ConnectionKind.OPENAI_API -> sendOpenAi(connection, history, userMessage)
                 ConnectionKind.GEMINI_API -> sendGemini(connection, history, userMessage)
                 ConnectionKind.TERMUX_CLI -> sendTermuxCli(connection, userMessage)
-                ConnectionKind.REMOTE_CONTROL -> sendRemoteControl(connection, history, userMessage, sessionId)
+                ConnectionKind.REMOTE_CONTROL -> sendRemoteControl(connection, history, userMessage, sessionId, cwd)
                 else -> AiReply(text = "", error = "지원하지 않는 연결 형식입니다.")
             }
         } catch (e: Exception) {
@@ -289,7 +290,8 @@ object AiApiClient {
         connection: AiConnection,
         history: List<ChatMessage>,
         prompt: String,
-        sessionId: String
+        sessionId: String,
+        cwd: String = ""
     ): AiReply {
         val url = connection.endpointUrl.ifBlank { defaultEndpointFor(ConnectionKind.REMOTE_CONTROL) }
         val payload = buildJsonObject {
@@ -299,6 +301,12 @@ object AiApiClient {
             }
             if (sessionId.isNotBlank()) {
                 put("mbta_session_id", JsonPrimitive(sessionId))
+            }
+            if (cwd.isNotBlank()) {
+                put("cwd", JsonPrimitive(cwd))
+            }
+            if (connection.permissionMode.isNotBlank()) {
+                put("permission_mode", JsonPrimitive(connection.permissionMode))
             }
             put("history", buildJsonArray {
                 history.forEach { msg ->

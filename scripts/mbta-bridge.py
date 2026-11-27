@@ -48,8 +48,9 @@ def extract_json_payload(stdout_text):
     return None
 
 
-def run_cli(cmd, timeout=240):
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+def run_cli(cmd, cwd=None, timeout=240):
+    work_dir = cwd if (cwd and os.path.isdir(cwd)) else None
+    return subprocess.run(cmd, cwd=work_dir, capture_output=True, text=True, timeout=timeout)
 
 
 class BridgeHandler(http.server.BaseHTTPRequestHandler):
@@ -163,15 +164,19 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
 
         if self.path == "/claude":
             key = f"claude:{mbta_session_id}" if mbta_session_id else ""
+            cwd = (data.get("cwd") or "").strip()
+            permission_mode = (data.get("permission_mode") or "").strip()
             cmd = ["claude", "-p", prompt, "--output-format", "json"]
             if data.get("model"):
                 cmd.extend(["--model", data["model"]])
+            if permission_mode in ("plan", "acceptEdits", "auto", "default", "bypassPermissions", "dontAsk"):
+                cmd.extend(["--permission-mode", permission_mode])
             if key:
                 with SESSION_LOCK:
                     cli_sid = load_sessions().get(key)
                 if cli_sid:
                     cmd.extend(["--resume", cli_sid])
-            proc = run_cli(cmd)
+            proc = run_cli(cmd, cwd=cwd)
             if proc.returncode != 0:
                 self._send_json(500, {"error": proc.stderr or proc.stdout or "claude failed"})
                 return
@@ -196,6 +201,7 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
 
         if self.path == "/agy":
             key = f"agy:{mbta_session_id}" if mbta_session_id else ""
+            cwd = (data.get("cwd") or "").strip()
             cmd = ["agy", "-p", prompt, "--output-format", "json"]
             if data.get("model"):
                 cmd.extend(["--model", data["model"]])
@@ -204,7 +210,7 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                     cli_sid = load_sessions().get(key)
                 if cli_sid:
                     cmd.extend(["--resume", cli_sid])
-            proc = run_cli(cmd)
+            proc = run_cli(cmd, cwd=cwd)
             if proc.returncode != 0:
                 self._send_json(500, {"error": proc.stderr or proc.stdout or "agy failed"})
                 return

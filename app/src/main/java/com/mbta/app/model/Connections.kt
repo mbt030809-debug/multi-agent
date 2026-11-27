@@ -39,6 +39,7 @@ data class AiConnection(
     val endpointUrl: String = "",
     val desktopMode: Boolean = false,
     val remoteMode: RemoteMode = RemoteMode.BRIDGE_API,
+    val permissionMode: String = "acceptEdits",
     val enabled: Boolean = true
 )
 

@@ -34,6 +34,15 @@ object GitBridgeClient {
         .readTimeout(60, TimeUnit.SECONDS)
         .build()
 
+    suspend fun checkHealth(): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val req = Request.Builder().url("$BASE/health").get().build()
+            client.newCall(req).execute().use { it.isSuccessful }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     suspend fun fetchStatus(cwd: String): GitStatusResult = withContext(Dispatchers.IO) {
         try {
             val body = buildJsonObject { put("cwd", JsonPrimitive(cwd)) }.toString()

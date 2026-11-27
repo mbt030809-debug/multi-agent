@@ -21,6 +21,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.AlertDialog
@@ -41,8 +42,13 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.graphics.Color
+import com.mbta.app.network.GitBridgeClient
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -70,7 +76,7 @@ import com.mbta.app.model.isHiddenWebBridge
 import com.mbta.app.util.AppUpdater
 import java.util.UUID
 
-private const val TERMUX_BRIDGE_CMD = "python3 ~/multi-agent/scripts/mbta-bridge.py"
+private const val TERMUX_BRIDGE_CMD = "nohup python3 ~/multi-agent/scripts/mbta-bridge.py > ~/mbta-bridge.log 2>&1 &"
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
@@ -380,20 +386,49 @@ fun SettingsScreen(
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(modifier = Modifier.padding(12.dp)) {
+                        var bridgeAlive by remember { mutableStateOf<Boolean?>(null) }
+                        val bridgeScope = rememberCoroutineScope()
+                        LaunchedEffect(Unit) {
+                            bridgeAlive = GitBridgeClient.checkHealth()
+                        }
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text("Termux 로컬 브릿지 실행 명령", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                            IconButton(
-                                onClick = {
-                                    clipboard.setText(AnnotatedString(TERMUX_BRIDGE_CMD))
-                                    copiedBanner = true
-                                },
-                                modifier = Modifier.size(28.dp)
-                            ) {
-                                Icon(Icons.Default.ContentCopy, contentDescription = "복사", modifier = Modifier.size(16.dp))
+                            Column {
+                                Text("Termux 로컬 브릿지 실행 명령", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                                val statusText = when (bridgeAlive) {
+                                    true -> "● 브릿지 실행 중 (127.0.0.1:8765)"
+                                    false -> "○ 브릿지 미실행"
+                                    null -> "○ 상태 확인 중..."
+                                }
+                                val statusColor = when (bridgeAlive) {
+                                    true -> Color(0xFF4CAF50)
+                                    false -> MaterialTheme.colorScheme.error
+                                    null -> MaterialTheme.colorScheme.onSurfaceVariant
+                                }
+                                Text(statusText, fontSize = 11.sp, color = statusColor)
+                            }
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                IconButton(
+                                    onClick = {
+                                        bridgeAlive = null
+                                        bridgeScope.launch { bridgeAlive = GitBridgeClient.checkHealth() }
+                                    },
+                                    modifier = Modifier.size(28.dp)
+                                ) {
+                                    Icon(Icons.Default.Refresh, contentDescription = "상태 새로고침", modifier = Modifier.size(16.dp))
+                                }
+                                IconButton(
+                                    onClick = {
+                                        clipboard.setText(AnnotatedString(TERMUX_BRIDGE_CMD))
+                                        copiedBanner = true
+                                    },
+                                    modifier = Modifier.size(28.dp)
+                                ) {
+                                    Icon(Icons.Default.ContentCopy, contentDescription = "복사", modifier = Modifier.size(16.dp))
+                                }
                             }
                         }
                         Text(
@@ -674,6 +709,7 @@ private fun ConnectionEditorDialog(
     var model by remember { mutableStateOf(initial.model) }
     var endpointUrl by remember { mutableStateOf(initial.endpointUrl) }
     var remoteMode by remember { mutableStateOf(initial.remoteMode) }
+    var permissionMode by remember { mutableStateOf(initial.permissionMode.ifBlank { "acceptEdits" }) }
     var showKey by remember { mutableStateOf(false) }
 
     val isApiKind = initial.kind == ConnectionKind.CLAUDE_API ||
@@ -770,6 +806,20 @@ private fun ConnectionEditorDialog(
                             )
                         }
                     }
+                    Text(
+                        "Claude Code 권한 모드",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        listOf("plan", "acceptEdits", "auto").forEach { mode ->
+                            FilterChip(
+                                selected = permissionMode == mode,
+                                onClick = { permissionMode = mode },
+                                label = { Text(mode, fontSize = 11.sp) }
+                            )
+                        }
+                    }
                 }
             }
         },
@@ -782,7 +832,8 @@ private fun ConnectionEditorDialog(
                             apiKey = apiKey.trim(),
                             model = model.trim(),
                             endpointUrl = endpointUrl.trim().ifEmpty { defaultEndpointFor(initial.kind) },
-                            remoteMode = remoteMode
+                            remoteMode = remoteMode,
+                            permissionMode = permissionMode
                         )
                     )
                 }
