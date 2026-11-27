@@ -39,6 +39,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -96,6 +97,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.mbta.app.model.AgentSession
 import com.mbta.app.model.AgentTokenUsage
 import com.mbta.app.model.AiConnection
@@ -144,19 +147,28 @@ private val englishYesNoQuestionRegex = Regex(
     "^(?:shall|should|would|do|can|could|may)\\s+[^\\n]{3,}\\?$",
     RegexOption.IGNORE_CASE
 )
-private val numberedOptionRegex = Regex("^\\s*([1-4])[.)]\\s+(.+)$")
+private val numberedOptionRegex = Regex("^\\s*([1-8])[.)]\\s+(.+)$")
 
-internal fun detectQuickReplies(rawContent: String): List<String> {
-    if (rawContent.isBlank()) return emptyList()
+internal data class DetectedQuestion(
+    val title: String,
+    val options: List<String>,
+    val isPermission: Boolean = false
+)
+
+internal fun detectQuickReplies(rawContent: String): List<String> =
+    detectQuestionPrompt(rawContent)?.options ?: emptyList()
+
+internal fun detectQuestionPrompt(rawContent: String): DetectedQuestion? {
+    if (rawContent.isBlank()) return null
     val cleaned = rawContent
         .replace(codeFenceRegex, "")
         .replace(inlineCodeRegex, "")
         .replace(urlRegex, "")
         .trim()
-    if (cleaned.isEmpty()) return emptyList()
+    if (cleaned.isEmpty()) return null
 
     val nonBlankLines = cleaned.lines().map { it.trim() }.filter { it.isNotEmpty() }
-    if (nonBlankLines.isEmpty()) return emptyList()
+    if (nonBlankLines.isEmpty()) return null
 
     val permBlock = nonBlankLines.takeLast(12).joinToString("\n")
     val tailThree = nonBlankLines.takeLast(3).map { it.lowercase() }
@@ -171,28 +183,29 @@ internal fun detectQuickReplies(rawContent: String): List<String> {
         (permissionCardRegex.containsMatchIn(permBlock) && (tailThree.any { it == "허용" || it == "allow" || it == "허용 안 함" || it == "deny" }))
     val isDirectCliPermPrompt = !isBulletOrQuotedLast && permissionLastLineRegex.containsMatchIn(lastLine)
     if (isWebApprovalCard || isDirectCliPermPrompt) {
-        return if (permBlock.contains("허용 안 함") || tailThree.any { it == "허용 안 함" }) {
+        val opts = if (permBlock.contains("허용 안 함") || tailThree.any { it == "허용 안 함" }) {
             listOf("허용", "허용 안 함")
         } else {
             listOf("허용", "항상 허용", "거부")
         }
+        return DetectedQuestion(title = permBlock.take(500), options = opts, isPermission = true)
     }
 
     // 2. 마지막 문장이 의례적인 마무리 인사/열린 질문이면 표시하지 않음
     if (openEndedSignoffRegex.containsMatchIn(lastLine)) {
-        return emptyList()
+        return null
     }
 
-    // 3. 꼬리 영역(마지막 8줄)에 실제 질문 + 1번부터 시작하는 연속 선택지(2~4개)가 함께 있을 때만 선택지 추출
-    val tailBlock = nonBlankLines.takeLast(8)
-    val hasQuestionInTail = tailBlock.any { line ->
-        !openEndedSignoffRegex.containsMatchIn(line) && (
+    // 3. 꼬리 영역(마지막 14줄)에 실제 질문 + 1번부터 시작하는 연속 선택지(2~8개)가 함께 있을 때만 질문지 추출
+    val tailBlock = nonBlankLines.takeLast(14)
+    val questionLine = tailBlock.lastOrNull { line ->
+        !openEndedSignoffRegex.containsMatchIn(line) &&
+            !numberedOptionRegex.matches(line) && (
             line.endsWith("?") ||
                 confirmQuestionEndingRegex.containsMatchIn(line) ||
                 englishYesNoQuestionRegex.containsMatchIn(line)
             )
-    }
-    if (!hasQuestionInTail) return emptyList()
+    } ?: return null
 
     val optionMatches = tailBlock.mapNotNull { line ->
         val m = numberedOptionRegex.matchEntire(line) ?: return@mapNotNull null
@@ -201,23 +214,33 @@ internal fun detectQuickReplies(rawContent: String): List<String> {
             .replace("**", "")
             .replace("__", "")
             .trim()
-            .take(36)
+            .take(180)
         if (label.isNotEmpty()) num to label else null
     }
     val startsFromOne = optionMatches.size >= 2 && optionMatches.first().first == 1 &&
         optionMatches.map { it.first } == (1..optionMatches.size).toList()
     if (startsFromOne) {
-        return optionMatches.map { it.second }
+        return DetectedQuestion(
+            title = questionLine.replace("**", "").trim(),
+            options = optionMatches.map { it.second },
+            isPermission = false
+        )
     }
 
-    // 4. 마지막 줄 자체가 명확한 확인/예·아니오 질문일 때만 표시
-    val isClearConfirmation = lastLine.endsWith("?") && (
+    // 4. 마지막 줄 자체가 명확한 확인/예·아니오 질문(?로 끝남)일 때만 표시
+    val isClearConfirmation = !isBulletOrQuotedLast && lastLine.endsWith("?") && (
         confirmQuestionEndingRegex.containsMatchIn(lastLine) ||
             englishYesNoQuestionRegex.containsMatchIn(lastLine) ||
             Regex("(?:할까요|하시겠습니까|할래요|괜찮을까요|맞나요|진행해|바꿀까요|넣을까요|뺄까요)").containsMatchIn(lastLine)
-        ) || confirmQuestionEndingRegex.containsMatchIn(lastLine)
+        )
 
-    return if (isClearConfirmation) listOf("네, 진행해줘", "아니요") else emptyList()
+    return if (isClearConfirmation) {
+        DetectedQuestion(
+            title = lastLine.replace("**", "").trim(),
+            options = listOf("네, 진행해줘", "아니요"),
+            isPermission = false
+        )
+    } else null
 }
 
 private data class PendingAttachment(
@@ -295,6 +318,8 @@ fun SessionPane(
     var showRenameDialog by remember { mutableStateOf(false) }
     var inspectingSubagentId by remember(session.id) { mutableStateOf<String?>(null) }
     var dismissedQuestionMsgId by remember(session.id) { mutableStateOf("") }
+    var expandedQuestionMsgId by remember(session.id) { mutableStateOf<String?>(null) }
+    var autoOpenedQuestionMsgId by remember(session.id) { mutableStateOf("") }
     val listState = remember(session.id) {
         androidx.compose.foundation.lazy.LazyListState(
             firstVisibleItemIndex = (session.messages.size - 1).coerceAtLeast(0),
@@ -1002,81 +1027,277 @@ fun SessionPane(
             }
 
             val lastMsg = session.messages.lastOrNull()
-            val quickChoices = remember(lastMsg?.id, lastMsg?.content, isSending, dismissedQuestionMsgId) {
+            val detectedQuestion = remember(lastMsg?.id, lastMsg?.content, isSending, dismissedQuestionMsgId) {
                 if (lastMsg == null || lastMsg.role != MessageRole.ASSISTANT || lastMsg.isError || lastMsg.id == dismissedQuestionMsgId) {
-                    emptyList()
+                    null
                 } else {
-                    val detected = detectQuickReplies(lastMsg.content)
-                    val isPermAction = detected.firstOrNull() == "허용"
-                    if (!isSending || isPermAction) detected else emptyList()
+                    val q = detectQuestionPrompt(lastMsg.content)
+                    if (q != null && (!isSending || q.isPermission)) q else null
                 }
             }
-            if (quickChoices.isNotEmpty() && lastMsg != null) {
-                Row(
+            LaunchedEffect(lastMsg?.id, detectedQuestion?.isPermission) {
+                if (detectedQuestion != null && lastMsg != null && autoOpenedQuestionMsgId != lastMsg.id) {
+                    autoOpenedQuestionMsgId = lastMsg.id
+                    expandedQuestionMsgId = lastMsg.id
+                }
+            }
+            if (detectedQuestion != null && lastMsg != null) {
+                Surface(
+                    color = if (detectedQuestion.isPermission) {
+                        MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.55f)
+                    } else {
+                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
+                    },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .background(MaterialTheme.colorScheme.surface)
-                        .horizontalScroll(rememberScrollState())
-                        .padding(horizontal = 8.dp, vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        .clickable { expandedQuestionMsgId = lastMsg.id }
                 ) {
-                    quickChoices.forEach { choice ->
-                        val isApprove = choice == "허용" || choice == "항상 허용"
-                        val isDeny = choice == "허용 안 함" || choice == "거부"
-                        val chipBg = when {
-                            isApprove -> MaterialTheme.colorScheme.primaryContainer
-                            isDeny -> MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.85f)
-                            else -> MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.75f)
-                        }
-                        val chipFg = when {
-                            isApprove -> MaterialTheme.colorScheme.primary
-                            isDeny -> MaterialTheme.colorScheme.error
-                            else -> MaterialTheme.colorScheme.onSecondaryContainer
-                        }
-                        val chipBorder = when {
-                            isApprove -> MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)
-                            isDeny -> MaterialTheme.colorScheme.error.copy(alpha = 0.45f)
-                            else -> MaterialTheme.colorScheme.outline.copy(alpha = 0.28f)
-                        }
-                        Surface(
-                            onClick = {
-                                dismissedQuestionMsgId = lastMsg.id
-                                if ((isApprove || isDeny) && connection != null && connection.usesHiddenWebBridge() && headlessWebBridge != null) {
-                                    headlessWebBridge.clickWebActionButton(connection.id, choice) { clicked ->
-                                        if (clicked) {
-                                            android.widget.Toast.makeText(context, "'$choice' 버튼을 클릭했습니다.", android.widget.Toast.LENGTH_SHORT).show()
-                                        } else {
-                                            onSendMessage(choice)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = if (detectedQuestion.isPermission) "⚠️ 권한 확인이 필요합니다" else "📋 AI 질문에 답변하기 (${detectedQuestion.options.size}개 선택지)",
+                            fontSize = 11.5.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = if (detectedQuestion.isPermission) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Text(
+                            text = "열기",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (detectedQuestion.isPermission) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                        )
+                        Icon(
+                            Icons.Default.Close,
+                            contentDescription = "질문창 닫기",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                            modifier = Modifier
+                                .size(17.dp)
+                                .clickable {
+                                    dismissedQuestionMsgId = lastMsg.id
+                                    expandedQuestionMsgId = null
+                                }
+                        )
+                    }
+                }
+            }
+
+            if (detectedQuestion != null && lastMsg != null && expandedQuestionMsgId == lastMsg.id) {
+                var selectedOpts by remember(lastMsg.id) { mutableStateOf<Set<Int>>(emptySet()) }
+                var customAnswer by remember(lastMsg.id) { mutableStateOf("") }
+                Dialog(
+                    onDismissRequest = { expandedQuestionMsgId = null },
+                    properties = DialogProperties(usePlatformDefaultWidth = false)
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(16.dp),
+                        color = MaterialTheme.colorScheme.surface,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)),
+                        modifier = Modifier
+                            .fillMaxWidth(0.94f)
+                            .heightIn(min = 320.dp, max = 620.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = if (detectedQuestion.isPermission) "⚠️ 권한 · 실행 확인" else "📋 AI 질문 답변",
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (detectedQuestion.isPermission) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                                )
+                                TextButton(onClick = { expandedQuestionMsgId = null }) {
+                                    Text("접기", fontSize = 12.sp)
+                                }
+                            }
+
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(max = 150.dp)
+                            ) {
+                                Column(
+                                    modifier = Modifier
+                                        .verticalScroll(rememberScrollState())
+                                        .padding(10.dp)
+                                ) {
+                                    Text(
+                                        text = detectedQuestion.title,
+                                        fontSize = 12.5.sp,
+                                        lineHeight = 18.sp,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                }
+                            }
+
+                            if (detectedQuestion.isPermission) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    detectedQuestion.options.forEach { choice ->
+                                        val isApprove = choice == "허용" || choice == "항상 허용"
+                                        val isDeny = choice == "허용 안 함" || choice == "거부"
+                                        Surface(
+                                            onClick = {
+                                                dismissedQuestionMsgId = lastMsg.id
+                                                expandedQuestionMsgId = null
+                                                if ((isApprove || isDeny) && connection != null && connection.usesHiddenWebBridge() && headlessWebBridge != null) {
+                                                    headlessWebBridge.clickWebActionButton(connection.id, choice) { clicked ->
+                                                        if (clicked) {
+                                                            android.widget.Toast.makeText(context, "'$choice' 버튼을 클릭했습니다.", android.widget.Toast.LENGTH_SHORT).show()
+                                                        } else {
+                                                            onSendMessage(choice)
+                                                        }
+                                                    }
+                                                } else {
+                                                    onSendMessage(choice)
+                                                }
+                                            },
+                                            shape = RoundedCornerShape(10.dp),
+                                            color = when {
+                                                isApprove -> MaterialTheme.colorScheme.primaryContainer
+                                                isDeny -> MaterialTheme.colorScheme.errorContainer
+                                                else -> MaterialTheme.colorScheme.secondaryContainer
+                                            },
+                                            border = BorderStroke(
+                                                1.dp,
+                                                if (isApprove) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error.copy(alpha = 0.6f)
+                                            ),
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Box(
+                                                contentAlignment = Alignment.Center,
+                                                modifier = Modifier.padding(vertical = 12.dp, horizontal = 8.dp)
+                                            ) {
+                                                Text(
+                                                    text = choice,
+                                                    fontSize = 13.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = if (isApprove) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+                                                )
+                                            }
                                         }
                                     }
-                                } else {
-                                    onSendMessage(choice)
                                 }
-                            },
-                            shape = RoundedCornerShape(16.dp),
-                            color = chipBg,
-                            border = BorderStroke(1.dp, chipBorder)
-                        ) {
-                            Text(
-                                text = choice,
-                                fontSize = 11.sp,
-                                fontWeight = if (isApprove || isDeny) FontWeight.SemiBold else FontWeight.Medium,
-                                color = chipFg,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
-                            )
+                            } else {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .weight(1f, fill = false)
+                                        .verticalScroll(rememberScrollState()),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Text(
+                                        text = "선택지 (복수 선택 가능)",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    detectedQuestion.options.forEachIndexed { idx, opt ->
+                                        val isSel = idx in selectedOpts
+                                        Surface(
+                                            onClick = {
+                                                selectedOpts = if (isSel) selectedOpts - idx else selectedOpts + idx
+                                            },
+                                            shape = RoundedCornerShape(10.dp),
+                                            color = if (isSel) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.85f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+                                            border = BorderStroke(
+                                                if (isSel) 1.5.dp else 1.dp,
+                                                if (isSel) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
+                                            ),
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                                verticalAlignment = Alignment.Top,
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                            ) {
+                                                Text(
+                                                    text = if (isSel) "☑" else "☐",
+                                                    fontSize = 14.sp,
+                                                    color = if (isSel) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                                Text(
+                                                    text = opt,
+                                                    fontSize = 13.sp,
+                                                    lineHeight = 18.sp,
+                                                    fontWeight = if (isSel) FontWeight.SemiBold else FontWeight.Normal,
+                                                    color = MaterialTheme.colorScheme.onSurface,
+                                                    modifier = Modifier.weight(1f)
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+
+                                OutlinedTextField(
+                                    value = customAnswer,
+                                    onValueChange = { customAnswer = it },
+                                    label = { Text("세부 답변 · 추가 요청 (선택/직접 입력)", fontSize = 12.sp) },
+                                    minLines = 3,
+                                    maxLines = 6,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.End,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    TextButton(
+                                        onClick = {
+                                            dismissedQuestionMsgId = lastMsg.id
+                                            expandedQuestionMsgId = null
+                                        }
+                                    ) { Text("무시") }
+                                    Spacer(modifier = Modifier.size(6.dp))
+                                    Button(
+                                        enabled = selectedOpts.isNotEmpty() || customAnswer.isNotBlank(),
+                                        onClick = {
+                                            val chosenText = selectedOpts.sorted().mapNotNull { detectedQuestion.options.getOrNull(it) }
+                                            val replyBody = buildString {
+                                                if (chosenText.isNotEmpty()) {
+                                                    if (chosenText.size == 1) {
+                                                        append(chosenText.first())
+                                                    } else {
+                                                        append("선택:\n")
+                                                        chosenText.forEachIndexed { i, c -> append("${i + 1}. $c\n") }
+                                                    }
+                                                }
+                                                if (customAnswer.isNotBlank()) {
+                                                    if (isNotEmpty()) append("\n\n")
+                                                    append(customAnswer.trim())
+                                                }
+                                            }.trim()
+                                            dismissedQuestionMsgId = lastMsg.id
+                                            expandedQuestionMsgId = null
+                                            if (replyBody.isNotEmpty()) onSendMessage(replyBody)
+                                        }
+                                    ) {
+                                        Text("답변 전송")
+                                    }
+                                }
+                            }
                         }
                     }
-                    Icon(
-                        Icons.Default.Close,
-                        contentDescription = "선택지 닫기",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f),
-                        modifier = Modifier
-                            .size(18.dp)
-                            .clickable { dismissedQuestionMsgId = lastMsg.id }
-                    )
                 }
             }
 
