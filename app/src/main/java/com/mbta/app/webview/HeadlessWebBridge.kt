@@ -70,14 +70,7 @@ class HeadlessWebBridge(
 
     @SuppressLint("SetJavaScriptEnabled")
     fun getOrCreateWebView(key: String, url: String): WebView {
-        pool[key]?.let { existing ->
-            if (url.isNotBlank() && targetUrls[key] != url) {
-                targetUrls[key] = url
-                loadedUrls[key] = false
-                existing.loadUrl(url)
-            }
-            return existing
-        }
+        pool[key]?.let { return it }
         targetUrls[key] = url
 
         val webView = WebView(context).apply {
@@ -183,21 +176,35 @@ class HeadlessWebBridge(
         }
     }
 
+    fun navigateIfNeeded(key: String, desiredUrl: String): Boolean {
+        val wv = pool[key] ?: return false
+        if (desiredUrl.isBlank()) return false
+        val cur = wv.url.orEmpty().trimEnd('/')
+        val target = desiredUrl.trimEnd('/')
+        if (cur == target) return false
+        targetUrls[key] = desiredUrl
+        loadedUrls[key] = false
+        wv.loadUrl(desiredUrl)
+        return true
+    }
+
     fun sendPrompt(
         key: String,
         kind: ConnectionKind,
         url: String,
         prompt: String,
+        conversationUrl: String = "",
         onChunk: (String) -> Unit,
         onDone: (String, Long, Long) -> Unit,
         onError: (String) -> Unit
     ) {
-        val wv = getOrCreateWebView(key, url)
+        val wv = getOrCreateWebView(key, conversationUrl.ifBlank { url })
+        val navigated = if (conversationUrl.isNotBlank()) navigateIfNeeded(key, conversationUrl) else false
         val reqId = UUID.randomUUID().toString()
         val estInput = ceil(prompt.length / 3.0).toLong().coerceAtLeast(1L)
         pending[reqId] = PendingRequest(estInput, onChunk, onDone, onError)
 
-        val delayMs = if (loadedUrls[key] == true) 50L else 3500L
+        val delayMs = if (!navigated && loadedUrls[key] == true) 50L else 3500L
         mainHandler.postDelayed({
             val js = buildAutomationJs(reqId, kind.name, prompt)
             wv.evaluateJavascript(js, null)

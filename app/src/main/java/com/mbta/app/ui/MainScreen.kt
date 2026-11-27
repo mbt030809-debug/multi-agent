@@ -187,6 +187,28 @@ fun MainScreen(
 
     val totalTokensAll = tokenUsageMap.values.sumOf { it.totalTokens }
 
+    fun isSavableConversationUrl(curUrl: String, baseUrl: String): Boolean {
+        val c = curUrl.trim().trimEnd('/')
+        val b = baseUrl.trim().trimEnd('/')
+        if (c.isBlank() || c == b) return false
+        val lower = c.lowercase()
+        if (lower.contains("accounts.google.com") || lower.contains("/login") || lower.contains("/signin") || lower.contains("/oauth")) {
+            return false
+        }
+        return lower.contains("/c/") ||
+            lower.contains("/chat/") ||
+            lower.contains("/app/") ||
+            lower.contains("/r/")
+    }
+
+    LaunchedEffect(activeSessionId) {
+        val sess = sessions.find { it.id == activeSessionId } ?: return@LaunchedEffect
+        val conn = connections.find { it.id == sess.connectionId } ?: return@LaunchedEffect
+        if (conn.usesHiddenWebBridge() && sess.webConversationUrl.isNotBlank()) {
+            headlessWebBridge.navigateIfNeeded(conn.id, sess.webConversationUrl)
+        }
+    }
+
     fun sendMessageInSession(session: AgentSession, conn: AiConnection, text: String) {
         val mentionedConn = if (text.startsWith("@")) {
             enabledConnections.firstOrNull { c ->
@@ -247,6 +269,7 @@ fun MainScreen(
                 kind = targetConn.kind,
                 url = targetConn.endpointUrl,
                 prompt = effectivePrompt,
+                conversationUrl = session.webConversationUrl,
                 onChunk = { partial ->
                     sessions = sessions.map { s ->
                         if (s.id == session.id) {
@@ -257,13 +280,22 @@ fun MainScreen(
                     }
                 },
                 onDone = { finalText, inTok, outTok ->
+                    val curUrl = headlessWebBridge.currentUrl(targetConn.id).orEmpty()
+                    val newConvUrl = if (isSavableConversationUrl(curUrl, targetConn.endpointUrl) && curUrl != session.webConversationUrl) {
+                        curUrl
+                    } else {
+                        session.webConversationUrl
+                    }
                     sessions = sessions.map { s ->
                         if (s.id == session.id) {
-                            s.copy(messages = s.messages.map { m ->
-                                if (m.id == placeholderId) {
-                                    m.copy(content = finalText, inputTokens = inTok, outputTokens = outTok)
-                                } else m
-                            })
+                            s.copy(
+                                webConversationUrl = newConvUrl,
+                                messages = s.messages.map { m ->
+                                    if (m.id == placeholderId) {
+                                        m.copy(content = finalText, inputTokens = inTok, outputTokens = outTok)
+                                    } else m
+                                }
+                            )
                         } else s
                     }
                     store.saveSessions(sessions)
@@ -355,7 +387,7 @@ fun MainScreen(
     }
 
     fun clearSessionMessages(session: AgentSession) {
-        sessions = sessions.map { if (it.id == session.id) it.copy(messages = emptyList()) else it }
+        sessions = sessions.map { if (it.id == session.id) it.copy(webConversationUrl = "", messages = emptyList()) else it }
         store.saveSessions(sessions)
     }
 
@@ -560,6 +592,9 @@ fun MainScreen(
                             connections + saved
                         }
                         store.saveConnections(connections)
+                        if (saved.usesHiddenWebBridge() && saved.endpointUrl.isNotBlank()) {
+                            headlessWebBridge.navigateIfNeeded(saved.id, saved.endpointUrl)
+                        }
                     },
                     onDeleteConnection = { connId ->
                         connections = connections.filterNot { it.id == connId }

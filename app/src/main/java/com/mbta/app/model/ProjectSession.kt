@@ -47,6 +47,7 @@ data class AgentSession(
     val connectionId: String? = null,
     val selectedModel: String = "",
     val worktreePath: String = "",
+    val webConversationUrl: String = "",
     val messages: List<ChatMessage> = emptyList(),
     val createdAt: Long = System.currentTimeMillis()
 )
