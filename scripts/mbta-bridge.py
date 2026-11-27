@@ -124,9 +124,55 @@ def extract_claude_title(jsonl_path):
     return f"Claude · {proj}"
 
 
-def run_cli(cmd, cwd=None, timeout=300):
+PROGRESS_LOCK = threading.Lock()
+PROGRESS_MAP = {}
+
+
+def append_progress(key, line):
+    if not key or not line:
+        return
+    clean = line.strip()
+    if not clean or "Initialized Android local timezone" in clean:
+        return
+    with PROGRESS_LOCK:
+        arr = PROGRESS_MAP.setdefault(key, [])
+        arr.append(clean[:160])
+        if len(arr) > 30:
+            del arr[:-30]
+
+
+def run_cli(cmd, cwd=None, timeout=300, progress_key=""):
     work_dir = cwd if (cwd and os.path.isdir(cwd)) else None
-    return subprocess.run(cmd, cwd=work_dir, capture_output=True, text=True, timeout=timeout)
+    if not progress_key:
+        return subprocess.run(cmd, cwd=work_dir, capture_output=True, text=True, timeout=timeout)
+    with PROGRESS_LOCK:
+        PROGRESS_MAP[progress_key] = [f"▶ {' '.join(cmd[:3])} 실행 중..."]
+    proc = subprocess.Popen(
+        cmd,
+        cwd=work_dir,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    stderr_lines = []
+
+    def _read_err():
+        try:
+            for line in proc.stderr:
+                stderr_lines.append(line)
+                append_progress(progress_key, line)
+        except Exception:
+            pass
+
+    t = threading.Thread(target=_read_err, daemon=True)
+    t.start()
+    try:
+        out, _ = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        out, _ = proc.communicate()
+    t.join(timeout=1)
+    return subprocess.CompletedProcess(cmd, proc.returncode, out or "", "".join(stderr_lines))
 
 
 TRIVIAL_GREETINGS = {"ㅎㅇ", "ㅎㅇㅎㅇ", "ㅎㅎ", "ㅎㅎㅇ", "ㅇㅇ", "ㅇㅇㅇ", "ㅇㅇㅇ?", "안녕", "안녕하세요", "hi", "hello", "hey", "test", "테스트"}
@@ -309,7 +355,14 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/health":
-            self._send_json(200, {"status": "ok", "endpoints": ["/claude", "/agy", "/exec", "/sessions"]})
+            self._send_json(200, {"status": "ok", "endpoints": ["/claude", "/agy", "/exec", "/sessions", "/progress"]})
+        elif self.path.startswith("/progress"):
+            from urllib.parse import urlparse, parse_qs
+            qs = parse_qs(urlparse(self.path).query)
+            sid = (qs.get("session_id") or [""])[0]
+            with PROGRESS_LOCK:
+                lines = list(PROGRESS_MAP.get(sid, []))
+            self._send_json(200, {"lines": lines})
         elif self.path.startswith("/sessions"):
             kind = "claude" if "kind=claude" in self.path else ("agy" if "kind=agy" in self.path else "all")
             items = []
@@ -443,7 +496,7 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                     cli_sid = str(data.get("cli_session_id")).strip()
                 if cli_sid:
                     cmd.extend(["--resume", cli_sid])
-            proc = run_cli(cmd, cwd=cwd)
+            proc = run_cli(cmd, cwd=cwd, progress_key=mbta_session_id)
             if proc.returncode != 0:
                 self._send_json(500, {"error": proc.stderr or proc.stdout or "claude failed"})
                 return
@@ -487,7 +540,7 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                     cli_sid = str(data.get("cli_session_id")).strip()
                 if cli_sid:
                     cmd.extend(["--resume", cli_sid])
-            proc = run_cli(cmd, cwd=cwd)
+            proc = run_cli(cmd, cwd=cwd, progress_key=mbta_session_id)
             if proc.returncode != 0 and "invalid model selection" in ((proc.stderr or "") + (proc.stdout or "")).lower():
                 fallback_cmd = ["agy", "-p", prompt, "--output-format", "json"]
                 if key and cli_sid:

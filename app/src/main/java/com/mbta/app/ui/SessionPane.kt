@@ -25,6 +25,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.CallSplit
@@ -349,20 +350,27 @@ fun SessionPane(
                 }
             }
         } else {
-            LazyColumn(
-                state = listState,
+            SelectionContainer(
                 modifier = Modifier
                     .weight(1f)
-                    .fillMaxWidth(),
-                contentPadding = PaddingValues(12.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                    .fillMaxWidth()
             ) {
-                items(session.messages, key = { it.id }) { msg ->
-                    ChatBubble(
-                        message = msg,
-                        isCli = connection.kind == ConnectionKind.TERMUX_CLI,
-                        onRetryLast = onRetryLast
-                    )
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(session.messages, key = { it.id }) { msg ->
+                        ChatBubble(
+                            message = msg,
+                            isCli = connection.kind == ConnectionKind.TERMUX_CLI,
+                            onRetryLast = onRetryLast,
+                            onQuoteToInput = { quoted ->
+                                inputText = if (inputText.isBlank()) quoted else "$inputText\n$quoted"
+                            }
+                        )
+                    }
                 }
             }
 
@@ -609,7 +617,8 @@ fun SessionPane(
 private fun ChatBubble(
     message: ChatMessage,
     isCli: Boolean,
-    onRetryLast: () -> Unit
+    onRetryLast: () -> Unit,
+    onQuoteToInput: (String) -> Unit = {}
 ) {
     when (message.role) {
         MessageRole.SYSTEM -> {
@@ -627,19 +636,38 @@ private fun ChatBubble(
             }
         }
         MessageRole.USER -> {
+            val clipboard = LocalClipboardManager.current
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                 Surface(
                     shape = RoundedCornerShape(12.dp),
                     color = MaterialTheme.colorScheme.primaryContainer,
                     modifier = Modifier.widthIn(max = 300.dp)
                 ) {
-                    Text(
-                        text = if (isCli) "$ ${message.content}" else message.content,
-                        fontSize = 14.sp,
-                        fontFamily = if (isCli) FontFamily.Monospace else FontFamily.Default,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer,
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
-                    )
+                    Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                        Text(
+                            text = if (isCli) "$ ${message.content}" else message.content,
+                            fontSize = 14.sp,
+                            fontFamily = if (isCli) FontFamily.Monospace else FontFamily.Default,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
+                        Row(
+                            modifier = Modifier.padding(top = 4.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = "복사",
+                                fontSize = 10.sp,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
+                                modifier = Modifier.clickable { clipboard.setText(AnnotatedString(message.content)) }
+                            )
+                            Text(
+                                text = "인용",
+                                fontSize = 10.sp,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
+                                modifier = Modifier.clickable { onQuoteToInput(message.content) }
+                            )
+                        }
+                    }
                 }
             }
         }

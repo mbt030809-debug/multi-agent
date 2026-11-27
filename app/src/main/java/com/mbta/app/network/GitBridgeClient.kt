@@ -43,6 +43,22 @@ object GitBridgeClient {
         }
     }
 
+    suspend fun fetchProgress(sessionId: String): List<String> = withContext(Dispatchers.IO) {
+        if (sessionId.isBlank()) return@withContext emptyList()
+        try {
+            val encoded = java.net.URLEncoder.encode(sessionId, "UTF-8")
+            val req = Request.Builder().url("$BASE/progress?session_id=$encoded").get().build()
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return@withContext emptyList()
+                val raw = resp.body?.string().orEmpty()
+                val arr = json.parseToJsonElement(raw).jsonObject["lines"]?.jsonArray ?: return@withContext emptyList()
+                arr.mapNotNull { it.jsonPrimitive.contentOrNull }
+            }
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
     suspend fun fetchBridgeSessions(kind: String): List<com.mbta.app.webview.ExternalSessionItem> = withContext(Dispatchers.IO) {
         try {
             val req = Request.Builder().url("$BASE/sessions?kind=$kind").get().build()
@@ -53,8 +69,15 @@ object GitBridgeClient {
                 arr.mapNotNull { el ->
                     val obj = el.jsonObject
                     val id = obj["id"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
-                    val title = obj["title"]?.jsonPrimitive?.contentOrNull ?: id
-                    com.mbta.app.webview.ExternalSessionItem(id = id, title = title)
+                    val title = obj["title"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() } ?: id
+                    val updatedAt = obj["updatedAt"]?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: 0L
+                    val updatedLabel = obj["updatedLabel"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                    com.mbta.app.webview.ExternalSessionItem(
+                        id = id,
+                        title = title,
+                        updatedAt = updatedAt,
+                        updatedLabel = updatedLabel
+                    )
                 }
             }
         } catch (_: Exception) {

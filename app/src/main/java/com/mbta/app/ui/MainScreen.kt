@@ -324,16 +324,48 @@ fun MainScreen(
             return
         }
 
+        val isBridgeKind = effectiveConn.kind == ConnectionKind.REMOTE_CONTROL || effectiveConn.kind == ConnectionKind.TERMUX_CLI
+        val placeholderId = if (isBridgeKind) "msg_${UUID.randomUUID()}" else ""
+        val initialMessages = if (isBridgeKind) {
+            session.messages + userMsg + ChatMessage(
+                id = placeholderId,
+                role = MessageRole.ASSISTANT,
+                content = "⏳ 작업 중...",
+                agentName = displayAgentName
+            )
+        } else {
+            session.messages + userMsg
+        }
         sessions = sessions.map {
-            if (it.id == session.id) it.copy(messages = it.messages + userMsg) else it
+            if (it.id == session.id) it.copy(messages = initialMessages) else it
         }
         store.saveSessions(sessions)
         sendingMap[session.id] = true
 
+        val pollJob = if (isBridgeKind) {
+            scope.launch {
+                while (sendingMap[session.id] == true) {
+                    kotlinx.coroutines.delay(1200L)
+                    val lines = GitBridgeClient.fetchProgress(session.id)
+                    if (lines.isNotEmpty()) {
+                        val logText = "⏳ 작업 진행 로그:\n" + lines.joinToString("\n")
+                        sessions = sessions.map { s ->
+                            if (s.id == session.id) {
+                                s.copy(messages = s.messages.map { m ->
+                                    if (m.id == placeholderId) m.copy(content = logText) else m
+                                })
+                            } else s
+                        }
+                    }
+                }
+            }
+        } else null
+
         scope.launch {
             val reply = AiApiClient.send(effectiveConn, historyBefore, effectivePrompt, session.id, cwd = effectiveDir, cliSessionId = session.cliSessionId)
+            pollJob?.cancel()
             val assistantMsg = ChatMessage(
-                id = "msg_${UUID.randomUUID()}",
+                id = if (isBridgeKind) placeholderId else "msg_${UUID.randomUUID()}",
                 role = MessageRole.ASSISTANT,
                 content = reply.error ?: reply.text.ifBlank { "(응답 없음)" },
                 inputTokens = reply.inputTokens,
@@ -342,7 +374,14 @@ fun MainScreen(
                 isError = reply.error != null
             )
             sessions = sessions.map {
-                if (it.id == session.id) it.copy(messages = it.messages + assistantMsg) else it
+                if (it.id == session.id) {
+                    val updated = if (isBridgeKind) {
+                        it.messages.map { m -> if (m.id == placeholderId) assistantMsg else m }
+                    } else {
+                        it.messages + assistantMsg
+                    }
+                    it.copy(messages = updated)
+                } else it
             }
             store.saveSessions(sessions)
             if (reply.inputTokens > 0L || reply.outputTokens > 0L) {
@@ -1449,13 +1488,14 @@ private fun ExistingSessionPickerDialog(
     var selectedConn by remember { mutableStateOf(selectable.firstOrNull()) }
     var loading by remember { mutableStateOf(false) }
     var items by remember { mutableStateOf<List<com.mbta.app.webview.ExternalSessionItem>>(emptyList()) }
+    var reloadNonce by remember { mutableIntStateOf(0) }
 
-    LaunchedEffect(selectedConn?.id) {
+    LaunchedEffect(selectedConn?.id, reloadNonce) {
         val conn = selectedConn ?: return@LaunchedEffect
         loading = true
         items = emptyList()
         if (conn.usesHiddenWebBridge()) {
-            headlessWebBridge.fetchWebSessions(conn.id) { list ->
+            headlessWebBridge.fetchWebSessions(conn.id, conn.kind, conn.endpointUrl) { list ->
                 items = list
                 loading = false
             }
@@ -1487,15 +1527,30 @@ private fun ExistingSessionPickerDialog(
                         }
                     }
                     if (loading) {
-                        Text("세션 목록 불러오는 중...", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(
+                            if (selectedConn?.usesHiddenWebBridge() == true) {
+                                "사이드바를 자동으로 열어 세션 목록을 불러오는 중..."
+                            } else {
+                                "세션 목록 불러오는 중..."
+                            },
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     } else if (items.isEmpty()) {
-                        Text("불러올 기존 세션이 없습니다. (웹은 로그인 후 사이드바가 열려 있어야 합니다)", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(
+                            "불러올 기존 세션이 없습니다. (웹 연결은 먼저 로그인되어 있어야 합니다)",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     } else {
                         LazyColumn(
-                            modifier = Modifier.heightIn(max = 260.dp),
+                            modifier = Modifier.heightIn(max = 300.dp),
                             verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
                             items(items, key = { it.id }) { item ->
+                                val timeText = remember(item.updatedAt, item.updatedLabel) {
+                                    formatExternalSessionTime(item.updatedAt, item.updatedLabel)
+                                }
                                 Surface(
                                     shape = RoundedCornerShape(8.dp),
                                     color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
@@ -1503,13 +1558,27 @@ private fun ExistingSessionPickerDialog(
                                         .fillMaxWidth()
                                         .clickable { selectedConn?.let { onPick(it, item) } }
                                 ) {
-                                    Text(
-                                        text = item.title,
-                                        fontSize = 13.sp,
-                                        maxLines = 2,
-                                        overflow = TextOverflow.Ellipsis,
-                                        modifier = Modifier.padding(10.dp)
-                                    )
+                                    Column(
+                                        modifier = Modifier.padding(10.dp),
+                                        verticalArrangement = Arrangement.spacedBy(3.dp)
+                                    ) {
+                                        Text(
+                                            text = item.title,
+                                            fontSize = 13.sp,
+                                            fontWeight = FontWeight.Medium,
+                                            maxLines = 2,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        if (timeText.isNotBlank()) {
+                                            Text(
+                                                text = "수정: $timeText",
+                                                fontSize = 11.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -1517,11 +1586,38 @@ private fun ExistingSessionPickerDialog(
                 }
             }
         },
-        confirmButton = {},
+        confirmButton = {
+            if (selectable.isNotEmpty() && !loading) {
+                TextButton(onClick = { reloadNonce++ }) { Text("새로고침") }
+            }
+        },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("닫기") }
         }
     )
+}
+
+private fun formatExternalSessionTime(updatedAt: Long, updatedLabel: String): String {
+    if (updatedAt > 0L) {
+        val now = System.currentTimeMillis()
+        val diffMs = now - updatedAt
+        if (diffMs in 0..59_999L) return "방금 전"
+        if (diffMs in 60_000L..3_599_999L) return "${diffMs / 60_000L}분 전"
+
+        val calNow = java.util.Calendar.getInstance()
+        val calThen = java.util.Calendar.getInstance().apply { timeInMillis = updatedAt }
+        val sameYear = calNow.get(java.util.Calendar.YEAR) == calThen.get(java.util.Calendar.YEAR)
+        val sameDay = sameYear && calNow.get(java.util.Calendar.DAY_OF_YEAR) == calThen.get(java.util.Calendar.DAY_OF_YEAR)
+        val yesterday = sameYear && calNow.get(java.util.Calendar.DAY_OF_YEAR) - calThen.get(java.util.Calendar.DAY_OF_YEAR) == 1
+        val hm = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()).format(java.util.Date(updatedAt))
+        return when {
+            sameDay -> "오늘 $hm"
+            yesterday -> "어제 $hm"
+            sameYear -> java.text.SimpleDateFormat("MM/dd HH:mm", java.util.Locale.getDefault()).format(java.util.Date(updatedAt))
+            else -> java.text.SimpleDateFormat("yyyy/MM/dd HH:mm", java.util.Locale.getDefault()).format(java.util.Date(updatedAt))
+        }
+    }
+    return updatedLabel.trim()
 }
 
 @Composable

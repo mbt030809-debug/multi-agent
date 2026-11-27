@@ -27,7 +27,9 @@ import kotlin.math.ceil
 data class ExternalSessionItem(
     val id: String,
     val title: String,
-    val url: String = ""
+    val url: String = "",
+    val updatedAt: Long = 0L,
+    val updatedLabel: String = ""
 )
 
 class HeadlessWebBridge(
@@ -333,33 +335,167 @@ class HeadlessWebBridge(
 
     fun currentUrl(key: String): String? = pool[key]?.url
 
-    fun fetchWebSessions(key: String, onResult: (List<ExternalSessionItem>) -> Unit) {
-        val wv = pool[key]
+    fun fetchWebSessions(
+        key: String,
+        kind: ConnectionKind = ConnectionKind.GEMINI_WEB,
+        url: String = "",
+        onResult: (List<ExternalSessionItem>) -> Unit
+    ) {
+        val wv = pool[key] ?: if (url.isNotBlank()) getOrCreateWebView(key, url) else null
         if (wv == null) {
             onResult(emptyList())
             return
         }
-        val js = """
+
+        val scrapeJs = """
             (function() {
                 try {
+                    $DEEP_QUERY_JS
                     var seen = {};
                     var out = [];
-                    var links = document.querySelectorAll('a[href]');
+                    var iconWords = /^(chat_bubble|chat_bubble_outline|more_vert|more_horiz|push_pin|keep|edit|delete|auto_awesome|spark|menu|close|add|search|history|chevron_right|expand_more|forum|chat|comment|star|pin|open_in_new|content_copy|share)$/i;
+
+                    function cleanTitle(raw) {
+                        if (!raw) return '';
+                        var lines = raw.split(/\r?\n/).map(function(l) { return l.trim(); }).filter(function(l) {
+                            if (!l) return false;
+                            if (iconWords.test(l)) return false;
+                            if (/^[\u200B-\u200D\uFEFF\uE000-\uF8FF]+$/.test(l)) return false;
+                            return true;
+                        });
+                        var joined = lines.join(' ').replace(/\s+/g, ' ').trim();
+                        if (/^[0-9a-f\-_]{14,}$/i.test(joined)) return '';
+                        return joined;
+                    }
+
+                    function findTimeLabel(el) {
+                        try {
+                            var tEl = el.querySelector && el.querySelector('time');
+                            if (tEl) {
+                                var txt = (tEl.innerText || tEl.getAttribute('datetime') || '').trim();
+                                if (txt) return txt;
+                            }
+                            var cur = el;
+                            for (var up = 0; up < 5 && cur; up++) {
+                                var prev = cur.previousElementSibling;
+                                var steps = 0;
+                                while (prev && steps < 6) {
+                                    var tag = (prev.tagName || '').toLowerCase();
+                                    var cls = (prev.className || '').toString().toLowerCase();
+                                    if (/^h[1-6]$/.test(tag) || prev.getAttribute('role') === 'heading' || /date|group|section|header|time|label|title/.test(cls)) {
+                                        var htxt = (prev.innerText || '').replace(/\s+/g, ' ').trim();
+                                        if (htxt && htxt.length <= 32 && /(오늘|어제|지난|최근|이번|전|년|월|일|today|yesterday|previous|last|recent|week|month|ago|202\d)/i.test(htxt)) {
+                                            return htxt;
+                                        }
+                                    }
+                                    prev = prev.previousElementSibling;
+                                    steps++;
+                                }
+                                cur = cur.parentElement;
+                            }
+                        } catch(e) {}
+                        return '';
+                    }
+
+                    function extractTitleFromEl(el) {
+                        var titleSelectors = ['.conversation-title', '[data-test-id="conversation-title"]', '.title', '.truncate', 'span[dir="auto"]', 'div[dir="auto"]'];
+                        for (var s = 0; s < titleSelectors.length; s++) {
+                            try {
+                                var sub = el.querySelector && el.querySelector(titleSelectors[s]);
+                                if (sub) {
+                                    var ct = cleanTitle(sub.innerText || sub.textContent || '');
+                                    if (ct) return ct;
+                                }
+                            } catch(e) {}
+                        }
+                        var direct = cleanTitle(el.innerText || '');
+                        if (direct) return direct;
+                        var aria = cleanTitle(el.getAttribute && (el.getAttribute('aria-label') || el.getAttribute('title')) || '');
+                        return aria;
+                    }
+
+                    var links = queryAllDeep('a[href]');
                     for (var i = 0; i < links.length; i++) {
                         var href = links[i].href || '';
-                        if (!/(\/c\/|\/chat\/|\/app\/|\/r\/)/.test(href)) continue;
+                        if (!/(\/c\/[^\/?#]+|\/chat\/[^\/?#]+|\/app\/[^\/?#]+|\/r\/[^\/?#]+|\/gem\/[^\/?#]+\/[^\/?#]+)/.test(href)) continue;
+                        if (/\/(new|settings|pricing|login|signin|about|faq|updates|extensions|gems)(\/|$|\?)/i.test(href)) continue;
                         if (seen[href]) continue;
+                        var title = extractTitleFromEl(links[i]);
+                        if (!title) continue;
                         seen[href] = true;
-                        var title = (links[i].innerText || links[i].getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
-                        if (!title) title = href.split('/').pop() || href;
-                        out.push({ id: href, title: title.slice(0, 60), url: href });
+                        out.push({
+                            id: href,
+                            title: title.slice(0, 80),
+                            url: href,
+                            updatedLabel: findTimeLabel(links[i])
+                        });
                         if (out.length >= 25) break;
                     }
                     return JSON.stringify(out);
                 } catch(e) { return '[]'; }
             })();
         """.trimIndent()
-        wv.evaluateJavascript(js) { raw ->
+
+        val openSidebarJs = """
+            (function() {
+                try {
+                    $DEEP_QUERY_JS
+                    function isVisible(el) {
+                        if (!el) return false;
+                        try {
+                            var st = window.getComputedStyle(el);
+                            if (st.display === 'none' || st.visibility === 'hidden' || st.opacity === '0') return false;
+                            var r = el.getBoundingClientRect();
+                            return r.width > 0 && r.height > 0;
+                        } catch(e) { return true; }
+                    }
+                    var selectors = [
+                        'button[data-test-id="side-nav-menu-button"]',
+                        'side-nav-menu-button button',
+                        'button[data-testid="open-sidebar-button"]',
+                        'button[data-testid="sidebar-toggle"]',
+                        'button[data-testid="menu-button"]',
+                        'button[aria-label*="Main menu" i]',
+                        'button[aria-label*="기본 메뉴"]',
+                        'button[aria-label*="Open sidebar" i]',
+                        'button[aria-label*="사이드바 열기"]',
+                        'button[aria-label*="사이드바"]',
+                        'button[aria-label*="sidebar" i]',
+                        'button[aria-label*="내비게이션"]',
+                        'button[aria-label*="navigation" i]',
+                        'button[aria-label*="메뉴"]',
+                        'button[aria-label*="menu" i]'
+                    ];
+                    for (var i = 0; i < selectors.length; i++) {
+                        var els = queryAllDeep(selectors[i]);
+                        for (var j = 0; j < els.length; j++) {
+                            var el = els[j];
+                            if (!isVisible(el)) continue;
+                            var lbl = ((el.getAttribute('aria-label') || '') + ' ' + (el.innerText || '')).toLowerCase();
+                            if (/close|닫기|more|옵션|settings|설정|account|계정|profile|프로필/.test(lbl)) continue;
+                            var expanded = el.getAttribute('aria-expanded');
+                            if (expanded === 'true') return 'already_open';
+                            el.click();
+                            return 'clicked:' + selectors[i];
+                        }
+                    }
+                    var icons = queryAllDeep('mat-icon, span.google-symbols, span.material-symbols-outlined');
+                    for (var k = 0; k < icons.length; k++) {
+                        var txt = (icons[k].innerText || icons[k].textContent || '').trim().toLowerCase();
+                        if (txt === 'menu' || txt === 'side_navigation' || txt === 'dock_to_right') {
+                            var btn = icons[k].closest ? icons[k].closest('button, [role="button"]') : icons[k].parentElement;
+                            if (btn && isVisible(btn)) {
+                                btn.click();
+                                return 'clicked_icon:' + txt;
+                            }
+                        }
+                    }
+                    return 'not_found';
+                } catch(e) { return 'err:' + e; }
+            })();
+        """.trimIndent()
+
+        fun parseResult(raw: String?): List<ExternalSessionItem> {
             val list = mutableListOf<ExternalSessionItem>()
             try {
                 val cleaned = raw?.trim()?.let {
@@ -370,17 +506,40 @@ class HeadlessWebBridge(
                 val arr = org.json.JSONArray(cleaned)
                 for (i in 0 until arr.length()) {
                     val obj = arr.getJSONObject(i)
+                    val title = obj.optString("title").trim()
+                    if (title.isBlank()) continue
                     list.add(
                         ExternalSessionItem(
                             id = obj.optString("id"),
-                            title = obj.optString("title"),
-                            url = obj.optString("url")
+                            title = title,
+                            url = obj.optString("url"),
+                            updatedLabel = obj.optString("updatedLabel")
                         )
                     )
                 }
             } catch (_: Exception) {}
-            onResult(list)
+            return list
         }
+
+        fun pollScrape(attempt: Int, sidebarClicked: Boolean) {
+            wv.evaluateJavascript(scrapeJs) { raw ->
+                val list = parseResult(raw)
+                if (list.isNotEmpty() || attempt >= 8) {
+                    log("fetchWebSessions key=$key kind=${kind.name} attempt=$attempt found=${list.size}")
+                    onResult(list)
+                } else if (!sidebarClicked) {
+                    wv.evaluateJavascript(openSidebarJs) { openRes ->
+                        log("fetchWebSessions autoOpenSidebar key=$key res=$openRes")
+                        mainHandler.postDelayed({ pollScrape(attempt + 1, true) }, 550L)
+                    }
+                } else {
+                    mainHandler.postDelayed({ pollScrape(attempt + 1, true) }, 450L)
+                }
+            }
+        }
+
+        val initialDelay = if (loadedUrls[key] == true) 50L else 2200L
+        mainHandler.postDelayed({ pollScrape(0, false) }, initialDelay)
     }
 
     fun checkLoginStatus(
