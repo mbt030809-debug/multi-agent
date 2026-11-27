@@ -916,6 +916,30 @@ fun SessionPane(
 }
 
 @Composable
+private fun ActionSquareBadge(
+    letter: String,
+    tint: androidx.compose.ui.graphics.Color = MaterialTheme.colorScheme.primary,
+    onClick: () -> Unit
+) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(4.dp),
+        color = tint.copy(alpha = 0.12f),
+        border = BorderStroke(1.dp, tint.copy(alpha = 0.6f)),
+        modifier = Modifier.size(22.dp)
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Text(
+                text = letter,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                color = tint
+            )
+        }
+    }
+}
+
+@Composable
 private fun WavingDotsIndicator() {
     val transition = rememberInfiniteTransition(label = "dots")
     val offsets = listOf(0, 130, 260).map { delayMs ->
@@ -997,19 +1021,17 @@ private fun ChatBubble(
                         }
                         Row(
                             modifier = Modifier.padding(top = 4.dp),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            Text(
-                                text = "복사",
-                                fontSize = 10.sp,
-                                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
-                                modifier = Modifier.clickable { clipboard.setText(AnnotatedString(message.content)) }
+                            ActionSquareBadge(
+                                letter = "C",
+                                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                onClick = { clipboard.setText(AnnotatedString(message.content)) }
                             )
-                            Text(
-                                text = "인용",
-                                fontSize = 10.sp,
-                                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
-                                modifier = Modifier.clickable { onQuoteToInput(message.content) }
+                            ActionSquareBadge(
+                                letter = "P",
+                                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                onClick = { onQuoteToInput(message.content) }
                             )
                         }
                     }
@@ -1045,16 +1067,9 @@ private fun ChatBubble(
                             } else {
                                 Spacer(modifier = Modifier.size(1.dp))
                             }
-                            IconButton(
-                                onClick = { clipboard.setText(AnnotatedString(message.content)) },
-                                modifier = Modifier.size(22.dp)
-                            ) {
-                                Icon(
-                                    Icons.Default.ContentCopy,
-                                    contentDescription = "복사",
-                                    modifier = Modifier.size(13.dp),
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
+                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                ActionSquareBadge("C") { clipboard.setText(AnnotatedString(message.content)) }
+                                ActionSquareBadge("P") { onQuoteToInput(message.content) }
                             }
                         }
                         Spacer(modifier = Modifier.height(2.dp))
@@ -1153,16 +1168,7 @@ private fun FormattedMessageContent(text: String, isCli: Boolean, fontScale: Flo
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(lang, fontSize = 10.sp, color = MaterialTheme.colorScheme.primary)
-                            IconButton(
-                                onClick = { clipboard.setText(AnnotatedString(body)) },
-                                modifier = Modifier.size(20.dp)
-                            ) {
-                                Icon(
-                                    Icons.Default.ContentCopy,
-                                    contentDescription = "코드 복사",
-                                    modifier = Modifier.size(12.dp)
-                                )
-                            }
+                            ActionSquareBadge("C") { clipboard.setText(AnnotatedString(body)) }
                         }
                         Box(modifier = Modifier.horizontalScroll(rememberScrollState())) {
                             Text(
@@ -1206,32 +1212,20 @@ private fun FormattedMessageContent(text: String, isCli: Boolean, fontScale: Flo
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f)
                     )
-                    Text(
-                        text = "복사",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.clickable { clipboard.setText(AnnotatedString(u)) }
-                    )
-                    Text(
-                        text = "삼성인터넷",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.tertiary,
-                        modifier = Modifier.clickable {
+                    ActionSquareBadge("C") { clipboard.setText(AnnotatedString(u)) }
+                    ActionSquareBadge("I", tint = MaterialTheme.colorScheme.tertiary) {
+                        runCatching {
+                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(u)).apply {
+                                setPackage("com.sec.android.app.sbrowser")
+                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            }
+                            context.startActivity(intent)
+                        }.onFailure {
                             runCatching {
-                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(u)).apply {
-                                    setPackage("com.sec.android.app.sbrowser")
-                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                }
-                                context.startActivity(intent)
-                            }.onFailure {
-                                runCatching {
-                                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(u)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                                }
+                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(u)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                             }
                         }
-                    )
+                    }
                 }
             }
         }
@@ -1254,13 +1248,7 @@ private fun FormattedMessageContent(text: String, isCli: Boolean, fontScale: Flo
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f)
                     )
-                    Text(
-                        text = "복사",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.clickable { clipboard.setText(AnnotatedString(p)) }
-                    )
+                    ActionSquareBadge("C") { clipboard.setText(AnnotatedString(p)) }
                 }
             }
         }
