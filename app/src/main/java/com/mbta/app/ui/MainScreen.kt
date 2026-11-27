@@ -106,7 +106,7 @@ fun MainScreen(
     store: WorkspaceStore,
     headlessWebBridge: HeadlessWebBridge,
     themeMode: AppThemeMode,
-    tokenUsageMap: Map<String, AgentTokenUsage>,
+    tokenUsageMap: MutableMap<String, AgentTokenUsage>,
     onThemeModeChanged: (AppThemeMode) -> Unit,
     onRecordTokens: (connectionId: String, kind: ConnectionKind, inTok: Long, outTok: Long) -> Unit,
     onResetAgentTokens: (String) -> Unit,

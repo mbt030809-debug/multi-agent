@@ -85,6 +85,7 @@ import com.mbta.app.model.CustomSkill
 import com.mbta.app.model.MessageRole
 import com.mbta.app.model.Project
 import com.mbta.app.model.availableModelsFor
+import com.mbta.app.model.defaultContextLimitForKind
 import com.mbta.app.model.defaultModelFor
 import com.mbta.app.model.displayLabel
 import com.mbta.app.model.formatTokens
