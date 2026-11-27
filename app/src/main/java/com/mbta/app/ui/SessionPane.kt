@@ -1087,7 +1087,7 @@ private fun ActionSquareBadge(
 }
 
 @Composable
-private fun WavingDotsIndicator() {
+private fun WavingDotsIndicator(statusText: String? = null) {
     val transition = rememberInfiniteTransition(label = "dots")
     val offsets = listOf(0, 130, 260).map { delayMs ->
         transition.animateFloat(
@@ -1112,6 +1112,16 @@ private fun WavingDotsIndicator() {
                     .size(5.dp)
                     .offset(y = anim.value.dp)
                     .background(MaterialTheme.colorScheme.primary, CircleShape)
+            )
+        }
+        if (!statusText.isNullOrBlank()) {
+            Spacer(modifier = Modifier.size(4.dp))
+            Text(
+                text = statusText,
+                fontSize = 10.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
         }
     }
@@ -1226,11 +1236,31 @@ private fun ChatBubble(
                                 )
                             }
                         } else {
-                            SelectionContainer {
-                                FormattedMessageContent(text = message.content, isCli = isCli, fontScale = fontScale)
+                            val (displayBody, processStatus) = remember(message.content, isStreaming) {
+                                if (!isStreaming) {
+                                    message.content to null
+                                } else {
+                                    val statusRegex = Regex("^(?:🟢\\s*)?(프로세스 활성\\s*·\\s*.+경과)$")
+                                    var foundStatus: String? = null
+                                    val bodyLines = message.content.lines().filter { line ->
+                                        val m = statusRegex.matchEntire(line.trim())
+                                        if (m != null) {
+                                            foundStatus = m.groupValues[1]
+                                            false
+                                        } else {
+                                            true
+                                        }
+                                    }
+                                    bodyLines.joinToString("\n").trim() to foundStatus
+                                }
+                            }
+                            if (displayBody.isNotEmpty()) {
+                                SelectionContainer {
+                                    FormattedMessageContent(text = displayBody, isCli = isCli, fontScale = fontScale)
+                                }
                             }
                             if (isStreaming) {
-                                WavingDotsIndicator()
+                                WavingDotsIndicator(statusText = processStatus)
                             }
                         }
                         if (message.isError) {
