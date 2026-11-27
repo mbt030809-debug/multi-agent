@@ -286,31 +286,43 @@ class HeadlessWebBridge(
 
                 $DEEP_QUERY_JS
 
+                function isVisible(el) {
+                    if (!el) return false;
+                    try {
+                        var st = window.getComputedStyle(el);
+                        if (st.display === 'none' || st.visibility === 'hidden' || st.opacity === '0') return false;
+                        var r = el.getBoundingClientRect();
+                        return r.width > 0 && r.height > 0;
+                    } catch(e) { return true; }
+                }
+
                 function findFirst(selectors) {
+                    var fallback = null;
                     for (var i = 0; i < selectors.length; i++) {
                         try {
                             var els = queryAllDeep(selectors[i]);
                             for (var j = 0; j < els.length; j++) {
-                                if (els[j] && els[j].offsetParent !== null) return els[j];
+                                if (els[j] && !fallback) fallback = els[j];
+                                if (isVisible(els[j])) return els[j];
                             }
                         } catch(e) {}
                     }
-                    return null;
+                    return fallback;
                 }
 
                 var inputSelectors = [];
                 var msgSelectors = [];
                 if (kind === 'CHATGPT_WEB') {
-                    inputSelectors = ['#prompt-textarea', 'div[contenteditable="true"][id="prompt-textarea"]', 'textarea'];
+                    inputSelectors = ['#prompt-textarea', 'div[contenteditable="true"][id="prompt-textarea"]', '[contenteditable="true"]', '[contenteditable="plaintext-only"]', 'textarea', '[role="textbox"]'];
                     msgSelectors = ['[data-message-author-role="assistant"] .markdown', '[data-message-author-role="assistant"]'];
                 } else if (kind === 'CLAUDE_WEB') {
-                    inputSelectors = ['div.ProseMirror[contenteditable="true"]', 'fieldset div[contenteditable="true"]', 'div[contenteditable="true"]', 'textarea'];
+                    inputSelectors = ['div.ProseMirror[contenteditable="true"]', 'fieldset [contenteditable="true"]', '[contenteditable="true"]', '[contenteditable="plaintext-only"]', 'textarea', '[role="textbox"]'];
                     msgSelectors = ['.font-claude-response', '.font-claude-message', '[data-testid="assistant-message"]', '[data-is-streaming]', '.prose'];
                 } else if (kind === 'GEMINI_WEB') {
-                    inputSelectors = ['rich-textarea div[contenteditable="true"]', 'div.ql-editor[contenteditable="true"]', 'div[contenteditable="true"]', 'textarea'];
+                    inputSelectors = ['rich-textarea [contenteditable="true"]', 'div.ql-editor[contenteditable="true"]', '[contenteditable="true"]', '[contenteditable="plaintext-only"]', 'textarea', '[role="textbox"]'];
                     msgSelectors = ['model-response .markdown', 'model-response message-content', 'message-content', '.model-response-text'];
                 } else {
-                    inputSelectors = ['textarea', 'div[contenteditable="true"]', 'input[type="text"]'];
+                    inputSelectors = ['textarea', '[contenteditable="true"]', '[contenteditable="plaintext-only"]', '[role="textbox"]', 'input[type="text"]', 'input:not([type])'];
                     msgSelectors = ['[data-message-author-role="assistant"]', '.font-claude-response', '.prose', 'article', 'pre'];
                 }
 
