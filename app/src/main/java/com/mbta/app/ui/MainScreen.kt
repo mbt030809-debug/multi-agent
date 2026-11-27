@@ -459,19 +459,29 @@ fun MainScreen(
             val orchJob = scope.launch {
                 try {
                     val roundHistory = baseHistory.toMutableList()
+                    val isFirstOrchTurn = baseHistory.none { it.role == MessageRole.ASSISTANT }
+                    val sensKo = when (session.subagentSensitivity) {
+                        "high" -> "높음"
+                        "low" -> "낮음"
+                        else -> "보통"
+                    }
                     val sensitivityRule = when (session.subagentSensitivity) {
                         "high" -> "1. [호출 민감도: 높음] 단순 인사나 1줄 확인을 제외한 거의 모든 조사·분석·구현·수정 작업을 메인이 직접 하지 말고, 메인은 기획·분배·최종 종합만 맡아 반드시 <<SUBAGENTS>>로 서브에이전트에 분할 위임하세요."
                         "low" -> "1. [호출 민감도: 낮음] 일반적인 질문과 소규모 작업은 메인이 직접 처리하고, 대규모 병렬 조사나 다수 모듈 동시 작업처럼 꼭 필요할 때만 <<SUBAGENTS>>를 출력하세요."
                         else -> "1. [호출 민감도: 보통] 단순 1~2줄 질문이나 단일 파일 소규모 수정만 메인이 직접 처리하고, 2개 이상 파일 수정·코드 탐색/조사·리팩토링·테스트 검증처럼 분업이 가능한 작업은 메인 토큰을 아끼기 위해 적극적으로 <<SUBAGENTS>>로 병렬 위임하세요."
                     }
                     var currentPrompt = buildString {
-                        append("[오케스트레이터 프로토콜]\n")
-                        append("당신은 메인 오케스트레이터이며, 저비용 서브에이전트(${subConn.name}${if (subModel.isNotBlank()) " / $subModel" else ""})를 동적으로 생성해 병렬 작업시킬 수 있습니다.\n")
-                        append(sensitivityRule).append("\n")
-                        append("2. 서브에이전트를 위임할 때는 응답 맨 끝에 아래 JSON 블록을 출력하세요 (최대 ${maxParallel}개 병렬, 최대 ${maxRounds}라운드):\n")
-                        append("<<SUBAGENTS>>\n[{\"role\": \"짧은 역할명\", \"task\": \"구체적 작업 지시\"}]\n<</SUBAGENTS>>\n")
-                        append("3. 파일 충돌 방지: 읽기/조사는 병렬 위임하되, 파일 수정 작업은 반드시 서로 겹치지 않는 파일 단위로 분할해 지시하세요.\n")
-                        append("4. 서브에이전트 결과는 핵심 요약으로 보고됩니다. 결과를 받으면 종합해 사용자에게 최종 답변을 작성하세요.\n")
+                        if (isFirstOrchTurn) {
+                            append("[오케스트레이터 프로토콜]\n")
+                            append("당신은 메인 오케스트레이터이며, 저비용 서브에이전트(${subConn.name}${if (subModel.isNotBlank()) " / $subModel" else ""})를 동적으로 생성해 병렬 작업시킬 수 있습니다.\n")
+                            append(sensitivityRule).append("\n")
+                            append("2. 서브에이전트를 위임할 때는 응답 맨 끝에 아래 JSON 블록을 출력하세요 (최대 ${maxParallel}개 병렬, 최대 ${maxRounds}라운드):\n")
+                            append("<<SUBAGENTS>>\n[{\"role\": \"짧은 역할명\", \"task\": \"구체적 작업 지시\"}]\n<</SUBAGENTS>>\n")
+                            append("3. 파일 충돌 방지: 읽기/조사는 병렬 위임하되, 파일 수정 작업은 반드시 서로 겹치지 않는 파일 단위로 분할해 지시하세요.\n")
+                            append("4. 서브에이전트 결과는 핵심 요약으로 보고됩니다. 결과를 받으면 종합해 사용자에게 최종 답변을 작성하세요.\n")
+                        } else {
+                            append("[오케스트레이터 유지 · 서브:${subConn.name}${if (subModel.isNotBlank()) "/$subModel" else ""} · 최대 ${maxParallel}×${maxRounds} · 민감도:$sensKo · 위임 시 <<SUBAGENTS>> 사용]\n")
+                        }
                         if (useProjectContext && (effectiveDir.isNotBlank() || activeProject.memoryText.isNotBlank())) {
                             append("\n[프로젝트 컨텍스트]\n")
                             if (effectiveDir.isNotBlank()) append("- 작업 경로: $effectiveDir\n")
