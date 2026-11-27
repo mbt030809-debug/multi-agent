@@ -76,7 +76,6 @@ import com.mbta.app.model.defaultModelFor
 import com.mbta.app.model.displayLabel
 import com.mbta.app.model.formatTokens
 import com.mbta.app.model.isHiddenWebBridge
-import com.mbta.app.model.usesDirectInteractiveWeb
 import com.mbta.app.webview.HeadlessWebBridge
 
 private data class SlashSkill(
@@ -349,23 +348,6 @@ fun SessionPane(
                     }
                 }
             }
-        } else if (connection.usesDirectInteractiveWeb()) {
-            AndroidView(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth(),
-                factory = { ctx ->
-                    FrameLayout(ctx).apply {
-                        layoutParams = ViewGroup.LayoutParams(
-                            ViewGroup.LayoutParams.MATCH_PARENT,
-                            ViewGroup.LayoutParams.MATCH_PARENT
-                        )
-                    }
-                },
-                update = { host ->
-                    headlessWebBridge.attachToHiddenHost(host, connection.id, connection.endpointUrl)
-                }
-            )
         } else {
             LazyColumn(
                 state = listState,

@@ -86,7 +86,6 @@ import com.mbta.app.model.defaultContextLimitForKind
 import com.mbta.app.model.displayLabel
 import com.mbta.app.model.formatTokens
 import com.mbta.app.model.isHiddenWebBridge
-import com.mbta.app.model.usesDirectInteractiveWeb
 import com.mbta.app.model.usesHiddenWebBridge
 import com.mbta.app.network.AiApiClient
 import com.mbta.app.network.GitBridgeClient
@@ -554,17 +553,7 @@ fun MainScreen(
             },
             update = { host ->
                 if (loginConnection == null) {
-                    val pConn = primarySession?.let { s -> enabledConnections.find { it.id == s.connectionId } }
-                    val sConn = secondarySession?.let { s -> enabledConnections.find { it.id == s.connectionId } }
-                    val interactiveVisibleIds = buildSet {
-                        if (!showSettings) {
-                            if (pConn?.usesDirectInteractiveWeb() == true) add(pConn.id)
-                            if (splitMode != SplitMode.SINGLE && sConn?.usesDirectInteractiveWeb() == true) {
-                                add(sConn.id)
-                            }
-                        }
-                    }
-                    connections.filter { it.enabled && it.usesHiddenWebBridge() && it.id !in interactiveVisibleIds }.forEach { conn ->
+                    connections.filter { it.enabled && it.usesHiddenWebBridge() }.forEach { conn ->
                         headlessWebBridge.attachToHiddenHost(host, conn.id, conn.endpointUrl)
                     }
                 }
