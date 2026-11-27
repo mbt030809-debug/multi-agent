@@ -127,6 +127,7 @@ def extract_claude_title(jsonl_path):
 
 PROGRESS_LOCK = threading.Lock()
 PROGRESS_MAP = {}
+ACTIVE_PROCS = {}
 MODELS_CACHE = {}
 
 
@@ -255,6 +256,8 @@ def run_cli(cmd, cwd=None, timeout=300, progress_key=""):
         stderr=subprocess.PIPE,
         text=True,
     )
+    with PROGRESS_LOCK:
+        ACTIVE_PROCS[progress_key] = proc
     stderr_lines = []
 
     def _read_err():
@@ -272,6 +275,10 @@ def run_cli(cmd, cwd=None, timeout=300, progress_key=""):
     except subprocess.TimeoutExpired:
         proc.kill()
         out, _ = proc.communicate()
+    finally:
+        with PROGRESS_LOCK:
+            if ACTIVE_PROCS.get(progress_key) is proc:
+                ACTIVE_PROCS.pop(progress_key, None)
     t.join(timeout=1)
     return subprocess.CompletedProcess(cmd, proc.returncode, out or "", "".join(stderr_lines))
 
@@ -513,6 +520,20 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
             data = json.loads(raw)
         except Exception:
             self._send_json(400, {"error": "Invalid JSON"})
+            return
+
+        if self.path == "/cancel":
+            sid = (data.get("session_id") or "").strip()
+            with PROGRESS_LOCK:
+                proc = ACTIVE_PROCS.pop(sid, None)
+            if proc is not None:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                self._send_json(200, {"cancelled": True})
+            else:
+                self._send_json(200, {"cancelled": False})
             return
 
         if self.path == "/upload":

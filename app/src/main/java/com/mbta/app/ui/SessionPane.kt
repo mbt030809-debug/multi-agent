@@ -39,6 +39,7 @@ import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -142,6 +143,9 @@ fun SessionPane(
     onOpenSettings: () -> Unit,
     onLoginConnection: (AiConnection) -> Unit,
     headlessWebBridge: HeadlessWebBridge,
+    queuedMessages: List<String> = emptyList(),
+    onCancelSending: () -> Unit = {},
+    onRemoveQueued: (Int) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var inputText by remember(session.id) { mutableStateOf("") }
@@ -536,6 +540,49 @@ fun SessionPane(
                 }
             }
 
+            if (queuedMessages.isNotEmpty()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = 10.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "대기 큐 (${queuedMessages.size})",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    queuedMessages.forEachIndexed { idx, q ->
+                        Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            color = MaterialTheme.colorScheme.tertiaryContainer
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Text(
+                                    text = q.take(24) + if (q.length > 24) "…" else "",
+                                    fontSize = 11.sp,
+                                    maxLines = 1
+                                )
+                                Icon(
+                                    Icons.Default.Close,
+                                    contentDescription = "큐 제거",
+                                    modifier = Modifier
+                                        .size(14.dp)
+                                        .clickable { onRemoveQueued(idx) }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
             if (attachments.isNotEmpty()) {
                 Row(
                     modifier = Modifier
@@ -594,8 +641,13 @@ fun SessionPane(
                     maxLines = 4,
                     modifier = Modifier.weight(1f)
                 )
+                if (isSending) {
+                    IconButton(onClick = onCancelSending) {
+                        Icon(Icons.Default.Stop, contentDescription = "작업 취소", tint = MaterialTheme.colorScheme.error)
+                    }
+                }
                 IconButton(
-                    enabled = (inputText.isNotBlank() || attachments.isNotEmpty()) && !isSending,
+                    enabled = inputText.isNotBlank() || attachments.isNotEmpty(),
                     onClick = {
                         val text = inputText.trim()
                         val pendingAtts = attachments

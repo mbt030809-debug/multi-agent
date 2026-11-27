@@ -90,6 +90,30 @@ class HeadlessWebBridge(
     )
 
     private val pending = mutableMapOf<String, PendingRequest>()
+    private val activeReqByKey = mutableMapOf<String, String>()
+
+    fun cancelActiveRequest(key: String) {
+        val reqId = activeReqByKey.remove(key)
+        if (reqId != null) pending.remove(reqId)
+        val wv = pool[key] ?: return
+        val js = """
+            (function() {
+                try {
+                    if (window.__mbtaTimers) {
+                        Object.keys(window.__mbtaTimers).forEach(function(k) {
+                            var t = window.__mbtaTimers[k];
+                            if (t && t.wait) clearInterval(t.wait);
+                            if (t && t.poll) clearInterval(t.poll);
+                        });
+                        window.__mbtaTimers = {};
+                    }
+                    var stopBtn = document.querySelector('button[aria-label*="Stop" i], button[aria-label*="중지"], button[data-testid="stop-button"]');
+                    if (stopBtn) stopBtn.click();
+                } catch(e) {}
+            })();
+        """.trimIndent()
+        wv.evaluateJavascript(js, null)
+    }
 
     private inner class JsBridge {
         @JavascriptInterface
@@ -283,6 +307,7 @@ class HeadlessWebBridge(
         val wv = getOrCreateWebView(key, conversationUrl.ifBlank { url })
         val navigated = if (conversationUrl.isNotBlank()) navigateIfNeeded(key, conversationUrl) else false
         val reqId = UUID.randomUUID().toString()
+        activeReqByKey[key] = reqId
         log("sendPrompt key=$key kind=${kind.name} navigated=$navigated loaded=${loadedUrls[key]} wvUrl=${wv.url}")
         val estInput = ceil(prompt.length / 3.0).toLong().coerceAtLeast(1L)
         pending[reqId] = PendingRequest(estInput, onChunk, onDone, onError)

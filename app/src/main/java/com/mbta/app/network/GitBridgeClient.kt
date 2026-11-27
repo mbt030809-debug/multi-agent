@@ -43,6 +43,17 @@ object GitBridgeClient {
         }
     }
 
+    suspend fun cancelSession(sessionId: String): Boolean = withContext(Dispatchers.IO) {
+        if (sessionId.isBlank()) return@withContext false
+        try {
+            val body = buildJsonObject { put("session_id", JsonPrimitive(sessionId)) }.toString()
+            val req = Request.Builder().url("$BASE/cancel").post(body.toRequestBody(jsonMedia)).build()
+            client.newCall(req).execute().use { it.isSuccessful }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     suspend fun uploadFile(filename: String, bytes: ByteArray): String? = withContext(Dispatchers.IO) {
         try {
             val b64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)

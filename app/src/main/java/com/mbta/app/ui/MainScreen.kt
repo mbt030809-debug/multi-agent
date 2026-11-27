@@ -144,6 +144,8 @@ fun MainScreen(
     var showExistingSessionDialog by remember { mutableStateOf(false) }
 
     val sendingMap = remember { mutableStateMapOf<String, Boolean>() }
+    val activeJobs = remember { mutableStateMapOf<String, kotlinx.coroutines.Job>() }
+    val queuedPromptsMap = remember { mutableStateMapOf<String, List<String>>() }
     val unreadDoneSessions = remember { mutableStateMapOf<String, Boolean>() }
     val loginStatusMap = remember {
         mutableStateMapOf<String, Boolean>().apply {
@@ -215,6 +217,11 @@ fun MainScreen(
     }
 
     fun sendMessageInSession(session: AgentSession, conn: AiConnection, text: String) {
+        if (text.isBlank()) return
+        if (sendingMap[session.id] == true) {
+            queuedPromptsMap[session.id] = (queuedPromptsMap[session.id] ?: emptyList()) + text.trim()
+            return
+        }
         val mentionedConn = if (text.startsWith("@")) {
             enabledConnections.firstOrNull { c ->
                 text.startsWith("@${c.name} ", ignoreCase = true)
@@ -361,9 +368,10 @@ fun MainScreen(
             }
         } else null
 
-        scope.launch {
+        val job = scope.launch {
             val reply = AiApiClient.send(effectiveConn, historyBefore, effectivePrompt, session.id, cwd = effectiveDir, cliSessionId = session.cliSessionId)
             pollJob?.cancel()
+            activeJobs.remove(session.id)
             val assistantMsg = ChatMessage(
                 id = if (isBridgeKind) placeholderId else "msg_${UUID.randomUUID()}",
                 role = MessageRole.ASSISTANT,
@@ -392,7 +400,38 @@ fun MainScreen(
             if (reply.error == null) {
                 onNotifyIfBackground("${targetConn.name} 응답 완료", assistantMsg.content.take(120))
             }
+            val q = queuedPromptsMap[session.id].orEmpty()
+            if (q.isNotEmpty()) {
+                val nextPrompt = q.first()
+                queuedPromptsMap[session.id] = q.drop(1)
+                val latestSess = sessions.find { it.id == session.id }
+                if (latestSess != null) sendMessageInSession(latestSess, conn, nextPrompt)
+            }
         }
+        job.invokeOnCompletion { pollJob?.cancel() }
+        activeJobs[session.id] = job
+    }
+
+    fun cancelSessionTask(session: AgentSession, conn: AiConnection) {
+        activeJobs.remove(session.id)?.cancel()
+        sendingMap[session.id] = false
+        if (conn.usesHiddenWebBridge()) {
+            headlessWebBridge.cancelActiveRequest(conn.id)
+        } else if (conn.kind == ConnectionKind.REMOTE_CONTROL || conn.kind == ConnectionKind.TERMUX_CLI) {
+            scope.launch { GitBridgeClient.cancelSession(session.id) }
+        }
+        sessions = sessions.map { s ->
+            if (s.id == session.id) {
+                val last = s.messages.lastOrNull()
+                val updated = if (last != null && last.role == MessageRole.ASSISTANT && (last.content.startsWith("⏳") || last.content == "응답 대기 중...")) {
+                    s.messages.dropLast(1) + last.copy(content = "⛔ 작업이 취소되었습니다.", isError = true)
+                } else {
+                    s.messages + ChatMessage(id = "msg_${UUID.randomUUID()}", role = MessageRole.SYSTEM, content = "⛔ 작업이 취소되었습니다.")
+                }
+                s.copy(messages = updated)
+            } else s
+        }
+        store.saveSessions(sessions)
     }
 
     fun handoffSession(fromSession: AgentSession, targetConn: AiConnection) {
@@ -935,6 +974,12 @@ fun MainScreen(
                         onOpenSettings = { showSettings = true },
                         onLoginConnection = { conn -> loginConnection = conn },
                         headlessWebBridge = headlessWebBridge,
+                        queuedMessages = queuedPromptsMap[primarySession.id].orEmpty(),
+                        onCancelSending = { if (primaryConn != null) cancelSessionTask(primarySession, primaryConn) },
+                        onRemoveQueued = { idx ->
+                            val cur = queuedPromptsMap[primarySession.id].orEmpty()
+                            queuedPromptsMap[primarySession.id] = cur.filterIndexed { i, _ -> i != idx }
+                        },
                         modifier = Modifier.fillMaxSize()
                     )
                 }
@@ -972,6 +1017,12 @@ fun MainScreen(
                             onOpenSettings = { showSettings = true },
                             onLoginConnection = { conn -> loginConnection = conn },
                             headlessWebBridge = headlessWebBridge,
+                            queuedMessages = queuedPromptsMap[primarySession.id].orEmpty(),
+                            onCancelSending = { if (primaryConn != null) cancelSessionTask(primarySession, primaryConn) },
+                            onRemoveQueued = { idx ->
+                                val cur = queuedPromptsMap[primarySession.id].orEmpty()
+                                queuedPromptsMap[primarySession.id] = cur.filterIndexed { i, _ -> i != idx }
+                            },
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .weight(1f)
@@ -1012,6 +1063,12 @@ fun MainScreen(
                             onOpenSettings = { showSettings = true },
                             onLoginConnection = { conn -> loginConnection = conn },
                             headlessWebBridge = headlessWebBridge,
+                            queuedMessages = queuedPromptsMap[primarySession.id].orEmpty(),
+                            onCancelSending = { if (primaryConn != null) cancelSessionTask(primarySession, primaryConn) },
+                            onRemoveQueued = { idx ->
+                                val cur = queuedPromptsMap[primarySession.id].orEmpty()
+                                queuedPromptsMap[primarySession.id] = cur.filterIndexed { i, _ -> i != idx }
+                            },
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .weight(1f)
@@ -1052,6 +1109,12 @@ fun MainScreen(
                             onOpenSettings = { showSettings = true },
                             onLoginConnection = { conn -> loginConnection = conn },
                             headlessWebBridge = headlessWebBridge,
+                            queuedMessages = queuedPromptsMap[primarySession.id].orEmpty(),
+                            onCancelSending = { if (primaryConn != null) cancelSessionTask(primarySession, primaryConn) },
+                            onRemoveQueued = { idx ->
+                                val cur = queuedPromptsMap[primarySession.id].orEmpty()
+                                queuedPromptsMap[primarySession.id] = cur.filterIndexed { i, _ -> i != idx }
+                            },
                             modifier = Modifier
                                 .fillMaxSize()
                                 .weight(1f)
@@ -1092,6 +1155,12 @@ fun MainScreen(
                             onOpenSettings = { showSettings = true },
                             onLoginConnection = { conn -> loginConnection = conn },
                             headlessWebBridge = headlessWebBridge,
+                            queuedMessages = queuedPromptsMap[primarySession.id].orEmpty(),
+                            onCancelSending = { if (primaryConn != null) cancelSessionTask(primarySession, primaryConn) },
+                            onRemoveQueued = { idx ->
+                                val cur = queuedPromptsMap[primarySession.id].orEmpty()
+                                queuedPromptsMap[primarySession.id] = cur.filterIndexed { i, _ -> i != idx }
+                            },
                             modifier = Modifier
                                 .fillMaxSize()
                                 .weight(1f)
