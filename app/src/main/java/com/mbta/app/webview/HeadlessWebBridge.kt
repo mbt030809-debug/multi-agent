@@ -344,11 +344,12 @@ class HeadlessWebBridge(
     ) {
         val wv = getOrCreateWebView(key, url)
         val navigated = navigateIfNeeded(key, url)
+        val expectedPath = runCatching { Uri.parse(url).path.orEmpty() }.getOrDefault("")
         val delayMs = if (navigated) 1200L else 300L
         val selector = when (kind) {
             ConnectionKind.CHATGPT_WEB -> "[data-message-author-role=\"user\"], [data-message-author-role=\"assistant\"]"
-            ConnectionKind.CLAUDE_WEB -> "[data-testid=\"user-message\"], .font-user-message, .font-claude-response, .font-claude-message, [data-testid=\"assistant-message\"]"
-            ConnectionKind.GEMINI_WEB -> "user-query, model-response, .user-query-container, message-content"
+            ConnectionKind.CLAUDE_WEB -> "[data-testid=\"user-message\"], .font-user-message, .font-claude-response, .font-claude-message"
+            ConnectionKind.GEMINI_WEB -> "user-query, model-response"
             else -> "[data-message-author-role], user-query, model-response, article"
         }
         val js = """
@@ -357,6 +358,7 @@ class HeadlessWebBridge(
                     $DEEP_QUERY_JS
                     var nodes = queryAllDeep('$selector');
                     var out = [];
+                    var lastTxt = '';
                     for (var i = 0; i < nodes.length; i++) {
                         var el = nodes[i];
                         var tag = (el.tagName || '').toLowerCase();
@@ -365,7 +367,8 @@ class HeadlessWebBridge(
                         var testId = (el.getAttribute && el.getAttribute('data-testid')) || '';
                         var isUser = roleAttr === 'user' || tag === 'user-query' || testId === 'user-message' || cls.indexOf('user-message') !== -1 || cls.indexOf('user-query') !== -1;
                         var txt = (el.innerText || '').trim();
-                        if (!txt) continue;
+                        if (!txt || txt === lastTxt) continue;
+                        lastTxt = txt;
                         out.push({ role: isUser ? 'user' : 'assistant', content: txt });
                     }
                     return JSON.stringify(out.slice(-40));
@@ -373,6 +376,11 @@ class HeadlessWebBridge(
             })();
         """.trimIndent()
         fun attemptFetch(attempt: Int) {
+            val curWvUrl = wv.url.orEmpty()
+            if (expectedPath.isNotBlank() && !curWvUrl.contains(expectedPath) && attempt < 14) {
+                mainHandler.postDelayed({ attemptFetch(attempt + 1) }, 600L)
+                return
+            }
             wv.evaluateJavascript(js) { raw ->
                 val list = mutableListOf<com.mbta.app.model.ChatMessage>()
                 try {
@@ -398,10 +406,11 @@ class HeadlessWebBridge(
                         )
                     }
                 } catch (_: Exception) {}
-                if (list.isNotEmpty() || attempt >= 11) {
+                if (list.isNotEmpty() || attempt >= 14) {
+                    log("fetchWebSessionMessages key=$key url=$curWvUrl count=${list.size} attempt=$attempt")
                     onResult(list)
                 } else {
-                    mainHandler.postDelayed({ attemptFetch(attempt + 1) }, 700L)
+                    mainHandler.postDelayed({ attemptFetch(attempt + 1) }, 600L)
                 }
             }
         }

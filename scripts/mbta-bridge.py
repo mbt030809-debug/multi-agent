@@ -234,7 +234,7 @@ def load_claude_messages(sid, limit=40):
                             b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"
                         )
                     txt = str(content or "").strip()
-                    if txt:
+                    if txt and not txt.startswith(("<task-notification>", "<system-reminder>", "<command-name>", "<local-command-stdout>")):
                         msgs.append({"role": t, "content": txt})
     except Exception:
         pass
