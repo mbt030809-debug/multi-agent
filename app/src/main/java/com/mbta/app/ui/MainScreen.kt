@@ -260,9 +260,17 @@ fun MainScreen(
                     if (pct != null) applyQuotaUpdate(conn.id, pct, lbl)
                 }
             }
-            ConnectionKind.CLAUDE_WEB -> {
+            ConnectionKind.CLAUDE_WEB, ConnectionKind.REMOTE_WEB -> {
                 headlessWebBridge.fetchClaudeWebUsagePercent(conn.id) { pct, lbl ->
                     if (pct != null) applyQuotaUpdate(conn.id, pct, lbl)
+                }
+                // 웹 조회가 응답 없으면(로그인 전/엔드포인트 차이) 로컬 브리지의 실제 한도 조회로 대체
+                scope.launch {
+                    kotlinx.coroutines.delay(8000L)
+                    if (tokenUsageMap[conn.id]?.quotaPercent == null) {
+                        val (pct, lbl) = GitBridgeClient.fetchQuota("claude", force)
+                        if (pct != null) applyQuotaUpdate(conn.id, pct, lbl)
+                    }
                 }
             }
             ConnectionKind.CHATGPT_WEB -> {
