@@ -5,6 +5,9 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -32,3 +35,16 @@ jobs:
         with:
           name: MbtA-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=$(grep -oE 'versionName\s*=\s*"[^"]+"' app/build.gradle.kts | sed -E 's/.*"([^"]+)"/\1/')
+          APK_NAME="MbtA-v${VERSION}-debug.apk"
+          cp app/build/outputs/apk/debug/app-debug.apk "$APK_NAME"
+          if gh release view "v${VERSION}" >/dev/null 2>&1; then
+            gh release upload "v${VERSION}" "$APK_NAME" --clobber
+          else
+            gh release create "v${VERSION}" "$APK_NAME" --title "MbtA v${VERSION}" --notes "${{ github.event.head_commit.message }}" --latest
+          fi
