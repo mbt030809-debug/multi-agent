@@ -321,7 +321,7 @@ fun MainScreen(
                 val reply = AiApiClient.send(
                     connection = effectiveSubConn,
                     history = emptyList(),
-                    userPrompt = subPrompt,
+                    userMessage = subPrompt,
                     sessionId = "${session.id}_sub_${run.id}",
                     cwd = effectiveDir,
                     effort = subEffort
@@ -466,7 +466,7 @@ fun MainScreen(
                             val reply = AiApiClient.send(
                                 connection = effectiveMainConn,
                                 history = roundHistory,
-                                userPrompt = currentPrompt,
+                                userMessage = currentPrompt,
                                 sessionId = session.id,
                                 cwd = effectiveDir,
                                 cliSessionId = session.cliSessionId,

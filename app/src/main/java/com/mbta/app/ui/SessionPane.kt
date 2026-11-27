@@ -731,7 +731,7 @@ fun SessionPane(
                             } while (event.changes.any { it.pressed })
                         }
                     },
-                contentPadding = PaddingValues(start = 10.dp, end = 10.dp, top = 3.dp, bottom = 6.dp),
+                contentPadding = PaddingValues(start = 25.dp, end = 25.dp, top = 3.dp, bottom = 6.dp),
                 verticalArrangement = Arrangement.spacedBy(5.dp)
             ) {
                 itemsIndexed(session.messages, key = { _, m -> m.id }) { idx, msg ->
