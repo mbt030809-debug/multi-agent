@@ -598,58 +598,77 @@ fun SessionPane(
                 }
             }
 
-            if (session.messages.isNotEmpty() && enabledConnections.isNotEmpty()) {
-                IconButton(
-                    onClick = { showHandoffDialog = true },
-                    modifier = Modifier.size(28.dp)
-                ) {
-                    Icon(
-                        painter = painterResource(id = R.drawable.ic_handoff),
-                        contentDescription = "세션 전달",
-                        modifier = Modifier.size(18.dp)
-                    )
+            val skyBlue = androidx.compose.ui.graphics.Color(0xFF38BDF8)
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                if (session.messages.isNotEmpty() && enabledConnections.isNotEmpty()) {
+                    Surface(
+                        onClick = { showHandoffDialog = true },
+                        shape = RoundedCornerShape(6.dp),
+                        color = androidx.compose.ui.graphics.Color.Transparent,
+                        modifier = Modifier.size(26.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                painter = painterResource(id = R.drawable.ic_handoff),
+                                contentDescription = "세션 전달",
+                                tint = skyBlue,
+                                modifier = Modifier.size(17.dp)
+                            )
+                        }
+                    }
                 }
-            }
 
-            if (enabledConnections.isNotEmpty()) {
-                IconButton(
-                    onClick = { showAttachOrchDialog = true },
+                if (enabledConnections.isNotEmpty()) {
+                    Surface(
+                        onClick = { showAttachOrchDialog = true },
+                        shape = RoundedCornerShape(6.dp),
+                        color = if (session.isOrchestration) {
+                            skyBlue.copy(alpha = 0.16f)
+                        } else {
+                            androidx.compose.ui.graphics.Color.Transparent
+                        },
+                        modifier = Modifier.size(26.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                Icons.Default.AccountTree,
+                                contentDescription = "현재 세션에 서브 모델 연결",
+                                tint = skyBlue,
+                                modifier = Modifier.size(17.dp)
+                            )
+                        }
+                    }
+                }
+
+                Surface(
+                    onClick = {
+                        val nextOn = !session.skipPermissions
+                        onToggleSkipPermissions()
+                        android.widget.Toast.makeText(
+                            context,
+                            if (nextOn) "⚡ 자동 승인 ON (--dangerously-skip-permissions)" else "🔒 자동 승인 OFF",
+                            android.widget.Toast.LENGTH_SHORT
+                        ).show()
+                    },
+                    shape = RoundedCornerShape(6.dp),
+                    color = if (session.skipPermissions) {
+                        MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.85f)
+                    } else {
+                        androidx.compose.ui.graphics.Color.Transparent
+                    },
                     modifier = Modifier.size(26.dp)
                 ) {
-                    Icon(
-                        Icons.Default.AccountTree,
-                        contentDescription = "현재 세션에 서브 모델 연결",
-                        tint = if (session.isOrchestration) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(17.dp)
-                    )
-                }
-            }
-
-            Surface(
-                onClick = {
-                    val nextOn = !session.skipPermissions
-                    onToggleSkipPermissions()
-                    android.widget.Toast.makeText(
-                        context,
-                        if (nextOn) "⚡ 자동 승인 ON (--dangerously-skip-permissions)" else "🔒 자동 승인 OFF",
-                        android.widget.Toast.LENGTH_SHORT
-                    ).show()
-                },
-                shape = RoundedCornerShape(6.dp),
-                color = if (session.skipPermissions) {
-                    MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.85f)
-                } else {
-                    androidx.compose.ui.graphics.Color.Transparent
-                },
-                modifier = Modifier.size(26.dp)
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Icon(
-                        imageVector = if (session.skipPermissions) Icons.Default.GppMaybe else Icons.Default.Shield,
-                        contentDescription = "권한 자동 승인 토글",
-                        tint = if (session.skipPermissions) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(17.dp)
-                    )
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = if (session.skipPermissions) Icons.Default.GppMaybe else Icons.Default.Shield,
+                            contentDescription = "권한 자동 승인 토글",
+                            tint = if (session.skipPermissions) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(17.dp)
+                        )
+                    }
                 }
             }
 
