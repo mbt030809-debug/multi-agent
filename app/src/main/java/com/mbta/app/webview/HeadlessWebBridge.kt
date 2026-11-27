@@ -575,11 +575,11 @@ class HeadlessWebBridge(
         val reloaded = if (!navigated && forceReload) {
             loadedUrls[key] = false
             log("fetchWebSessionMessages reload key=$key url=$url")
-            wv.reload()
+            mainHandler.post { wv.reload() }
             true
         } else false
         val expectedPath = runCatching { Uri.parse(url).path.orEmpty() }.getOrDefault("")
-        val delayMs = if (navigated || reloaded) 1500L else 300L
+        val delayMs = if (navigated || reloaded) 1800L else 300L
         val selector = when (kind) {
             ConnectionKind.CHATGPT_WEB -> "[data-message-author-role=\"user\"], [data-message-author-role=\"assistant\"]"
             ConnectionKind.CLAUDE_WEB -> "[data-testid=\"user-message\"], .font-user-message, .font-claude-response, .font-claude-message"
@@ -590,6 +590,10 @@ class HeadlessWebBridge(
             (function() {
                 try {
                     $DEEP_QUERY_JS
+                    var scrollers = queryAllDeep('infinite-scroller, .chat-history, main, [role="main"]');
+                    for (var s = 0; s < scrollers.length; s++) {
+                        try { scrollers[s].scrollTop = scrollers[s].scrollHeight; } catch(se) {}
+                    }
                     var nodes = queryAllDeep('$selector');
                     var out = [];
                     var lastTxt = '';
@@ -609,9 +613,17 @@ class HeadlessWebBridge(
                 } catch(e) { return '[]'; }
             })();
         """.trimIndent()
+        var stableReads = 0
+        var lastCount = -1
+        var lastTail = ""
         fun attemptFetch(attempt: Int) {
             val curWvUrl = wv.url.orEmpty()
-            if (expectedPath.isNotBlank() && !curWvUrl.contains(expectedPath) && attempt < 14) {
+            // Wait for reload/navigation onPageFinished before reading DOM so we never read stale pre-reload DOM
+            if ((navigated || reloaded) && loadedUrls[key] != true && attempt < 18) {
+                mainHandler.postDelayed({ attemptFetch(attempt + 1) }, 500L)
+                return
+            }
+            if (expectedPath.isNotBlank() && !curWvUrl.contains(expectedPath) && attempt < 18) {
                 mainHandler.postDelayed({ attemptFetch(attempt + 1) }, 600L)
                 return
             }
@@ -640,8 +652,22 @@ class HeadlessWebBridge(
                         )
                     }
                 } catch (_: Exception) {}
-                if (list.isNotEmpty() || attempt >= 14) {
-                    log("fetchWebSessionMessages key=$key url=$curWvUrl count=${list.size} attempt=$attempt")
+                val tailSig = list.lastOrNull()?.content.orEmpty()
+                if (list.isNotEmpty() && reloaded) {
+                    if (list.size == lastCount && tailSig == lastTail) {
+                        stableReads++
+                    } else {
+                        lastCount = list.size
+                        lastTail = tailSig
+                        stableReads = 0
+                    }
+                    if (stableReads < 1 && attempt < 16) {
+                        mainHandler.postDelayed({ attemptFetch(attempt + 1) }, 700L)
+                        return@evaluateJavascript
+                    }
+                }
+                if (list.isNotEmpty() || attempt >= 18) {
+                    log("fetchWebSessionMessages key=$key url=$curWvUrl count=${list.size} attempt=$attempt reloaded=$reloaded")
                     onResult(list)
                 } else {
                     mainHandler.postDelayed({ attemptFetch(attempt + 1) }, 600L)

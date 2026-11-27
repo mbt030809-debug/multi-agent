@@ -571,15 +571,25 @@ fun MainScreen(
                 }
             }
         }
-        if (conn.usesHiddenWebBridge() && sess.webConversationUrl.isNotBlank()) {
-            headlessWebBridge.fetchWebSessionMessages(
-                key = conn.id,
-                kind = conn.kind,
-                url = sess.webConversationUrl,
-                agentName = conn.name,
-                forceReload = true,
-                onResult = mergeFetched
-            )
+        if (conn.usesHiddenWebBridge()) {
+            val liveUrl = headlessWebBridge.currentUrl(conn.id).orEmpty()
+            val targetUrl = sess.webConversationUrl.ifBlank {
+                if (isSavableConversationUrl(liveUrl, conn.endpointUrl)) liveUrl else ""
+            }
+            if (targetUrl.isNotBlank()) {
+                if (sess.webConversationUrl.isBlank()) {
+                    sessions = sessions.map { if (it.id == sess.id) it.copy(webConversationUrl = targetUrl) else it }
+                    store.saveSessions(sessions)
+                }
+                headlessWebBridge.fetchWebSessionMessages(
+                    key = conn.id,
+                    kind = conn.kind,
+                    url = targetUrl,
+                    agentName = conn.name,
+                    forceReload = true,
+                    onResult = mergeFetched
+                )
+            }
         } else if (!conn.usesHiddenWebBridge() && sess.cliSessionId.isNotBlank()) {
             val bridgeKind = if (conn.endpointUrl.lowercase().contains("/agy")) "agy" else "claude"
             scope.launch {
