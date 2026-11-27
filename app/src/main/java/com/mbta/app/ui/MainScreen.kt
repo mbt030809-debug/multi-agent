@@ -899,29 +899,99 @@ fun MainScreen(
         sendMessageInSession(latest, conn, msg)
     }
 
-    fun handoffSession(fromSession: AgentSession, targetConn: AiConnection) {
-        val transcript = fromSession.messages
-            .filter { it.role != MessageRole.SYSTEM }
-            .joinToString("\n") { msg ->
-                val who = if (msg.role == MessageRole.USER) "User" else (msg.agentName.ifBlank { "Assistant" })
-                "[$who]: ${msg.content}"
+    fun handoffSession(
+        fromSession: AgentSession,
+        targetConn: AiConnection,
+        smartSummary: Boolean = true,
+        includeGit: Boolean = true,
+        autoSend: Boolean = true
+    ) {
+        val prevConn = enabledConnections.find { it.id == fromSession.connectionId }
+        if (sendingMap[fromSession.id] == true && prevConn != null) {
+            cancelSessionTask(fromSession, prevConn)
+        }
+        scope.launch {
+            val nonSys = fromSession.messages.filter { it.role != MessageRole.SYSTEM }
+            val pinned = nonSys.filter { it.isPinned }
+            val effectiveDir = fromSession.worktreePath.ifBlank { activeProject.workDir }
+            val gitSnapshot = if (includeGit && effectiveDir.isNotBlank()) {
+                val st = GitBridgeClient.fetchStatus(effectiveDir)
+                if (st.isGit) {
+                    buildString {
+                        append("[현재 Git 상태]\n")
+                        if (st.branch.isNotBlank()) append("- 브랜치: ${st.branch}\n")
+                        if (st.files.isNotEmpty()) append("- 변경 파일:\n").append(st.files.take(20).joinToString("\n")).append("\n")
+                        if (st.diff.isNotBlank()) append("- 최근 Diff 요약:\n").append(st.diff.take(1500)).append("\n")
+                    }
+                } else ""
+            } else ""
+
+            val contextBody = buildString {
+                append("[세션 인수인계 — 기존 세션 '${fromSession.title}' (${prevConn?.name ?: "이전 AI"} → ${targetConn.name})]\n")
+                if (pinned.isNotEmpty()) {
+                    append("\n### 📌 핀 고정된 핵심 내용\n")
+                    pinned.forEach { m ->
+                        val who = if (m.role == MessageRole.USER) "User" else (m.agentName.ifBlank { "Assistant" })
+                        append("[$who]: ${m.content.take(1200)}\n\n")
+                    }
+                }
+                if (smartSummary && nonSys.size > 4) {
+                    val older = nonSys.dropLast(4)
+                    val recent = nonSys.takeLast(4)
+                    append("\n### 이전 대화 핵심 흐름 (${older.size}개 메시지 압축)\n")
+                    older.forEach { m ->
+                        val who = if (m.role == MessageRole.USER) "User" else (m.agentName.ifBlank { "Assistant" })
+                        val compact = m.content.replace(Regex("\\s+"), " ").trim().take(240)
+                        append("- [$who]: $compact\n")
+                    }
+                    append("\n### 최근 대화 원문\n")
+                    recent.forEach { m ->
+                        val who = if (m.role == MessageRole.USER) "User" else (m.agentName.ifBlank { "Assistant" })
+                        append("[$who]: ${m.content.take(2000)}\n\n")
+                    }
+                } else {
+                    append("\n### 이전 대화 원문\n")
+                    nonSys.forEach { m ->
+                        val who = if (m.role == MessageRole.USER) "User" else (m.agentName.ifBlank { "Assistant" })
+                        append("[$who]: ${m.content}\n\n")
+                    }
+                }
+                if (gitSnapshot.isNotBlank()) {
+                    append("\n").append(gitSnapshot)
+                }
+                append("\n위 인수인계 맥락을 정확히 숙지했다면 핵심만 2~3줄로 확인 응답해 주세요. 바로 이어서 작업하겠습니다.")
             }
-        val sysMsg = ChatMessage(
-            id = "msg_${UUID.randomUUID()}",
-            role = MessageRole.SYSTEM,
-            content = "이전 세션('${fromSession.title}')에서 전달된 컨텍스트:\n\n$transcript"
-        )
-        val newSess = AgentSession(
-            id = "sess_${UUID.randomUUID()}",
-            projectId = activeProject.id,
-            title = "${targetConn.name} 이어받기",
-            connectionId = targetConn.id,
-            messages = listOf(sysMsg)
-        )
-        sessions = sessions + newSess
-        store.saveSessions(sessions)
-        activeSessionId = newSess.id
-        store.saveActiveSessionId(newSess.id)
+
+            val isSameAi = targetConn.id == fromSession.connectionId
+            val modeLabel = if (smartSummary) "스마트 압축" else "전체 원문"
+            val bannerMsg = ChatMessage(
+                id = "msg_${UUID.randomUUID()}",
+                role = MessageRole.SYSTEM,
+                content = if (isSameAi) {
+                    "🔄 ${targetConn.name} 새 세션으로 리프레시 이관 ($modeLabel)${if (!autoSend) "\n\n$contextBody" else ""}"
+                } else {
+                    "🔄 ${prevConn?.name ?: "이전 AI"} → ${targetConn.name} 세션 이관 ($modeLabel)${if (!autoSend) "\n\n$contextBody" else ""}"
+                }
+            )
+            val replaced = fromSession.copy(
+                connectionId = targetConn.id,
+                selectedModel = if (isSameAi) fromSession.selectedModel else "",
+                selectedEffort = if (isSameAi) fromSession.selectedEffort else "",
+                webConversationUrl = "",
+                cliSessionId = "",
+                messages = listOf(bannerMsg)
+            )
+            sessions = sessions.map { if (it.id == fromSession.id) replaced else it }
+            store.saveSessions(sessions)
+
+            if (targetConn.usesHiddenWebBridge()) {
+                headlessWebBridge.getOrCreateWebView(targetConn.id, targetConn.endpointUrl)
+                headlessWebBridge.navigateIfNeeded(targetConn.id, targetConn.endpointUrl)
+            }
+            if (autoSend) {
+                sendMessageInSession(replaced, targetConn, contextBody)
+            }
+        }
     }
 
     fun deleteSession(session: AgentSession) {
@@ -1605,7 +1675,7 @@ fun MainScreen(
                         onSelectEffort = { ef ->
                             if (primaryConn != null) selectEffortForSession(primarySession, primaryConn, ef)
                         },
-                        onHandoffTo = { target -> handoffSession(primarySession, target) },
+                        onHandoffTo = { target, smart, git, auto -> handoffSession(primarySession, target, smart, git, auto) },
                         onDeleteSession = { deleteSession(primarySession) },
                         onOpenTokenDashboard = { showTokenDashboard = true },
                         onOpenSettings = { showSettings = true },
@@ -1658,7 +1728,7 @@ fun MainScreen(
                             onSelectEffort = { ef ->
                                 if (primaryConn != null) selectEffortForSession(primarySession, primaryConn, ef)
                             },
-                            onHandoffTo = { target -> handoffSession(primarySession, target) },
+                            onHandoffTo = { target, smart, git, auto -> handoffSession(primarySession, target, smart, git, auto) },
                             onDeleteSession = { deleteSession(primarySession) },
                             onOpenTokenDashboard = { showTokenDashboard = true },
                             onOpenSettings = { showSettings = true },
@@ -1715,7 +1785,7 @@ fun MainScreen(
                                 val targetSess = secondarySession ?: primarySession
                                 if (secondaryConn != null) selectEffortForSession(targetSess, secondaryConn, ef)
                             },
-                            onHandoffTo = { target -> handoffSession(secondarySession ?: primarySession, target) },
+                            onHandoffTo = { target, smart, git, auto -> handoffSession(secondarySession ?: primarySession, target, smart, git, auto) },
                             onDeleteSession = { deleteSession(secondarySession ?: primarySession) },
                             onOpenTokenDashboard = { showTokenDashboard = true },
                             onOpenSettings = { showSettings = true },
@@ -1771,7 +1841,7 @@ fun MainScreen(
                             onSelectEffort = { ef ->
                                 if (primaryConn != null) selectEffortForSession(primarySession, primaryConn, ef)
                             },
-                            onHandoffTo = { target -> handoffSession(primarySession, target) },
+                            onHandoffTo = { target, smart, git, auto -> handoffSession(primarySession, target, smart, git, auto) },
                             onDeleteSession = { deleteSession(primarySession) },
                             onOpenTokenDashboard = { showTokenDashboard = true },
                             onOpenSettings = { showSettings = true },
@@ -1828,7 +1898,7 @@ fun MainScreen(
                                 val targetSess = secondarySession ?: primarySession
                                 if (secondaryConn != null) selectEffortForSession(targetSess, secondaryConn, ef)
                             },
-                            onHandoffTo = { target -> handoffSession(secondarySession ?: primarySession, target) },
+                            onHandoffTo = { target, smart, git, auto -> handoffSession(secondarySession ?: primarySession, target, smart, git, auto) },
                             onDeleteSession = { deleteSession(secondarySession ?: primarySession) },
                             onOpenTokenDashboard = { showTokenDashboard = true },
                             onOpenSettings = { showSettings = true },

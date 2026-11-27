@@ -263,7 +263,7 @@ fun SessionPane(
     onShareMarkdown: () -> Unit,
     onSelectModel: (String) -> Unit,
     onSelectEffort: (String) -> Unit = {},
-    onHandoffTo: (AiConnection) -> Unit,
+    onHandoffTo: (target: AiConnection, smartSummary: Boolean, includeGit: Boolean, autoSend: Boolean) -> Unit,
     onDeleteSession: () -> Unit,
     onOpenTokenDashboard: () -> Unit,
     onOpenSettings: () -> Unit,
@@ -562,28 +562,15 @@ fun SessionPane(
                 }
             }
 
-            if (session.messages.isNotEmpty()) {
-                IconButton(
-                    onClick = onShareMarkdown,
-                    modifier = Modifier.size(24.dp)
-                ) {
-                    Icon(
-                        Icons.Default.Share,
-                        contentDescription = "Markdown 공유",
-                        modifier = Modifier.size(16.dp)
-                    )
-                }
-            }
-
-            if (session.messages.isNotEmpty() && enabledConnections.size > 1) {
+            if (session.messages.isNotEmpty() && enabledConnections.isNotEmpty()) {
                 IconButton(
                     onClick = { showHandoffDialog = true },
                     modifier = Modifier.size(28.dp)
                 ) {
                     Icon(
-                        Icons.Default.CallSplit,
-                        contentDescription = "다른 AI로 세션 전달",
-                        modifier = Modifier.size(16.dp)
+                        painter = painterResource(id = R.drawable.ic_handoff),
+                        contentDescription = "세션 전달",
+                        modifier = Modifier.size(18.dp)
                     )
                 }
             }
@@ -1337,37 +1324,96 @@ fun SessionPane(
     }
 
     if (showHandoffDialog) {
-        val targets = enabledConnections.filter { it.id != connection?.id }
+        var smartSummary by remember { mutableStateOf(true) }
+        var includeGit by remember { mutableStateOf(project.workDir.isNotBlank()) }
+        var autoSend by remember { mutableStateOf(true) }
         AlertDialog(
             onDismissRequest = { showHandoffDialog = false },
-            title = { Text("다른 AI로 세션 전달") },
+            title = { Text("세션 통째로 이관", fontSize = 16.sp, fontWeight = FontWeight.Bold) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        "현재 대화 내역을 컨텍스트로 담아 같은 프로젝트에 새 하위 세션을 생성합니다.",
-                        fontSize = 13.sp,
+                        "새 탭을 만들지 않고 현재 세션에서 AI/세션을 바로 교체해 이어서 작업합니다.",
+                        fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    targets.forEach { target ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Surface(
+                            onClick = { smartSummary = true },
+                            shape = RoundedCornerShape(8.dp),
+                            color = if (smartSummary) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
+                            border = BorderStroke(1.dp, if (smartSummary) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(
+                                text = "⚡ 스마트 압축",
+                                fontSize = 11.5.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = if (smartSummary) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
+                            )
+                        }
+                        Surface(
+                            onClick = { smartSummary = false },
+                            shape = RoundedCornerShape(8.dp),
+                            color = if (!smartSummary) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
+                            border = BorderStroke(1.dp, if (!smartSummary) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(
+                                text = "📄 전체 원문",
+                                fontSize = 11.5.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = if (!smartSummary) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
+                            )
+                        }
+                    }
+                    if (project.workDir.isNotBlank()) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text("Git 현재 상태(수정 파일·diff) 포함", fontSize = 12.sp)
+                            androidx.compose.material3.Switch(checked = includeGit, onCheckedChange = { includeGit = it })
+                        }
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("교체 후 새 AI에 즉시 인수인계 전송", fontSize = 12.sp)
+                        androidx.compose.material3.Switch(checked = autoSend, onCheckedChange = { autoSend = it })
+                    }
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
+                    Text("이관할 AI 선택", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    enabledConnections.forEach { target ->
+                        val isSameAi = target.id == connection?.id
                         Surface(
                             shape = RoundedCornerShape(8.dp),
+                            color = if (isSameAi) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f) else MaterialTheme.colorScheme.surface,
                             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)),
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable {
                                     showHandoffDialog = false
-                                    onHandoffTo(target)
+                                    onHandoffTo(target, smartSummary, includeGit, autoSend)
                                 }
                         ) {
                             Row(
-                                modifier = Modifier.padding(12.dp),
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 9.dp),
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text(target.name, fontWeight = FontWeight.Medium)
+                                Text(target.name, fontWeight = FontWeight.Medium, fontSize = 13.sp)
                                 Text(
-                                    target.kind.displayLabel(),
-                                    fontSize = 11.sp,
+                                    text = if (isSameAi) "새 세션 리프레시" else target.kind.displayLabel(),
+                                    fontSize = 10.5.sp,
                                     color = MaterialTheme.colorScheme.primary
                                 )
                             }
