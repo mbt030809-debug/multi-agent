@@ -101,12 +101,15 @@ import com.mbta.app.model.ConnectionKind
 import com.mbta.app.model.CustomSkill
 import com.mbta.app.model.MessageRole
 import com.mbta.app.model.Project
+import com.mbta.app.model.availableEffortsFor
 import com.mbta.app.model.availableModelsFor
 import com.mbta.app.model.defaultContextLimitForKind
 import com.mbta.app.model.defaultModelFor
 import com.mbta.app.model.displayLabel
+import com.mbta.app.model.extractParenEffort
 import com.mbta.app.model.formatTokens
 import com.mbta.app.model.isHiddenWebBridge
+import com.mbta.app.model.stripParenEffort
 import com.mbta.app.model.usesHiddenWebBridge
 import com.mbta.app.network.GitBridgeClient
 import com.mbta.app.webview.HeadlessWebBridge
@@ -247,6 +250,7 @@ fun SessionPane(
     onOpenOrchestration: () -> Unit,
     onShareMarkdown: () -> Unit,
     onSelectModel: (String) -> Unit,
+    onSelectEffort: (String) -> Unit = {},
     onHandoffTo: (AiConnection) -> Unit,
     onDeleteSession: () -> Unit,
     onOpenTokenDashboard: () -> Unit,
@@ -264,6 +268,7 @@ fun SessionPane(
     var attachments by remember(session.id) { mutableStateOf<List<PendingAttachment>>(emptyList()) }
     var showHandoffDialog by remember { mutableStateOf(false) }
     var showModelMenu by remember { mutableStateOf(false) }
+    var showEffortMenu by remember { mutableStateOf(false) }
     var showCustomModelDialog by remember { mutableStateOf(false) }
     var showRenameDialog by remember { mutableStateOf(false) }
     var dismissedQuestionMsgId by remember(session.id) { mutableStateOf("") }
@@ -362,6 +367,13 @@ fun SessionPane(
                     val activeModel = session.selectedModel.ifBlank {
                         connection.model.ifBlank { defaultModelFor(connection) }
                     }
+                    val efforts = availableEffortsFor(connection, activeModel, models)
+                    val parenEffort = extractParenEffort(activeModel)
+                    val modelBadgeLabel = if (parenEffort.isNotBlank() && efforts.isNotEmpty()) {
+                        stripParenEffort(activeModel)
+                    } else {
+                        activeModel
+                    }
                     Spacer(modifier = Modifier.size(6.dp))
                     Box {
                         Surface(
@@ -370,7 +382,7 @@ fun SessionPane(
                             modifier = Modifier.clickable { showModelMenu = true }
                         ) {
                             Text(
-                                text = "$activeModel ▾",
+                                text = "$modelBadgeLabel ▾",
                                 fontSize = 9.5.sp,
                                 color = MaterialTheme.colorScheme.primary,
                                 maxLines = 1,
@@ -405,6 +417,50 @@ fun SessionPane(
                                     showCustomModelDialog = true
                                 }
                             )
+                        }
+                    }
+                    if (efforts.isNotEmpty()) {
+                        val activeEffort = when {
+                            parenEffort.isNotBlank() -> parenEffort
+                            session.selectedEffort.isNotBlank() && efforts.any { it.equals(session.selectedEffort, ignoreCase = true) } -> session.selectedEffort
+                            efforts.any { it.equals("medium", ignoreCase = true) } -> efforts.first { it.equals("medium", ignoreCase = true) }
+                            else -> efforts.first()
+                        }
+                        Spacer(modifier = Modifier.size(4.dp))
+                        Box {
+                            Surface(
+                                shape = RoundedCornerShape(4.dp),
+                                color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.85f),
+                                modifier = Modifier.clickable { showEffortMenu = true }
+                            ) {
+                                Text(
+                                    text = "$activeEffort ▾",
+                                    fontSize = 9.5.sp,
+                                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                    maxLines = 1,
+                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+                                )
+                            }
+                            DropdownMenu(
+                                expanded = showEffortMenu,
+                                onDismissRequest = { showEffortMenu = false }
+                            ) {
+                                efforts.forEach { ef ->
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                ef,
+                                                fontWeight = if (ef.equals(activeEffort, ignoreCase = true)) FontWeight.Bold else FontWeight.Normal,
+                                                fontSize = 13.sp
+                                            )
+                                        },
+                                        onClick = {
+                                            showEffortMenu = false
+                                            onSelectEffort(ef)
+                                        }
+                                    )
+                                }
+                            }
                         }
                     }
                 }

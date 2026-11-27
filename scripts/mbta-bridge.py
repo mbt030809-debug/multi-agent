@@ -776,6 +776,9 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
             cmd = ["claude", "-p", prompt, "--output-format", "stream-json", "--verbose"]
             if data.get("model"):
                 cmd.extend(["--model", data["model"]])
+            effort = (data.get("effort") or "").strip().lower()
+            if effort in ("low", "medium", "high", "max"):
+                cmd.extend(["--effort", effort])
             if permission_mode in ("plan", "acceptEdits", "auto", "default", "bypassPermissions", "dontAsk"):
                 cmd.extend(["--permission-mode", permission_mode])
             if key:

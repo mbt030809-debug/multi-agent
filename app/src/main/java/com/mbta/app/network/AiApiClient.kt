@@ -125,7 +125,8 @@ object AiApiClient {
         userMessage: String,
         sessionId: String = "",
         cwd: String = "",
-        cliSessionId: String = ""
+        cliSessionId: String = "",
+        effort: String = ""
     ): AiReply = withContext(Dispatchers.IO) {
         if (connection.kind != ConnectionKind.TERMUX_CLI &&
             connection.kind != ConnectionKind.REMOTE_CONTROL &&
@@ -139,11 +140,11 @@ object AiApiClient {
 
         try {
             when (connection.kind) {
-                ConnectionKind.CLAUDE_API -> sendClaude(connection, history, userMessage)
-                ConnectionKind.OPENAI_API -> sendOpenAi(connection, history, userMessage)
+                ConnectionKind.CLAUDE_API -> sendClaude(connection, history, userMessage, effort)
+                ConnectionKind.OPENAI_API -> sendOpenAi(connection, history, userMessage, effort)
                 ConnectionKind.GEMINI_API -> sendGemini(connection, history, userMessage)
                 ConnectionKind.TERMUX_CLI -> sendTermuxCli(connection, userMessage)
-                ConnectionKind.REMOTE_CONTROL -> sendRemoteControl(connection, history, userMessage, sessionId, cwd, cliSessionId)
+                ConnectionKind.REMOTE_CONTROL -> sendRemoteControl(connection, history, userMessage, sessionId, cwd, cliSessionId, effort)
                 else -> AiReply(text = "", error = "지원하지 않는 연결 형식입니다.")
             }
         } catch (e: Exception) {
@@ -154,7 +155,8 @@ object AiApiClient {
     private fun sendClaude(
         connection: AiConnection,
         history: List<ChatMessage>,
-        userMessage: String
+        userMessage: String,
+        effort: String = ""
     ): AiReply {
         val url = connection.endpointUrl.ifBlank { defaultEndpointFor(ConnectionKind.CLAUDE_API) }
         val model = connection.model.ifBlank { defaultModelFor(ConnectionKind.CLAUDE_API) }
@@ -222,7 +224,8 @@ object AiApiClient {
     private fun sendOpenAi(
         connection: AiConnection,
         history: List<ChatMessage>,
-        userMessage: String
+        userMessage: String,
+        effort: String = ""
     ): AiReply {
         val url = connection.endpointUrl.ifBlank { defaultEndpointFor(ConnectionKind.OPENAI_API) }
         val model = connection.model.ifBlank { defaultModelFor(ConnectionKind.OPENAI_API) }
@@ -247,6 +250,9 @@ object AiApiClient {
 
         val payload = buildJsonObject {
             put("model", JsonPrimitive(model))
+            if (effort.isNotBlank()) {
+                put("reasoning_effort", JsonPrimitive(effort.lowercase()))
+            }
             put("messages", messagesArray)
         }.toString()
 
@@ -403,7 +409,8 @@ object AiApiClient {
         prompt: String,
         sessionId: String,
         cwd: String = "",
-        cliSessionId: String = ""
+        cliSessionId: String = "",
+        effort: String = ""
     ): AiReply {
         val url = connection.endpointUrl.ifBlank { defaultEndpointFor(ConnectionKind.REMOTE_CONTROL) }
         val isLocalBridge = (url.contains("127.0.0.1:8765/agy") || url.contains("127.0.0.1:8765/claude") ||
@@ -416,6 +423,9 @@ object AiApiClient {
             }
             if (connection.model.isNotBlank()) {
                 put("model", JsonPrimitive(connection.model))
+            }
+            if (effort.isNotBlank()) {
+                put("effort", JsonPrimitive(effort.lowercase()))
             }
             if (sessionId.isNotBlank()) {
                 put("mbta_session_id", JsonPrimitive(sessionId))

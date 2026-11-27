@@ -124,6 +124,57 @@ fun availableModelsFor(connection: AiConnection): List<String> {
     return availableModelsFor(connection.kind)
 }
 
+private val parenEffortRegex = Regex("\\s*\\((Low|Medium|High|Max)\\)\\s*$", RegexOption.IGNORE_CASE)
+
+fun stripParenEffort(model: String): String = model.replace(parenEffortRegex, "").trim()
+
+fun extractParenEffort(model: String): String =
+    parenEffortRegex.find(model)?.groupValues?.getOrNull(1)?.trim().orEmpty()
+
+fun availableEffortsFor(
+    connection: AiConnection,
+    activeModel: String,
+    availableModels: List<String> = emptyList()
+): List<String> {
+    val mLower = activeModel.lowercase()
+    // 1. Models with explicit "(Low/Medium/High/Max)" variants (e.g. Antigravity / Remote Control)
+    val base = stripParenEffort(activeModel)
+    val variantEfforts = availableModels
+        .filter { stripParenEffort(it).equals(base, ignoreCase = true) }
+        .mapNotNull { extractParenEffort(it).ifBlank { null } }
+        .distinct()
+    if (variantEfforts.size >= 2) {
+        val order = listOf("Low", "Medium", "High", "Max")
+        return variantEfforts.sortedBy { e -> order.indexOfFirst { it.equals(e, ignoreCase = true) }.let { if (it < 0) 99 else it } }
+    }
+    val urlLower = connection.endpointUrl.lowercase()
+    return when (connection.kind) {
+        ConnectionKind.REMOTE_CONTROL -> {
+            if (urlLower.contains("/claude")) {
+                if (mLower.contains("haiku")) emptyList() else listOf("low", "medium", "high", "max")
+            } else {
+                emptyList()
+            }
+        }
+        ConnectionKind.OPENAI_API -> {
+            if (mLower.startsWith("o1") || mLower.startsWith("o3") || mLower.startsWith("o4") || mLower.startsWith("gpt-5")) {
+                listOf("low", "medium", "high")
+            } else emptyList()
+        }
+        ConnectionKind.CLAUDE_API -> {
+            if (mLower.contains("sonnet-4") || mLower.contains("opus-4") || mLower.contains("3-7-sonnet")) {
+                listOf("low", "medium", "high")
+            } else emptyList()
+        }
+        ConnectionKind.GEMINI_API -> {
+            if (mLower.contains("2.5-pro") || mLower.contains("2.5-flash") || mLower.contains("gemini-3") || mLower.contains("gemini-4")) {
+                listOf("low", "medium", "high")
+            } else emptyList()
+        }
+        else -> emptyList()
+    }
+}
+
 fun defaultEndpointFor(kind: ConnectionKind): String = when (kind) {
     ConnectionKind.CLAUDE_WEB -> "https://claude.ai"
     ConnectionKind.CHATGPT_WEB -> "https://chatgpt.com"

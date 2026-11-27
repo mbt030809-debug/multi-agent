@@ -46,6 +46,7 @@ data class AgentSession(
     val title: String,
     val connectionId: String? = null,
     val selectedModel: String = "",
+    val selectedEffort: String = "",
     val worktreePath: String = "",
     val webConversationUrl: String = "",
     val cliSessionId: String = "",

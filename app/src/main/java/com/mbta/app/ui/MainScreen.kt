@@ -409,7 +409,7 @@ fun MainScreen(
         } else null
 
         val job = scope.launch {
-            val reply = AiApiClient.send(effectiveConn, historyBefore, effectivePrompt, session.id, cwd = effectiveDir, cliSessionId = session.cliSessionId)
+            val reply = AiApiClient.send(effectiveConn, historyBefore, effectivePrompt, session.id, cwd = effectiveDir, cliSessionId = session.cliSessionId, effort = session.selectedEffort)
             pollJob?.cancel()
             activeJobs.remove(session.id)
             val assistantMsg = ChatMessage(
@@ -540,6 +540,20 @@ fun MainScreen(
         if (conn.usesHiddenWebBridge()) {
             headlessWebBridge.switchWebModel(conn.id, model)
         }
+    }
+
+    fun selectEffortForSession(session: AgentSession, conn: AiConnection, effort: String) {
+        val curModel = session.selectedModel.ifBlank { conn.model.ifBlank { com.mbta.app.model.defaultModelFor(conn) } }
+        val hasParen = com.mbta.app.model.extractParenEffort(curModel).isNotBlank()
+        val updatedModel = if (hasParen) {
+            "${com.mbta.app.model.stripParenEffort(curModel)} ($effort)"
+        } else {
+            session.selectedModel
+        }
+        sessions = sessions.map {
+            if (it.id == session.id) it.copy(selectedModel = updatedModel, selectedEffort = effort) else it
+        }
+        store.saveSessions(sessions)
     }
 
     fun renameSession(session: AgentSession, newTitle: String) {
@@ -1138,6 +1152,9 @@ fun MainScreen(
                         onSelectModel = { model ->
                             if (primaryConn != null) selectModelForSession(primarySession, primaryConn, model)
                         },
+                        onSelectEffort = { ef ->
+                            if (primaryConn != null) selectEffortForSession(primarySession, primaryConn, ef)
+                        },
                         onHandoffTo = { target -> handoffSession(primarySession, target) },
                         onDeleteSession = { deleteSession(primarySession) },
                         onOpenTokenDashboard = { showTokenDashboard = true },
@@ -1184,6 +1201,9 @@ fun MainScreen(
                             onShareMarkdown = { shareSessionAsMarkdown(context, activeProject, primarySession) },
                             onSelectModel = { model ->
                                 if (primaryConn != null) selectModelForSession(primarySession, primaryConn, model)
+                            },
+                            onSelectEffort = { ef ->
+                                if (primaryConn != null) selectEffortForSession(primarySession, primaryConn, ef)
                             },
                             onHandoffTo = { target -> handoffSession(primarySession, target) },
                             onDeleteSession = { deleteSession(primarySession) },
@@ -1235,6 +1255,10 @@ fun MainScreen(
                                 val targetSess = secondarySession ?: primarySession
                                 if (secondaryConn != null) selectModelForSession(targetSess, secondaryConn, model)
                             },
+                            onSelectEffort = { ef ->
+                                val targetSess = secondarySession ?: primarySession
+                                if (secondaryConn != null) selectEffortForSession(targetSess, secondaryConn, ef)
+                            },
                             onHandoffTo = { target -> handoffSession(secondarySession ?: primarySession, target) },
                             onDeleteSession = { deleteSession(secondarySession ?: primarySession) },
                             onOpenTokenDashboard = { showTokenDashboard = true },
@@ -1285,6 +1309,9 @@ fun MainScreen(
                             onSelectModel = { model ->
                                 if (primaryConn != null) selectModelForSession(primarySession, primaryConn, model)
                             },
+                            onSelectEffort = { ef ->
+                                if (primaryConn != null) selectEffortForSession(primarySession, primaryConn, ef)
+                            },
                             onHandoffTo = { target -> handoffSession(primarySession, target) },
                             onDeleteSession = { deleteSession(primarySession) },
                             onOpenTokenDashboard = { showTokenDashboard = true },
@@ -1334,6 +1361,10 @@ fun MainScreen(
                             onSelectModel = { model ->
                                 val targetSess = secondarySession ?: primarySession
                                 if (secondaryConn != null) selectModelForSession(targetSess, secondaryConn, model)
+                            },
+                            onSelectEffort = { ef ->
+                                val targetSess = secondarySession ?: primarySession
+                                if (secondaryConn != null) selectEffortForSession(targetSess, secondaryConn, ef)
                             },
                             onHandoffTo = { target -> handoffSession(secondarySession ?: primarySession, target) },
                             onDeleteSession = { deleteSession(secondarySession ?: primarySession) },
