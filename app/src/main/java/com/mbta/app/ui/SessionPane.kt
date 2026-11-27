@@ -1067,24 +1067,24 @@ private fun ActionSquareBadge(
     onClick: () -> Unit
 ) {
     val badgeColor = tint ?: when (letter) {
-        "C" -> androidx.compose.ui.graphics.Color(0xFF4FC3F7)
-        "P" -> androidx.compose.ui.graphics.Color(0xFF81C784)
-        "I" -> androidx.compose.ui.graphics.Color(0xFFFFB74D)
-        else -> MaterialTheme.colorScheme.primary
+        "C" -> androidx.compose.ui.graphics.Color(0xFF7B93A8)
+        "P" -> androidx.compose.ui.graphics.Color(0xFF7D9A84)
+        "I" -> androidx.compose.ui.graphics.Color(0xFFA89378)
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
     }
     Surface(
         onClick = onClick,
         shape = RoundedCornerShape(4.dp),
-        color = badgeColor.copy(alpha = 0.14f),
-        border = BorderStroke(1.dp, badgeColor.copy(alpha = 0.65f)),
+        color = badgeColor.copy(alpha = 0.08f),
+        border = BorderStroke(1.dp, badgeColor.copy(alpha = 0.32f)),
         modifier = Modifier.size(22.dp)
     ) {
         Box(contentAlignment = Alignment.Center) {
             Text(
                 text = letter,
                 fontSize = 11.sp,
-                fontWeight = FontWeight.Bold,
-                color = badgeColor
+                fontWeight = FontWeight.Medium,
+                color = badgeColor.copy(alpha = 0.85f)
             )
         }
     }
