@@ -14,6 +14,7 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.mbta.app.data.WorkspaceStore
+import com.mbta.app.service.AgentKeepAliveService
 import com.mbta.app.model.AgentTokenUsage
 import com.mbta.app.model.AppThemeMode
 import com.mbta.app.model.ConnectionKind
@@ -135,6 +136,9 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        if (isFinishing) {
+            AgentKeepAliveService.stop(this)
+        }
         headlessWebBridge.destroyAll()
         super.onDestroy()
     }

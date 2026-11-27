@@ -84,6 +84,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.mbta.app.data.WorkspaceStore
+import com.mbta.app.service.AgentKeepAliveService
 import com.mbta.app.model.AgentSession
 import com.mbta.app.model.AgentTokenUsage
 import com.mbta.app.model.AiConnection
@@ -152,6 +153,14 @@ fun MainScreen(
     var sessionPendingDelete by remember { mutableStateOf<AgentSession?>(null) }
 
     val sendingMap = remember { mutableStateMapOf<String, Boolean>() }
+    val activeSendingCount = sendingMap.values.count { it }
+    LaunchedEffect(activeSendingCount) {
+        if (activeSendingCount > 0) {
+            AgentKeepAliveService.start(context, "AI 작업 진행 중 (${activeSendingCount}개 세션)")
+        } else {
+            AgentKeepAliveService.stop(context)
+        }
+    }
     val activeJobs = remember { mutableStateMapOf<String, kotlinx.coroutines.Job>() }
     val queuedPromptsMap = remember { mutableStateMapOf<String, List<String>>() }
     val unreadDoneSessions = remember { mutableStateMapOf<String, Boolean>() }

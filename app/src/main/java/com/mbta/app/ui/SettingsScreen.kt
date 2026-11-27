@@ -1,5 +1,9 @@
 package com.mbta.app.ui
 
+import android.content.Intent
+import android.net.Uri
+import android.os.PowerManager
+import android.provider.Settings
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -154,6 +158,65 @@ fun SettingsScreen(
                             onClick = { onThemeModeChanged(mode) },
                             label = { Text(label) }
                         )
+                    }
+                }
+            }
+
+            item {
+                val pm = remember(context) {
+                    context.getSystemService(android.content.Context.POWER_SERVICE) as? PowerManager
+                }
+                var isIgnoringBatteryOpt by remember {
+                    mutableStateOf(pm?.isIgnoringBatteryOptimizations(context.packageName) == true)
+                }
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Text("백그라운드 실행 유지", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                                Text(
+                                    text = if (isIgnoringBatteryOpt) "최적화 해제됨" else "제한될 수 있음",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = if (isIgnoringBatteryOpt) Color(0xFF22C55E) else MaterialTheme.colorScheme.error
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = "AI 작업 중 다른 앱으로 전환하거나 화면이 꺼져도 연결과 응답 수신을 유지합니다.",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                runCatching {
+                                    val intent = Intent(
+                                        Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                                        Uri.parse("package:${context.packageName}")
+                                    )
+                                    context.startActivity(intent)
+                                }.onFailure {
+                                    runCatching {
+                                        context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                                    }
+                                }
+                                isIgnoringBatteryOpt = pm?.isIgnoringBatteryOptimizations(context.packageName) == true
+                            }
+                        ) {
+                            Text(if (isIgnoringBatteryOpt) "설정 열기" else "배터리 최적화 해제", fontSize = 11.sp)
+                        }
                     }
                 }
             }
