@@ -265,6 +265,8 @@ fun SessionPane(
     onSendQueuedNow: (Int) -> Unit = {},
     onRenameSession: (String) -> Unit = {},
     onTogglePinMessage: (String) -> Unit = {},
+    onStopSubagent: (String) -> Unit = {},
+    onRetrySubagent: (String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var inputText by remember(session.id) { mutableStateOf("") }
@@ -274,6 +276,7 @@ fun SessionPane(
     var showEffortMenu by remember { mutableStateOf(false) }
     var showCustomModelDialog by remember { mutableStateOf(false) }
     var showRenameDialog by remember { mutableStateOf(false) }
+    var inspectingSubagentId by remember(session.id) { mutableStateOf<String?>(null) }
     var dismissedQuestionMsgId by remember(session.id) { mutableStateOf("") }
     val listState = remember(session.id) {
         androidx.compose.foundation.lazy.LazyListState(
@@ -563,6 +566,89 @@ fun SessionPane(
                 }
             }
 
+        }
+
+        if (session.isOrchestration) {
+            val subConn = enabledConnections.find { it.id == (session.subConnectionId ?: session.connectionId) }
+            val subModelLabel = session.subModel.ifBlank { subConn?.let { defaultModelFor(it) } ?: "" }
+            val runningCount = session.subagentRuns.count { it.status == "running" }
+            Surface(
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            text = "⚡ 오케스트레이션",
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = "서브: ${subConn?.name ?: "동일"}${if (subModelLabel.isNotBlank()) " · $subModelLabel" else ""} (최대 ${session.maxParallelSubagents}×${session.maxDelegationRounds})",
+                            fontSize = 9.5.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
+                        )
+                        if (runningCount > 0) {
+                            Text(
+                                text = "실행중 $runningCount",
+                                fontSize = 9.5.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
+                    if (session.subagentRuns.isNotEmpty()) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(5.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            session.subagentRuns.takeLast(12).forEach { run ->
+                                val (icon, fgColor, bgColor) = when (run.status) {
+                                    "running" -> Triple("⏳", MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f))
+                                    "done" -> Triple("✓", androidx.compose.ui.graphics.Color(0xFF15803D), androidx.compose.ui.graphics.Color(0xFF22C55E).copy(alpha = 0.14f))
+                                    "error" -> Triple("✗", MaterialTheme.colorScheme.error, MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.65f))
+                                    else -> Triple("■", MaterialTheme.colorScheme.onSurfaceVariant, MaterialTheme.colorScheme.surface.copy(alpha = 0.8f))
+                                }
+                                Surface(
+                                    shape = RoundedCornerShape(7.dp),
+                                    color = bgColor,
+                                    border = BorderStroke(0.8.dp, fgColor.copy(alpha = 0.45f)),
+                                    modifier = Modifier.clickable { inspectingSubagentId = run.id }
+                                ) {
+                                    Text(
+                                        text = "$icon ${run.label}",
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        color = fgColor,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier
+                                            .widthIn(max = 150.dp)
+                                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
         }
 
         if (connection == null) {
@@ -1032,6 +1118,90 @@ fun SessionPane(
                 }
             }
         }
+    }
+
+    val inspectedRun = session.subagentRuns.find { it.id == inspectingSubagentId }
+    if (inspectedRun != null) {
+        val elapsedSec = if (inspectedRun.finishedAt > inspectedRun.startedAt) {
+            (inspectedRun.finishedAt - inspectedRun.startedAt) / 1000L
+        } else {
+            ((System.currentTimeMillis() - inspectedRun.startedAt) / 1000L).coerceAtLeast(0L)
+        }
+        AlertDialog(
+            onDismissRequest = { inspectingSubagentId = null },
+            title = {
+                Text(
+                    text = "서브 에이전트 · ${inspectedRun.label}",
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+            },
+            text = {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.heightIn(max = 360.dp)
+                ) {
+                    Text(
+                        text = "상태: ${inspectedRun.status} · 모델: ${inspectedRun.model.ifBlank { "기본" }} · ${elapsedSec}초",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Text("지시 내용", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = inspectedRun.prompt,
+                            fontSize = 11.sp,
+                            maxLines = 5,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(8.dp)
+                        )
+                    }
+                    Text("실행 결과 / 로그", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f, fill = false)
+                            .heightIn(max = 180.dp)
+                    ) {
+                        item {
+                            SelectionContainer {
+                                Text(
+                                    text = inspectedRun.output.ifBlank {
+                                        if (inspectedRun.status == "running") "서브 에이전트가 작업 중입니다..." else "(출력 없음)"
+                                    },
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    if (inspectedRun.status == "running") {
+                        TextButton(
+                            onClick = {
+                                onStopSubagent(inspectedRun.id)
+                                inspectingSubagentId = null
+                            }
+                        ) { Text("중단", color = MaterialTheme.colorScheme.error) }
+                    } else {
+                        TextButton(
+                            onClick = {
+                                onRetrySubagent(inspectedRun.id)
+                                inspectingSubagentId = null
+                            }
+                        ) { Text("재실행") }
+                    }
+                    TextButton(onClick = { inspectingSubagentId = null }) { Text("닫기") }
+                }
+            }
+        )
     }
 
     if (showRenameDialog) {

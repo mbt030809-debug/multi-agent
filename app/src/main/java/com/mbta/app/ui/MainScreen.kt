@@ -29,6 +29,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -95,8 +96,12 @@ import com.mbta.app.model.ConnectionKind
 import com.mbta.app.model.MessageRole
 import com.mbta.app.model.Project
 import com.mbta.app.model.SplitMode
+import com.mbta.app.model.SubagentRun
 import com.mbta.app.model.TokenSource
+import com.mbta.app.model.availableEffortsFor
+import com.mbta.app.model.availableModelsFor
 import com.mbta.app.model.defaultContextLimitForKind
+import com.mbta.app.model.defaultModelFor
 import com.mbta.app.model.displayLabel
 import com.mbta.app.model.formatTokens
 import com.mbta.app.model.isHiddenWebBridge
@@ -106,7 +111,12 @@ import com.mbta.app.network.GitBridgeClient
 import com.mbta.app.util.AppUpdater
 import com.mbta.app.util.UpdateInfo
 import com.mbta.app.webview.HeadlessWebBridge
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import org.json.JSONArray
 import java.util.UUID
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -169,6 +179,7 @@ fun MainScreen(
         }
     }
     val activeJobs = remember { mutableStateMapOf<String, kotlinx.coroutines.Job>() }
+    val subagentJobsMap = remember { mutableStateMapOf<String, kotlinx.coroutines.Job>() }
     val queuedPromptsMap = remember { mutableStateMapOf<String, List<String>>() }
     val unreadDoneSessions = remember { mutableStateMapOf<String, Boolean>() }
     val loginStatusMap = remember {
@@ -249,10 +260,344 @@ fun MainScreen(
         }
     }
 
+    fun parseSubagentRequests(text: String): List<Pair<String, String>> {
+        val match = Regex("<<SUBAGENTS>>([\\s\\S]*?)<</SUBAGENTS>>", RegexOption.IGNORE_CASE).find(text)
+            ?: return emptyList()
+        val raw = match.groupValues[1].trim()
+            .removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
+        return try {
+            val arr = JSONArray(raw)
+            buildList {
+                for (i in 0 until arr.length()) {
+                    val obj = arr.optJSONObject(i) ?: continue
+                    val role = obj.optString("role").ifBlank { obj.optString("label") }.ifBlank { "서브 ${i + 1}" }.trim().take(24)
+                    val task = obj.optString("task").ifBlank { obj.optString("prompt") }.trim()
+                    if (task.isNotBlank()) add(role to task)
+                }
+            }
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    fun updateSubagentRun(sessionId: String, runId: String, transform: (SubagentRun) -> SubagentRun) {
+        sessions = sessions.map { s ->
+            if (s.id == sessionId) {
+                s.copy(subagentRuns = s.subagentRuns.map { r -> if (r.id == runId) transform(r) else r })
+            } else s
+        }
+        store.saveSessions(sessions)
+    }
+
+    suspend fun runSingleSubagent(
+        session: AgentSession,
+        subConn: AiConnection,
+        subModel: String,
+        subEffort: String,
+        effectiveDir: String,
+        run: SubagentRun
+    ): SubagentRun {
+        val effectiveSubConn = if (subModel.isNotBlank()) subConn.copy(model = subModel) else subConn
+        val subPrompt = buildString {
+            append("[서브에이전트 작업 지시 — 역할: ${run.label}]\n")
+            if (useProjectContext && effectiveDir.isNotBlank()) append("- 작업 경로: $effectiveDir\n")
+            if (useProjectContext && activeProject.memoryText.isNotBlank()) append("- 프로젝트 지침: ${activeProject.memoryText}\n")
+            append("- 보고 규칙: 메인 오케스트레이터의 토큰을 아끼기 위해 핵심 결과·발견점·변경사항만 간결하고 정확하게 요약해 보고하세요.\n\n")
+            append(run.prompt)
+        }
+        return try {
+            val (outText, errText) = if (effectiveSubConn.usesHiddenWebBridge()) {
+                val (triple, err) = headlessWebBridge.sendPromptSuspend(
+                    key = effectiveSubConn.id,
+                    kind = effectiveSubConn.kind,
+                    url = effectiveSubConn.endpointUrl,
+                    prompt = subPrompt
+                )
+                if (triple.second > 0L || triple.third > 0L) {
+                    onRecordTokens(effectiveSubConn.id, effectiveSubConn.kind, triple.second, triple.third)
+                }
+                triple.first to err
+            } else {
+                val reply = AiApiClient.send(
+                    connection = effectiveSubConn,
+                    history = emptyList(),
+                    userPrompt = subPrompt,
+                    sessionId = "${session.id}_sub_${run.id}",
+                    cwd = effectiveDir,
+                    effort = subEffort
+                )
+                if (reply.inputTokens > 0L || reply.outputTokens > 0L) {
+                    onRecordTokens(effectiveSubConn.id, effectiveSubConn.kind, reply.inputTokens, reply.outputTokens)
+                }
+                reply.text to reply.error
+            }
+            val finished = run.copy(
+                status = if (errText != null) "error" else "done",
+                output = errText ?: outText.ifBlank { "(응답 없음)" },
+                finishedAt = System.currentTimeMillis()
+            )
+            updateSubagentRun(session.id, run.id) { finished }
+            finished
+        } catch (ce: CancellationException) {
+            val cancelled = run.copy(
+                status = "cancelled",
+                output = "사용자가 중단했습니다.",
+                finishedAt = System.currentTimeMillis()
+            )
+            updateSubagentRun(session.id, run.id) { cancelled }
+            cancelled
+        } catch (e: Exception) {
+            val errored = run.copy(
+                status = "error",
+                output = e.message ?: "서브에이전트 오류",
+                finishedAt = System.currentTimeMillis()
+            )
+            updateSubagentRun(session.id, run.id) { errored }
+            errored
+        } finally {
+            subagentJobsMap.remove(run.id)
+        }
+    }
+
+    fun stopSubagentRun(sessionId: String, runId: String) {
+        subagentJobsMap.remove(runId)?.cancel()
+        updateSubagentRun(sessionId, runId) {
+            if (it.status == "running") {
+                it.copy(status = "cancelled", output = it.output.ifBlank { "사용자가 중단했습니다." }, finishedAt = System.currentTimeMillis())
+            } else it
+        }
+    }
+
+    fun retrySubagentRun(sessionId: String, runId: String) {
+        val sess = sessions.find { it.id == sessionId } ?: return
+        val run = sess.subagentRuns.find { it.id == runId } ?: return
+        val subConn = enabledConnections.find { it.id == (sess.subConnectionId ?: sess.connectionId) }
+            ?: enabledConnections.find { it.id == sess.connectionId } ?: return
+        val subModel = sess.subModel.ifBlank { defaultModelFor(subConn) }
+        val effectiveDir = sess.worktreePath.ifBlank { activeProject.workDir }
+        val restarted = run.copy(status = "running", output = "", startedAt = System.currentTimeMillis(), finishedAt = 0L)
+        updateSubagentRun(sessionId, runId) { restarted }
+        val job = scope.launch {
+            runSingleSubagent(sess, subConn, subModel, sess.subEffort, effectiveDir, restarted)
+        }
+        subagentJobsMap[runId] = job
+    }
+
     fun sendMessageInSession(session: AgentSession, conn: AiConnection, text: String) {
         if (text.isBlank()) return
         if (sendingMap[session.id] == true) {
             queuedPromptsMap[session.id] = (queuedPromptsMap[session.id] ?: emptyList()) + text.trim()
+            return
+        }
+        if (session.isOrchestration && !text.startsWith("@")) {
+            val effectiveMainConn = if (session.selectedModel.isNotBlank()) conn.copy(model = session.selectedModel) else conn
+            val subConn = enabledConnections.find { it.id == (session.subConnectionId ?: session.connectionId) } ?: conn
+            val subModel = session.subModel.ifBlank { defaultModelFor(subConn) }
+            val effectiveDir = session.worktreePath.ifBlank { activeProject.workDir }
+            val maxParallel = session.maxParallelSubagents.coerceIn(1, 8)
+            val maxRounds = session.maxDelegationRounds.coerceIn(1, 6)
+
+            val userMsg = ChatMessage(
+                id = "msg_${UUID.randomUUID()}",
+                role = MessageRole.USER,
+                content = text
+            )
+            val placeholderId = "msg_${UUID.randomUUID()}"
+            val placeholder = ChatMessage(
+                id = placeholderId,
+                role = MessageRole.ASSISTANT,
+                content = "⏳ 메인 오케스트레이터 분석 중...",
+                agentName = "${conn.name} (오케스트레이터)"
+            )
+            val baseHistory = session.messages
+            sessions = sessions.map {
+                if (it.id == session.id) it.copy(messages = it.messages + userMsg + placeholder) else it
+            }
+            store.saveSessions(sessions)
+            sendingMap[session.id] = true
+
+            fun setPlaceholder(msg: String) {
+                sessions = sessions.map { s ->
+                    if (s.id == session.id) {
+                        s.copy(messages = s.messages.map { m -> if (m.id == placeholderId) m.copy(content = msg) else m })
+                    } else s
+                }
+            }
+
+            val orchJob = scope.launch {
+                try {
+                    val roundHistory = baseHistory.toMutableList()
+                    var currentPrompt = buildString {
+                        append("[오케스트레이터 프로토콜]\n")
+                        append("당신은 메인 오케스트레이터이며, 필요 시 저비용 서브에이전트(${subConn.name}${if (subModel.isNotBlank()) " / $subModel" else ""})를 동적으로 생성해 병렬 작업시킬 수 있습니다.\n")
+                        append("1. 단순 질문·설명·한 번에 끝낼 수 있는 요청은 서브에이전트를 생성하지 말고 바로 최종 답변을 작성하세요 (스마트 바이패스).\n")
+                        append("2. 복잡한 조사·분할 구현·비교 검증이 필요할 때만 응답 맨 끝에 아래 JSON 블록을 출력하세요 (최대 ${maxParallel}개 병렬, 최대 ${maxRounds}라운드):\n")
+                        append("<<SUBAGENTS>>\n[{\"role\": \"짧은 역할명\", \"task\": \"구체적 작업 지시\"}]\n<</SUBAGENTS>>\n")
+                        append("3. 파일 충돌 방지: 읽기/조사는 병렬 위임하되, 파일 수정 작업은 반드시 서로 겹치지 않는 파일 단위로 분할해 지시하세요.\n")
+                        append("4. 서브에이전트 결과는 핵심 요약으로 보고됩니다. 결과를 받으면 종합해 사용자에게 최종 답변을 작성하세요.\n")
+                        if (useProjectContext && (effectiveDir.isNotBlank() || activeProject.memoryText.isNotBlank())) {
+                            append("\n[프로젝트 컨텍스트]\n")
+                            if (effectiveDir.isNotBlank()) append("- 작업 경로: $effectiveDir\n")
+                            if (activeProject.memoryText.isNotBlank()) append("- 공용 지침: ${activeProject.memoryText}\n")
+                        }
+                        append("\n[사용자 요청]\n").append(text)
+                    }
+
+                    var finalAnswer = ""
+                    var finalError: String? = null
+                    var totalInTok = 0L
+                    var totalOutTok = 0L
+
+                    for (round in 1..(maxRounds + 1)) {
+                        val (mainText, mainErr) = if (effectiveMainConn.usesHiddenWebBridge()) {
+                            val (triple, err) = headlessWebBridge.sendPromptSuspend(
+                                key = effectiveMainConn.id,
+                                kind = effectiveMainConn.kind,
+                                url = effectiveMainConn.endpointUrl,
+                                prompt = currentPrompt
+                            )
+                            totalInTok += triple.second
+                            totalOutTok += triple.third
+                            if (triple.second > 0L || triple.third > 0L) {
+                                onRecordTokens(effectiveMainConn.id, effectiveMainConn.kind, triple.second, triple.third)
+                            }
+                            triple.first to err
+                        } else {
+                            val reply = AiApiClient.send(
+                                connection = effectiveMainConn,
+                                history = roundHistory,
+                                userPrompt = currentPrompt,
+                                sessionId = session.id,
+                                cwd = effectiveDir,
+                                cliSessionId = session.cliSessionId,
+                                effort = session.selectedEffort
+                            )
+                            totalInTok += reply.inputTokens
+                            totalOutTok += reply.outputTokens
+                            if (reply.inputTokens > 0L || reply.outputTokens > 0L) {
+                                onRecordTokens(effectiveMainConn.id, effectiveMainConn.kind, reply.inputTokens, reply.outputTokens)
+                            }
+                            if (reply.quotaPercent != null) {
+                                val cur = tokenUsageMap[effectiveMainConn.id] ?: AgentTokenUsage(panelId = effectiveMainConn.id)
+                                tokenUsageMap[effectiveMainConn.id] = cur.copy(
+                                    quotaPercent = reply.quotaPercent,
+                                    quotaLabel = reply.quotaLabel,
+                                    updatedAt = System.currentTimeMillis()
+                                )
+                                store.saveTokenUsage(tokenUsageMap)
+                            }
+                            reply.text to reply.error
+                        }
+
+                        if (mainErr != null) {
+                            finalError = mainErr
+                            break
+                        }
+
+                        val requests = if (round <= maxRounds) parseSubagentRequests(mainText).take(maxParallel) else emptyList()
+                        if (requests.isEmpty()) {
+                            finalAnswer = mainText.replace(
+                                Regex("<<SUBAGENTS>>[\\s\\S]*?<</SUBAGENTS>>", RegexOption.IGNORE_CASE),
+                                ""
+                            ).trim().ifBlank { mainText.ifBlank { "(응답 없음)" } }
+                            break
+                        }
+
+                        roundHistory.add(ChatMessage(id = "rh_u_$round", role = MessageRole.USER, content = currentPrompt))
+                        roundHistory.add(ChatMessage(id = "rh_a_$round", role = MessageRole.ASSISTANT, content = mainText))
+
+                        val runs = requests.map { (role, task) ->
+                            SubagentRun(
+                                id = "sub_${UUID.randomUUID().toString().take(8)}",
+                                label = role,
+                                prompt = task,
+                                model = subModel.ifBlank { subConn.name },
+                                status = "running",
+                                startedAt = System.currentTimeMillis()
+                            )
+                        }
+                        sessions = sessions.map { s ->
+                            if (s.id == session.id) s.copy(subagentRuns = s.subagentRuns + runs) else s
+                        }
+                        store.saveSessions(sessions)
+                        setPlaceholder("⚡ 라운드 $round/$maxRounds · 서브에이전트 ${runs.size}개 실행 중 (${runs.joinToString(", ") { it.label }})...")
+
+                        val latestSess = sessions.find { it.id == session.id } ?: session
+                        val completedRuns = if (subConn.usesHiddenWebBridge()) {
+                            runs.map { run ->
+                                val d = scope.async { runSingleSubagent(latestSess, subConn, subModel, session.subEffort, effectiveDir, run) }
+                                subagentJobsMap[run.id] = d
+                                d.await()
+                            }
+                        } else {
+                            coroutineScope {
+                                runs.map { run ->
+                                    val d = async { runSingleSubagent(latestSess, subConn, subModel, session.subEffort, effectiveDir, run) }
+                                    subagentJobsMap[run.id] = d
+                                    d
+                                }.awaitAll()
+                            }
+                        }
+
+                        setPlaceholder("⏳ 메인 오케스트레이터가 서브에이전트 결과 종합 중...")
+                        val reportText = buildString {
+                            append("[서브에이전트 라운드 $round/$maxRounds 결과 보고]\n")
+                            completedRuns.forEach { r ->
+                                val statusLabel = when (r.status) {
+                                    "done" -> "완료"
+                                    "cancelled" -> "중단됨"
+                                    else -> "오류"
+                                }
+                                append("\n### [${r.label}] ($statusLabel)\n")
+                                append(r.output.take(1800))
+                                if (r.output.length > 1800) append("\n...(생략됨, 전체 로그는 모니터에서 확인)")
+                                append("\n")
+                            }
+                            if (round >= maxRounds) {
+                                append("\n위임 라운드 한도(${maxRounds}회)에 도달했습니다. 지금까지의 결과를 종합해 사용자에게 최종 답변을 작성하세요.")
+                            } else {
+                                append("\n추가 위임이 필요하면 <<SUBAGENTS>>를 출력하고, 충분하면 사용자에게 최종 답변을 작성하세요.")
+                            }
+                        }
+                        currentPrompt = reportText
+                    }
+
+                    activeJobs.remove(session.id)
+                    val finalMsg = ChatMessage(
+                        id = placeholderId,
+                        role = MessageRole.ASSISTANT,
+                        content = finalError ?: finalAnswer.ifBlank { "(응답 없음)" },
+                        inputTokens = totalInTok,
+                        outputTokens = totalOutTok,
+                        agentName = "${conn.name} (오케스트레이터)",
+                        isError = finalError != null
+                    )
+                    sessions = sessions.map { s ->
+                        if (s.id == session.id) {
+                            s.copy(messages = s.messages.map { m -> if (m.id == placeholderId) finalMsg else m })
+                        } else s
+                    }
+                    store.saveSessions(sessions)
+                    sendingMap[session.id] = false
+                    if (activeSessionId != session.id) unreadDoneSessions[session.id] = true
+                    if (finalError == null) {
+                        onNotifyEvent(session.id, "⚡ ${conn.name} 오케스트레이션 완료", finalMsg.content.take(140), false, emptyList())
+                    } else {
+                        onNotifyEvent(session.id, "❌ ${conn.name} 오케스트레이션 오류", finalError.take(140), true, listOf("Keep going"))
+                    }
+                    val q = queuedPromptsMap[session.id].orEmpty()
+                    if (q.isNotEmpty()) {
+                        val nextPrompt = q.first()
+                        queuedPromptsMap[session.id] = q.drop(1)
+                        val latest = sessions.find { it.id == session.id }
+                        if (latest != null) sendMessageInSession(latest, conn, nextPrompt)
+                    }
+                } catch (_: CancellationException) {
+                    activeJobs.remove(session.id)
+                    sendingMap[session.id] = false
+                }
+            }
+            activeJobs[session.id] = orchJob
             return
         }
         val mentionedConn = if (text.startsWith("@")) {
@@ -517,6 +862,9 @@ fun MainScreen(
 
     fun cancelSessionTask(session: AgentSession, conn: AiConnection) {
         activeJobs.remove(session.id)?.cancel()
+        session.subagentRuns.filter { it.status == "running" }.forEach { run ->
+            subagentJobsMap.remove(run.id)?.cancel()
+        }
         sendingMap[session.id] = false
         if (conn.usesHiddenWebBridge()) {
             headlessWebBridge.cancelActiveRequest(conn.id)
@@ -526,12 +874,15 @@ fun MainScreen(
         sessions = sessions.map { s ->
             if (s.id == session.id) {
                 val last = s.messages.lastOrNull()
-                val updated = if (last != null && last.role == MessageRole.ASSISTANT && (last.content.startsWith("⏳") || last.content == "응답 대기 중...")) {
+                val updated = if (last != null && last.role == MessageRole.ASSISTANT && (last.content.startsWith("⏳") || last.content.startsWith("⚡") || last.content == "응답 대기 중...")) {
                     s.messages.dropLast(1) + last.copy(content = "⛔ 작업이 취소되었습니다.", isError = true)
                 } else {
                     s.messages + ChatMessage(id = "msg_${UUID.randomUUID()}", role = MessageRole.SYSTEM, content = "⛔ 작업이 취소되었습니다.")
                 }
-                s.copy(messages = updated)
+                val updatedRuns = s.subagentRuns.map { r ->
+                    if (r.status == "running") r.copy(status = "cancelled", output = "메인 작업 취소로 중단됨", finishedAt = System.currentTimeMillis()) else r
+                }
+                s.copy(messages = updated, subagentRuns = updatedRuns)
             } else s
         }
         store.saveSessions(sessions)
@@ -1122,7 +1473,8 @@ fun MainScreen(
                                     trimmedTitle.matches(Regex("^세션\\s*\\d+$")) ||
                                     trimmedTitle == "기본 세션" ||
                                     (conn != null && trimmedTitle == conn.name.trim())
-                                val tabLabel = if (isDefaultTitle) "${idx + 1}" else trimmedTitle
+                                val baseLabel = if (isDefaultTitle) "${idx + 1}" else trimmedTitle
+                                val tabLabel = if (sess.isOrchestration) "⚡$baseLabel" else baseLabel
                                 Text(
                                     text = tabLabel,
                                     fontSize = 12.sp,
@@ -1262,6 +1614,8 @@ fun MainScreen(
                         },
                         onRenameSession = { newTitle -> renameSession(primarySession, newTitle) },
                         onTogglePinMessage = { msgId -> togglePinMessage(primarySession.id, msgId) },
+                        onStopSubagent = { runId -> stopSubagentRun(primarySession.id, runId) },
+                        onRetrySubagent = { runId -> retrySubagentRun(primarySession.id, runId) },
                         modifier = Modifier.fillMaxSize()
                     )
                 }
@@ -1313,6 +1667,8 @@ fun MainScreen(
                             },
                             onRenameSession = { newTitle -> renameSession(primarySession, newTitle) },
                             onTogglePinMessage = { msgId -> togglePinMessage(primarySession.id, msgId) },
+                            onStopSubagent = { runId -> stopSubagentRun(primarySession.id, runId) },
+                            onRetrySubagent = { runId -> retrySubagentRun(primarySession.id, runId) },
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .weight(1f)
@@ -1368,6 +1724,8 @@ fun MainScreen(
                             },
                             onRenameSession = { newTitle -> renameSession(primarySession, newTitle) },
                             onTogglePinMessage = { msgId -> togglePinMessage(primarySession.id, msgId) },
+                            onStopSubagent = { runId -> stopSubagentRun((secondarySession ?: primarySession).id, runId) },
+                            onRetrySubagent = { runId -> retrySubagentRun((secondarySession ?: primarySession).id, runId) },
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .weight(1f)
@@ -1422,6 +1780,8 @@ fun MainScreen(
                             },
                             onRenameSession = { newTitle -> renameSession(primarySession, newTitle) },
                             onTogglePinMessage = { msgId -> togglePinMessage(primarySession.id, msgId) },
+                            onStopSubagent = { runId -> stopSubagentRun(primarySession.id, runId) },
+                            onRetrySubagent = { runId -> retrySubagentRun(primarySession.id, runId) },
                             modifier = Modifier
                                 .fillMaxSize()
                                 .weight(1f)
@@ -1477,6 +1837,8 @@ fun MainScreen(
                             },
                             onRenameSession = { newTitle -> renameSession(primarySession, newTitle) },
                             onTogglePinMessage = { msgId -> togglePinMessage(primarySession.id, msgId) },
+                            onStopSubagent = { runId -> stopSubagentRun((secondarySession ?: primarySession).id, runId) },
+                            onRetrySubagent = { runId -> retrySubagentRun((secondarySession ?: primarySession).id, runId) },
                             modifier = Modifier
                                 .fillMaxSize()
                                 .weight(1f)
@@ -1777,6 +2139,41 @@ fun MainScreen(
                     )
                     if (conn.usesHiddenWebBridge()) {
                         headlessWebBridge.getOrCreateWebView(conn.id, conn.endpointUrl)
+                    }
+                    sessions = sessions + newSess
+                    store.saveSessions(sessions)
+                    activeSessionId = newSess.id
+                    store.saveActiveSessionId(newSess.id)
+                }
+            },
+            onCreateOrchestration = { title, mainConnId, mainModel, mainEffort, subConnId, subModel, subEffort, maxParallel, maxRounds, useWorktree ->
+                val mainConn = enabledConnections.find { it.id == mainConnId } ?: return@NewSessionDialog
+                val subConn = enabledConnections.find { it.id == subConnId } ?: mainConn
+                showNewSessionDialog = false
+                scope.launch {
+                    val wtPath = if (useWorktree && activeProject.workDir.isNotBlank()) {
+                        GitBridgeClient.createWorktree(activeProject.workDir, title) ?: ""
+                    } else ""
+                    val newSess = AgentSession(
+                        id = "sess_${UUID.randomUUID()}",
+                        projectId = activeProject.id,
+                        title = title,
+                        connectionId = mainConn.id,
+                        selectedModel = mainModel,
+                        selectedEffort = mainEffort,
+                        worktreePath = wtPath,
+                        isOrchestration = true,
+                        subConnectionId = subConn.id,
+                        subModel = subModel,
+                        subEffort = subEffort,
+                        maxParallelSubagents = maxParallel.coerceIn(1, 8),
+                        maxDelegationRounds = maxRounds.coerceIn(1, 6)
+                    )
+                    if (mainConn.usesHiddenWebBridge()) {
+                        headlessWebBridge.getOrCreateWebView(mainConn.id, mainConn.endpointUrl)
+                    }
+                    if (subConn.usesHiddenWebBridge() && subConn.id != mainConn.id) {
+                        headlessWebBridge.getOrCreateWebView(subConn.id, subConn.endpointUrl)
                     }
                     sessions = sessions + newSess
                     store.saveSessions(sessions)
@@ -2092,17 +2489,64 @@ private fun NewSessionDialog(
     onDismiss: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenExisting: () -> Unit = {},
-    onCreate: (title: String, connectionId: String, useWorktree: Boolean) -> Unit
+    onCreate: (title: String, connectionId: String, useWorktree: Boolean) -> Unit,
+    onCreateOrchestration: (
+        title: String,
+        mainConnId: String,
+        mainModel: String,
+        mainEffort: String,
+        subConnId: String,
+        subModel: String,
+        subEffort: String,
+        maxParallel: Int,
+        maxRounds: Int,
+        useWorktree: Boolean
+    ) -> Unit = { _, _, _, _, _, _, _, _, _, _ -> }
 ) {
+    var isOrchMode by remember { mutableStateOf(false) }
     var title by remember { mutableStateOf("세션 $defaultIndex") }
     var selectedConnId by remember { mutableStateOf(enabledConnections.firstOrNull()?.id) }
+    var subConnId by remember { mutableStateOf(enabledConnections.firstOrNull()?.id) }
+
+    val mainConn = enabledConnections.find { it.id == selectedConnId }
+    val subConn = enabledConnections.find { it.id == subConnId } ?: mainConn
+    val mainModels = remember(mainConn?.id) { mainConn?.let { availableModelsFor(it) } ?: emptyList() }
+    val subModels = remember(subConn?.id) { subConn?.let { availableModelsFor(it) } ?: emptyList() }
+
+    var mainModel by remember(mainConn?.id) {
+        mutableStateOf(mainConn?.let { it.model.ifBlank { defaultModelFor(it) } } ?: "")
+    }
+    var subModel by remember(subConn?.id) {
+        mutableStateOf(
+            subModels.lastOrNull { m ->
+                val l = m.lowercase()
+                l.contains("mini") || l.contains("haiku") || l.contains("flash") || l.contains("fast") || l.contains("lite")
+            } ?: subConn?.let { it.model.ifBlank { defaultModelFor(it) } } ?: ""
+        )
+    }
+    val mainEfforts = remember(mainConn?.id, mainModel) {
+        if (mainConn != null) availableEffortsFor(mainConn, mainModel) else emptyList()
+    }
+    val subEfforts = remember(subConn?.id, subModel) {
+        if (subConn != null) availableEffortsFor(subConn, subModel) else emptyList()
+    }
+    var mainEffort by remember(mainConn?.id, mainModel) { mutableStateOf("") }
+    var subEffort by remember(subConn?.id, subModel) { mutableStateOf("") }
+
+    var maxParallel by remember { mutableIntStateOf(3) }
+    var maxRounds by remember { mutableIntStateOf(3) }
     var useWorktree by remember { mutableStateOf(false) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("새 하위 세션") },
+        title = { Text(if (isOrchMode) "⚡ 새 오케스트레이션 세션" else "새 하위 세션", fontSize = 16.sp, fontWeight = FontWeight.Bold) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(
+                modifier = Modifier
+                    .heightIn(max = 460.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
                 if (enabledConnections.isEmpty()) {
                     Text(
                         "등록된 AI / CLI 연결이 없습니다. 먼저 설정에서 연결을 추가해주세요.",
@@ -2110,6 +2554,34 @@ private fun NewSessionDialog(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 } else {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        FilterChip(
+                            selected = !isOrchMode,
+                            onClick = {
+                                if (isOrchMode) {
+                                    isOrchMode = false
+                                    if (title == "오케스트레이션 $defaultIndex") title = "세션 $defaultIndex"
+                                }
+                            },
+                            label = { Text("일반 세션", fontSize = 12.sp) },
+                            modifier = Modifier.weight(1f)
+                        )
+                        FilterChip(
+                            selected = isOrchMode,
+                            onClick = {
+                                if (!isOrchMode) {
+                                    isOrchMode = true
+                                    if (title == "세션 $defaultIndex") title = "오케스트레이션 $defaultIndex"
+                                }
+                            },
+                            label = { Text("⚡ 오케스트레이션", fontSize = 12.sp) },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+
                     OutlinedTextField(
                         value = title,
                         onValueChange = { title = it },
@@ -2117,38 +2589,201 @@ private fun NewSessionDialog(
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
-                    Text("사용할 AI 선택 (등록된 연결만 표시)", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                    enabledConnections.forEach { conn ->
-                        val selected = conn.id == selectedConnId
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
-                            border = BorderStroke(
-                                1.dp,
-                                if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)
-                            ),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { selectedConnId = conn.id }
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(10.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
+
+                    if (!isOrchMode) {
+                        Text("사용할 AI 선택 (등록된 연결만 표시)", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        enabledConnections.forEach { conn ->
+                            val selected = conn.id == selectedConnId
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
+                                border = BorderStroke(
+                                    1.dp,
+                                    if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)
+                                ),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { selectedConnId = conn.id }
                             ) {
-                                Text(conn.name, fontWeight = FontWeight.Medium, fontSize = 14.sp)
-                                Text(conn.kind.displayLabel(), fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
+                                Row(
+                                    modifier = Modifier.padding(10.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(conn.name, fontWeight = FontWeight.Medium, fontSize = 14.sp)
+                                    Text(conn.kind.displayLabel(), fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
+                                }
                             }
                         }
-                    }
-                    if (enabledConnections.isNotEmpty()) {
                         OutlinedButton(
                             onClick = onOpenExisting,
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Text("기존 외부 세션 불러오기", fontSize = 12.sp)
                         }
+                    } else {
+                        Text(
+                            "메인 AI와만 대화하면 필요할 때 서브 AI를 자동으로 병렬 생성해 작업합니다.",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+
+                        // Main AI selection
+                        Text("메인 AI (지휘자 · 고성능 권장)", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                        ) {
+                            enabledConnections.forEach { conn ->
+                                FilterChip(
+                                    selected = conn.id == selectedConnId,
+                                    onClick = { selectedConnId = conn.id },
+                                    label = { Text(conn.name, fontSize = 11.sp) }
+                                )
+                            }
+                        }
+                        if (mainModels.isNotEmpty()) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                mainModels.forEach { m ->
+                                    FilterChip(
+                                        selected = m == mainModel,
+                                        onClick = { mainModel = m },
+                                        label = { Text(m, fontSize = 10.sp) }
+                                    )
+                                }
+                            }
+                        }
+                        if (mainEfforts.isNotEmpty()) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("Effort:", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                mainEfforts.forEach { ef ->
+                                    FilterChip(
+                                        selected = ef == mainEffort,
+                                        onClick = { mainEffort = if (mainEffort == ef) "" else ef },
+                                        label = { Text(ef, fontSize = 10.sp) }
+                                    )
+                                }
+                            }
+                        }
+
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
+
+                        // Sub AI selection
+                        Text("서브 AI (작업자 · 같은 AI의 저비용 모델 가능)", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                        ) {
+                            enabledConnections.forEach { conn ->
+                                FilterChip(
+                                    selected = conn.id == subConnId,
+                                    onClick = { subConnId = conn.id },
+                                    label = { Text(conn.name, fontSize = 11.sp) }
+                                )
+                            }
+                        }
+                        if (subModels.isNotEmpty()) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                subModels.forEach { m ->
+                                    FilterChip(
+                                        selected = m == subModel,
+                                        onClick = { subModel = m },
+                                        label = { Text(m, fontSize = 10.sp) }
+                                    )
+                                }
+                            }
+                        }
+                        if (subEfforts.isNotEmpty()) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("Effort:", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                subEfforts.forEach { ef ->
+                                    FilterChip(
+                                        selected = ef == subEffort,
+                                        onClick = { subEffort = if (subEffort == ef) "" else ef },
+                                        label = { Text(ef, fontSize = 10.sp) }
+                                    )
+                                }
+                            }
+                        }
+
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
+
+                        // #3 User-configurable guardrail limits
+                        Text("안전 제한 설정", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text("최대 동시 서브에이전트", fontSize = 12.sp)
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                OutlinedButton(
+                                    onClick = { if (maxParallel > 1) maxParallel-- },
+                                    contentPadding = PaddingValues(0.dp),
+                                    modifier = Modifier.size(28.dp)
+                                ) { Text("-", fontSize = 14.sp) }
+                                Text("${maxParallel}개", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                                OutlinedButton(
+                                    onClick = { if (maxParallel < 8) maxParallel++ },
+                                    contentPadding = PaddingValues(0.dp),
+                                    modifier = Modifier.size(28.dp)
+                                ) { Text("+", fontSize = 14.sp) }
+                            }
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text("최대 위임 라운드", fontSize = 12.sp)
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                OutlinedButton(
+                                    onClick = { if (maxRounds > 1) maxRounds-- },
+                                    contentPadding = PaddingValues(0.dp),
+                                    modifier = Modifier.size(28.dp)
+                                ) { Text("-", fontSize = 14.sp) }
+                                Text("${maxRounds}회", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                                OutlinedButton(
+                                    onClick = { if (maxRounds < 6) maxRounds++ },
+                                    contentPadding = PaddingValues(0.dp),
+                                    modifier = Modifier.size(28.dp)
+                                ) { Text("+", fontSize = 14.sp) }
+                            }
+                        }
                     }
+
                     if (hasWorkDir) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -2175,11 +2810,26 @@ private fun NewSessionDialog(
                     enabled = selectedConnId != null,
                     onClick = {
                         selectedConnId?.let { id ->
-                            onCreate(title.trim().ifEmpty { "세션 $defaultIndex" }, id, useWorktree)
+                            if (isOrchMode) {
+                                onCreateOrchestration(
+                                    title.trim().ifEmpty { "오케스트레이션 $defaultIndex" },
+                                    id,
+                                    mainModel,
+                                    mainEffort,
+                                    subConnId ?: id,
+                                    subModel,
+                                    subEffort,
+                                    maxParallel,
+                                    maxRounds,
+                                    useWorktree
+                                )
+                            } else {
+                                onCreate(title.trim().ifEmpty { "세션 $defaultIndex" }, id, useWorktree)
+                            }
                         }
                     }
                 ) {
-                    Text("생성")
+                    Text(if (isOrchMode) "오케스트레이션 시작" else "생성")
                 }
             }
         },
