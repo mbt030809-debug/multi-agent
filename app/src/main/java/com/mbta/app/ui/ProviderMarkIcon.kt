@@ -65,14 +65,16 @@ private fun detectProviderBrand(connection: AiConnection?): ProviderBrand {
 @Composable
 fun ProviderMarkIcon(
     connection: AiConnection?,
-    size: Dp = 16.dp
+    size: Dp = 16.dp,
+    monochrome: Boolean = false
 ) {
+    val monoBg = Color(0xFF52525B)
     when (detectProviderBrand(connection)) {
         ProviderBrand.CLAUDE -> {
             Box(
                 modifier = Modifier
                     .size(size)
-                    .background(Color(0xFFD97757), CircleShape),
+                    .background(if (monochrome) monoBg else Color(0xFFD97757), CircleShape),
                 contentAlignment = Alignment.Center
             ) {
                 Canvas(modifier = Modifier.size(size)) {
@@ -92,7 +94,7 @@ fun ProviderMarkIcon(
             Box(
                 modifier = Modifier
                     .size(size)
-                    .background(Color(0xFF4285F4), CircleShape),
+                    .background(if (monochrome) monoBg else Color(0xFF4285F4), CircleShape),
                 contentAlignment = Alignment.Center
             ) {
                 Canvas(modifier = Modifier.size(size)) {
@@ -115,7 +117,7 @@ fun ProviderMarkIcon(
             Box(
                 modifier = Modifier
                     .size(size)
-                    .background(Color(0xFF10A37F), CircleShape),
+                    .background(if (monochrome) monoBg else Color(0xFF10A37F), CircleShape),
                 contentAlignment = Alignment.Center
             ) {
                 Canvas(modifier = Modifier.size(size)) {
@@ -142,7 +144,7 @@ fun ProviderMarkIcon(
             Box(
                 modifier = Modifier
                     .size(size)
-                    .background(Color(0xFF6366F1), CircleShape),
+                    .background(if (monochrome) monoBg else Color(0xFF6366F1), CircleShape),
                 contentAlignment = Alignment.Center
             ) {
                 Canvas(modifier = Modifier.size(size)) {
@@ -163,12 +165,12 @@ fun ProviderMarkIcon(
             Box(
                 modifier = Modifier
                     .size(size)
-                    .background(Color(0xFF263238), RoundedCornerShape(4.dp)),
+                    .background(if (monochrome) monoBg else Color(0xFF263238), RoundedCornerShape(4.dp)),
                 contentAlignment = Alignment.Center
             ) {
                 Text(
                     text = ">_",
-                    color = Color(0xFF4ADE80),
+                    color = if (monochrome) Color.White else Color(0xFF4ADE80),
                     fontSize = (size.value * 0.48f).sp,
                     fontWeight = FontWeight.Bold,
                     fontFamily = FontFamily.Monospace
@@ -180,7 +182,7 @@ fun ProviderMarkIcon(
             Box(
                 modifier = Modifier
                     .size(size)
-                    .background(Color(0xFF607D8B), CircleShape),
+                    .background(if (monochrome) monoBg else Color(0xFF607D8B), CircleShape),
                 contentAlignment = Alignment.Center
             ) {
                 Text(

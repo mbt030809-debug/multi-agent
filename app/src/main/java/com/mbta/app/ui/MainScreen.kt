@@ -443,7 +443,12 @@ fun MainScreen(
             )
             val baseHistory = session.messages
             sessions = sessions.map {
-                if (it.id == session.id) it.copy(messages = it.messages + userMsg + placeholder) else it
+                if (it.id == session.id) {
+                    it.copy(
+                        messages = it.messages + userMsg + placeholder,
+                        subagentRuns = it.subagentRuns.filter { r -> r.status == "running" }
+                    )
+                } else it
             }
             store.saveSessions(sessions)
             sendingMap[session.id] = true

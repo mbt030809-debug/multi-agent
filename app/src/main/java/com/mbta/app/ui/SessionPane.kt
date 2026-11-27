@@ -657,85 +657,69 @@ fun SessionPane(
 
         if (session.isOrchestration) {
             val subConn = enabledConnections.find { it.id == (session.subConnectionId ?: session.connectionId) }
-            val subModelLabel = session.subModel.ifBlank { subConn?.let { defaultModelFor(it) } ?: "" }
-            val runningCount = session.subagentRuns.count { it.status == "running" }
+            val sensLabel = when (session.subagentSensitivity) {
+                "high" -> "높음"
+                "low" -> "낮음"
+                else -> "보통"
+            }
             Surface(
                 color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Column(
+                Row(
                     modifier = Modifier
                         .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
                         .padding(horizontal = 8.dp, vertical = 4.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
                 ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Text(
-                            text = "⚡ 오케스트레이션",
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                        val sensLabel = when (session.subagentSensitivity) {
-                            "high" -> "높음"
-                            "low" -> "낮음"
-                            else -> "보통"
+                    Icon(
+                        imageVector = Icons.Default.AccountTree,
+                        contentDescription = "Orch",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(13.dp)
+                    )
+                    Text(
+                        text = "Orch",
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    ProviderMarkIcon(
+                        connection = subConn,
+                        size = 14.dp,
+                        monochrome = true
+                    )
+                    Text(
+                        text = "${session.maxParallelSubagents}×${session.maxDelegationRounds} $sensLabel",
+                        fontSize = 9.5.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    session.subagentRuns.takeLast(12).forEach { run ->
+                        val (icon, fgColor, bgColor) = when (run.status) {
+                            "running" -> Triple("⏳", MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f))
+                            "done" -> Triple("✓", androidx.compose.ui.graphics.Color(0xFF15803D), androidx.compose.ui.graphics.Color(0xFF22C55E).copy(alpha = 0.14f))
+                            "error" -> Triple("✗", MaterialTheme.colorScheme.error, MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.65f))
+                            else -> Triple("■", MaterialTheme.colorScheme.onSurfaceVariant, MaterialTheme.colorScheme.surface.copy(alpha = 0.8f))
                         }
-                        Text(
-                            text = "서브: ${subConn?.name ?: "동일"}${if (subModelLabel.isNotBlank()) " · $subModelLabel" else ""} (${session.maxParallelSubagents}×${session.maxDelegationRounds} · $sensLabel)",
-                            fontSize = 9.5.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f)
-                        )
-                        if (runningCount > 0) {
-                            Text(
-                                text = "실행중 $runningCount",
-                                fontSize = 9.5.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                        }
-                    }
-                    if (session.subagentRuns.isNotEmpty()) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(5.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                        Surface(
+                            shape = RoundedCornerShape(7.dp),
+                            color = bgColor,
+                            border = BorderStroke(0.8.dp, fgColor.copy(alpha = 0.45f)),
+                            modifier = Modifier.clickable { inspectingSubagentId = run.id }
                         ) {
-                            session.subagentRuns.takeLast(12).forEach { run ->
-                                val (icon, fgColor, bgColor) = when (run.status) {
-                                    "running" -> Triple("⏳", MaterialTheme.colorScheme.primary, MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f))
-                                    "done" -> Triple("✓", androidx.compose.ui.graphics.Color(0xFF15803D), androidx.compose.ui.graphics.Color(0xFF22C55E).copy(alpha = 0.14f))
-                                    "error" -> Triple("✗", MaterialTheme.colorScheme.error, MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.65f))
-                                    else -> Triple("■", MaterialTheme.colorScheme.onSurfaceVariant, MaterialTheme.colorScheme.surface.copy(alpha = 0.8f))
-                                }
-                                Surface(
-                                    shape = RoundedCornerShape(7.dp),
-                                    color = bgColor,
-                                    border = BorderStroke(0.8.dp, fgColor.copy(alpha = 0.45f)),
-                                    modifier = Modifier.clickable { inspectingSubagentId = run.id }
-                                ) {
-                                    Text(
-                                        text = "$icon ${run.label}",
-                                        fontSize = 10.sp,
-                                        fontWeight = FontWeight.Medium,
-                                        color = fgColor,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        modifier = Modifier
-                                            .widthIn(max = 150.dp)
-                                            .padding(horizontal = 6.dp, vertical = 2.dp)
-                                    )
-                                }
-                            }
+                            Text(
+                                text = "$icon ${run.label}",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = fgColor,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier
+                                    .widthIn(max = 140.dp)
+                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
                         }
                     }
                 }
