@@ -102,18 +102,22 @@ object AppUpdater {
                 val body = resp.body ?: return@withContext null
                 val total = body.contentLength()
                 body.byteStream().use { input ->
-                    FileOutputStream(outFile).use { output ->
-                        val buf = ByteArray(8192)
+                    java.io.BufferedOutputStream(FileOutputStream(outFile), 65536).use { output ->
+                        val buf = ByteArray(65536)
                         var copied = 0L
+                        var lastEmit = 0L
                         while (true) {
                             val read = input.read(buf)
                             if (read == -1) break
                             output.write(buf, 0, read)
                             copied += read
-                            if (total > 0) {
+                            val now = System.currentTimeMillis()
+                            if (total > 0 && now - lastEmit >= 120L) {
+                                lastEmit = now
                                 onProgress((copied.toFloat() / total.toFloat()).coerceIn(0f, 1f))
                             }
                         }
+                        if (total > 0) onProgress(1f)
                     }
                 }
             }
