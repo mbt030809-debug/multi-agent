@@ -34,7 +34,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.AccountTree
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Close
@@ -154,7 +153,6 @@ fun MainScreen(
     var loginConnection by remember { mutableStateOf<AiConnection?>(null) }
     var showTokenDashboard by remember { mutableStateOf(false) }
     var showGlobalSearch by remember { mutableStateOf(false) }
-    var showOrchestrationDialog by remember { mutableStateOf(false) }
     val autoRetryCountMap = remember { mutableStateMapOf<String, Int>() }
     var showGitDialog by remember { mutableStateOf(false) }
     var showFanOutDialog by remember { mutableStateOf(false) }
@@ -1202,118 +1200,6 @@ fun MainScreen(
         sendMessageInSession(cleaned, conn, lastPrompt)
     }
 
-    fun runOrchestration(goal: String, steps: List<OrchestrationStep>) {
-        val firstConnId = steps.firstOrNull()?.connectionId ?: return
-        val orchSess = AgentSession(
-            id = "sess_${UUID.randomUUID()}",
-            projectId = activeProject.id,
-            title = "오케스트레이션",
-            connectionId = firstConnId,
-            messages = listOf(
-                ChatMessage(
-                    id = "msg_${UUID.randomUUID()}",
-                    role = MessageRole.USER,
-                    content = goal
-                )
-            )
-        )
-        sessions = sessions + orchSess
-        store.saveSessions(sessions)
-        activeSessionId = orchSess.id
-        store.saveActiveSessionId(orchSess.id)
-        sendingMap[orchSess.id] = true
-
-        scope.launch {
-            var prevOutput = ""
-            for ((idx, step) in steps.withIndex()) {
-                val conn = enabledConnections.find { it.id == step.connectionId } ?: continue
-                val stepPrompt = buildString {
-                    append("목표: ").append(goal).append("\n")
-                    if (step.roleInstruction.isNotBlank()) {
-                        append("역할: ").append(step.roleInstruction).append("\n")
-                    }
-                    if (prevOutput.isNotBlank()) {
-                        append("\n이전 단계 결과:\n").append(prevOutput)
-                    }
-                }
-
-                if (conn.usesHiddenWebBridge()) {
-                    val (triple, errMsg) = headlessWebBridge.sendPromptSuspend(
-                        key = conn.id,
-                        kind = conn.kind,
-                        url = conn.endpointUrl,
-                        prompt = stepPrompt
-                    )
-                    val out = triple.first
-                    if (errMsg != null) {
-                        val errBubble = ChatMessage(
-                            id = "msg_${UUID.randomUUID()}",
-                            role = MessageRole.ASSISTANT,
-                            content = errMsg,
-                            agentName = "${idx + 1}단계 · ${conn.name}",
-                            isError = true
-                        )
-                        sessions = sessions.map {
-                            if (it.id == orchSess.id) it.copy(messages = it.messages + errBubble) else it
-                        }
-                        store.saveSessions(sessions)
-                        break
-                    }
-                    prevOutput = out
-                    onRecordTokens(conn.id, conn.kind, triple.second, triple.third)
-                    val msg = ChatMessage(
-                        id = "msg_${UUID.randomUUID()}",
-                        role = MessageRole.ASSISTANT,
-                        content = out,
-                        inputTokens = triple.second,
-                        outputTokens = triple.third,
-                        agentName = "${idx + 1}단계 · ${conn.name} (${step.roleInstruction})"
-                    )
-                    sessions = sessions.map {
-                        if (it.id == orchSess.id) it.copy(messages = it.messages + msg) else it
-                    }
-                    store.saveSessions(sessions)
-                    continue
-                } else {
-                    val orchDir = orchSess.worktreePath.ifBlank { activeProject.workDir }
-                    val reply = AiApiClient.send(conn, emptyList(), stepPrompt, orchSess.id, cwd = orchDir)
-                    if (reply.error != null) {
-                        val errBubble = ChatMessage(
-                            id = "msg_${UUID.randomUUID()}",
-                            role = MessageRole.ASSISTANT,
-                            content = reply.error,
-                            agentName = "${idx + 1}단계 · ${conn.name}",
-                            isError = true
-                        )
-                        sessions = sessions.map {
-                            if (it.id == orchSess.id) it.copy(messages = it.messages + errBubble) else it
-                        }
-                        store.saveSessions(sessions)
-                        break
-                    }
-                    prevOutput = reply.text
-                    if (reply.inputTokens > 0L || reply.outputTokens > 0L) {
-                        onRecordTokens(conn.id, conn.kind, reply.inputTokens, reply.outputTokens)
-                    }
-                    val msg = ChatMessage(
-                        id = "msg_${UUID.randomUUID()}",
-                        role = MessageRole.ASSISTANT,
-                        content = reply.text,
-                        inputTokens = reply.inputTokens,
-                        outputTokens = reply.outputTokens,
-                        agentName = "${idx + 1}단계 · ${conn.name} (${step.roleInstruction})"
-                    )
-                    sessions = sessions.map {
-                        if (it.id == orchSess.id) it.copy(messages = it.messages + msg) else it
-                    }
-                    store.saveSessions(sessions)
-                }
-            }
-            sendingMap[orchSess.id] = false
-            onNotifyIfBackground("오케스트레이션 완료", prevOutput.take(120).ifBlank { "파이프라인이 종료되었습니다." })
-        }
-    }
-
     fun cycleSplitMode() {
         val next = when (splitMode) {
             SplitMode.SINGLE -> SplitMode.SPLIT_VERTICAL
@@ -1535,11 +1421,6 @@ fun MainScreen(
                             Icon(Icons.Default.CompareArrows, contentDescription = "동시 비교", modifier = Modifier.size(18.dp))
                         }
                     }
-                    if (enabledConnections.isNotEmpty()) {
-                        IconButton(onClick = { showOrchestrationDialog = true }, modifier = Modifier.size(32.dp)) {
-                            Icon(Icons.Default.AccountTree, contentDescription = "오케스트레이션", modifier = Modifier.size(18.dp))
-                        }
-                    }
                     IconButton(onClick = { cycleSplitMode() }, modifier = Modifier.size(32.dp)) {
                         val icon = when (splitMode) {
                             SplitMode.SINGLE -> Icons.Default.ViewAgenda
@@ -1730,7 +1611,6 @@ fun MainScreen(
                             if (primaryConn != null) retryLastInSession(primarySession, primaryConn)
                         },
                         onClearSession = { clearSessionMessages(primarySession) },
-                        onOpenOrchestration = { showOrchestrationDialog = true },
                         onShareMarkdown = { shareSessionAsMarkdown(context, activeProject, primarySession) },
                         onSelectModel = { model ->
                             if (primaryConn != null) selectModelForSession(primarySession, primaryConn, model)
@@ -1786,8 +1666,7 @@ fun MainScreen(
                                 if (primaryConn != null) retryLastInSession(primarySession, primaryConn)
                             },
                             onClearSession = { clearSessionMessages(primarySession) },
-                            onOpenOrchestration = { showOrchestrationDialog = true },
-                            onShareMarkdown = { shareSessionAsMarkdown(context, activeProject, primarySession) },
+                                onShareMarkdown = { shareSessionAsMarkdown(context, activeProject, primarySession) },
                             onSelectModel = { model ->
                                 if (primaryConn != null) selectModelForSession(primarySession, primaryConn, model)
                             },
@@ -1844,8 +1723,7 @@ fun MainScreen(
                                 if (secondaryConn != null) retryLastInSession(targetSess, secondaryConn)
                             },
                             onClearSession = { clearSessionMessages(secondarySession ?: primarySession) },
-                            onOpenOrchestration = { showOrchestrationDialog = true },
-                            onShareMarkdown = { shareSessionAsMarkdown(context, activeProject, secondarySession ?: primarySession) },
+                                onShareMarkdown = { shareSessionAsMarkdown(context, activeProject, secondarySession ?: primarySession) },
                             onSelectModel = { model ->
                                 val targetSess = secondarySession ?: primarySession
                                 if (secondaryConn != null) selectModelForSession(targetSess, secondaryConn, model)
@@ -1905,8 +1783,7 @@ fun MainScreen(
                                 if (primaryConn != null) retryLastInSession(primarySession, primaryConn)
                             },
                             onClearSession = { clearSessionMessages(primarySession) },
-                            onOpenOrchestration = { showOrchestrationDialog = true },
-                            onShareMarkdown = { shareSessionAsMarkdown(context, activeProject, primarySession) },
+                                onShareMarkdown = { shareSessionAsMarkdown(context, activeProject, primarySession) },
                             onSelectModel = { model ->
                                 if (primaryConn != null) selectModelForSession(primarySession, primaryConn, model)
                             },
@@ -1963,8 +1840,7 @@ fun MainScreen(
                                 if (secondaryConn != null) retryLastInSession(targetSess, secondaryConn)
                             },
                             onClearSession = { clearSessionMessages(secondarySession ?: primarySession) },
-                            onOpenOrchestration = { showOrchestrationDialog = true },
-                            onShareMarkdown = { shareSessionAsMarkdown(context, activeProject, secondarySession ?: primarySession) },
+                                onShareMarkdown = { shareSessionAsMarkdown(context, activeProject, secondarySession ?: primarySession) },
                             onSelectModel = { model ->
                                 val targetSess = secondarySession ?: primarySession
                                 if (secondaryConn != null) selectModelForSession(targetSess, secondaryConn, model)
@@ -2129,17 +2005,6 @@ fun MainScreen(
                 activeProjectId = projects.first().id
                 store.saveActiveProjectId(activeProjectId)
                 editingProject = null
-            }
-        )
-    }
-
-    if (showOrchestrationDialog) {
-        OrchestrationDialog(
-            enabledConnections = enabledConnections,
-            onDismiss = { showOrchestrationDialog = false },
-            onRun = { goal, steps ->
-                showOrchestrationDialog = false
-                runOrchestration(goal, steps)
             }
         )
     }

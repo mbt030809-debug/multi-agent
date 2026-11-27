@@ -47,6 +47,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.AccountTree
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.CallSplit
 import androidx.compose.material.icons.filled.Close
@@ -260,7 +261,6 @@ fun SessionPane(
     onSendMessage: (String) -> Unit,
     onRetryLast: () -> Unit,
     onClearSession: () -> Unit,
-    onOpenOrchestration: () -> Unit,
     onShareMarkdown: () -> Unit,
     onSelectModel: (String) -> Unit,
     onSelectEffort: (String) -> Unit = {},
@@ -584,12 +584,10 @@ fun SessionPane(
                     modifier = Modifier.size(26.dp)
                 ) {
                     Icon(
-                        Icons.Default.CallSplit,
+                        Icons.Default.AccountTree,
                         contentDescription = "현재 세션에 서브 모델 연결",
                         tint = if (session.isOrchestration) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier
-                            .size(16.dp)
-                            .scale(scaleX = 1f, scaleY = -1f)
+                        modifier = Modifier.size(17.dp)
                     )
                 }
             }
@@ -829,7 +827,7 @@ fun SessionPane(
                                             if (skill.isAction) {
                                                 inputText = ""
                                                 when (skill.command) {
-                                                    "/orchestrate" -> onOpenOrchestration()
+                                                    "/orchestrate" -> showAttachOrchDialog = true
                                                     "/clear" -> onClearSession()
                                                 }
                                             } else {
