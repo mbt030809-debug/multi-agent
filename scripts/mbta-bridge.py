@@ -882,7 +882,9 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
             effort = (data.get("effort") or "").strip().lower()
             if effort in ("low", "medium", "high", "max"):
                 cmd.extend(["--effort", effort])
-            if permission_mode in ("plan", "acceptEdits", "auto", "default", "bypassPermissions", "dontAsk"):
+            if data.get("skip_permissions"):
+                cmd.append("--dangerously-skip-permissions")
+            elif permission_mode in ("plan", "acceptEdits", "auto", "default", "bypassPermissions", "dontAsk"):
                 cmd.extend(["--permission-mode", permission_mode])
             if key:
                 with SESSION_LOCK:
@@ -920,10 +922,10 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
             model = normalize_agy_model(data.get("model") or "")
             permission_mode = (data.get("permission_mode") or "").strip()
             cmd = ["agy", "-p", prompt, "--output-format", "stream-json"]
-            if permission_mode == "plan":
-                cmd.extend(["--mode", "plan"])
-            elif permission_mode == "auto":
+            if data.get("skip_permissions") or permission_mode == "auto":
                 cmd.extend(["--mode", "auto", "--dangerously-skip-permissions"])
+            elif permission_mode == "plan":
+                cmd.extend(["--mode", "plan"])
             else:
                 cmd.extend(["--mode", "accept-edits"])
             if model:

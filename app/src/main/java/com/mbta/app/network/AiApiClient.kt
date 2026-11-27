@@ -126,7 +126,8 @@ object AiApiClient {
         sessionId: String = "",
         cwd: String = "",
         cliSessionId: String = "",
-        effort: String = ""
+        effort: String = "",
+        skipPermissions: Boolean = false
     ): AiReply = withContext(Dispatchers.IO) {
         if (connection.kind != ConnectionKind.TERMUX_CLI &&
             connection.kind != ConnectionKind.REMOTE_CONTROL &&
@@ -144,7 +145,7 @@ object AiApiClient {
                 ConnectionKind.OPENAI_API -> sendOpenAi(connection, history, userMessage, effort)
                 ConnectionKind.GEMINI_API -> sendGemini(connection, history, userMessage)
                 ConnectionKind.TERMUX_CLI -> sendTermuxCli(connection, userMessage)
-                ConnectionKind.REMOTE_CONTROL -> sendRemoteControl(connection, history, userMessage, sessionId, cwd, cliSessionId, effort)
+                ConnectionKind.REMOTE_CONTROL -> sendRemoteControl(connection, history, userMessage, sessionId, cwd, cliSessionId, effort, skipPermissions)
                 else -> AiReply(text = "", error = "지원하지 않는 연결 형식입니다.")
             }
         } catch (e: Exception) {
@@ -405,7 +406,8 @@ object AiApiClient {
         sessionId: String,
         cwd: String = "",
         cliSessionId: String = "",
-        effort: String = ""
+        effort: String = "",
+        skipPermissions: Boolean = false
     ): AiReply {
         val url = connection.endpointUrl.ifBlank { defaultEndpointFor(ConnectionKind.REMOTE_CONTROL) }
         val isLocalBridge = (url.contains("127.0.0.1:8765/agy") || url.contains("127.0.0.1:8765/claude") ||
@@ -431,7 +433,10 @@ object AiApiClient {
             if (cwd.isNotBlank()) {
                 put("cwd", JsonPrimitive(cwd))
             }
-            if (connection.permissionMode.isNotBlank()) {
+            if (skipPermissions) {
+                put("skip_permissions", JsonPrimitive(true))
+                put("permission_mode", JsonPrimitive("auto"))
+            } else if (connection.permissionMode.isNotBlank()) {
                 put("permission_mode", JsonPrimitive(connection.permissionMode))
             }
             put("history", buildJsonArray {

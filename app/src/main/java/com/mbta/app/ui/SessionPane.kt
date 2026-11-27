@@ -54,10 +54,12 @@ import androidx.compose.material.icons.filled.CallSplit
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.GppMaybe
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.AlertDialog
@@ -306,6 +308,7 @@ fun SessionPane(
     onStopSubagent: (String) -> Unit = {},
     onRetrySubagent: (String) -> Unit = {},
     onAttachOrchestration: (enabled: Boolean, subConnId: String?, subModel: String, subEffort: String, maxParallel: Int, maxRounds: Int) -> Unit = { _, _, _, _, _, _ -> },
+    onToggleSkipPermissions: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var inputText by remember(session.id) { mutableStateOf("") }
@@ -320,6 +323,7 @@ fun SessionPane(
     var dismissedQuestionMsgId by remember(session.id) { mutableStateOf("") }
     var expandedQuestionMsgId by remember(session.id) { mutableStateOf<String?>(null) }
     var autoOpenedQuestionMsgId by remember(session.id) { mutableStateOf("") }
+    var autoApprovedMsgId by remember(session.id) { mutableStateOf("") }
     val listState = remember(session.id) {
         androidx.compose.foundation.lazy.LazyListState(
             firstVisibleItemIndex = (session.messages.size - 1).coerceAtLeast(0),
@@ -616,6 +620,34 @@ fun SessionPane(
                         Icons.Default.AccountTree,
                         contentDescription = "현재 세션에 서브 모델 연결",
                         tint = if (session.isOrchestration) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(17.dp)
+                    )
+                }
+            }
+
+            Surface(
+                onClick = {
+                    val nextOn = !session.skipPermissions
+                    onToggleSkipPermissions()
+                    android.widget.Toast.makeText(
+                        context,
+                        if (nextOn) "⚡ 자동 승인 ON (--dangerously-skip-permissions)" else "🔒 자동 승인 OFF",
+                        android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                },
+                shape = RoundedCornerShape(6.dp),
+                color = if (session.skipPermissions) {
+                    MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.85f)
+                } else {
+                    androidx.compose.ui.graphics.Color.Transparent
+                },
+                modifier = Modifier.size(26.dp)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = if (session.skipPermissions) Icons.Default.GppMaybe else Icons.Default.Shield,
+                        contentDescription = "권한 자동 승인 토글",
+                        tint = if (session.skipPermissions) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.size(17.dp)
                     )
                 }
@@ -1035,10 +1067,24 @@ fun SessionPane(
                     if (q != null && (!isSending || q.isPermission)) q else null
                 }
             }
-            LaunchedEffect(lastMsg?.id, detectedQuestion?.isPermission) {
-                if (detectedQuestion != null && lastMsg != null && autoOpenedQuestionMsgId != lastMsg.id) {
-                    autoOpenedQuestionMsgId = lastMsg.id
-                    expandedQuestionMsgId = lastMsg.id
+            LaunchedEffect(lastMsg?.id, detectedQuestion?.isPermission, session.skipPermissions) {
+                if (detectedQuestion != null && lastMsg != null) {
+                    if (detectedQuestion.isPermission && session.skipPermissions && autoApprovedMsgId != lastMsg.id) {
+                        autoApprovedMsgId = lastMsg.id
+                        dismissedQuestionMsgId = lastMsg.id
+                        expandedQuestionMsgId = null
+                        android.widget.Toast.makeText(context, "⚡ 권한 자동 승인됨", android.widget.Toast.LENGTH_SHORT).show()
+                        if (connection != null && connection.usesHiddenWebBridge() && headlessWebBridge != null) {
+                            headlessWebBridge.clickWebActionButton(connection.id, "허용") { clicked ->
+                                if (!clicked) onSendMessage("허용")
+                            }
+                        } else {
+                            onSendMessage("허용")
+                        }
+                    } else if (autoOpenedQuestionMsgId != lastMsg.id) {
+                        autoOpenedQuestionMsgId = lastMsg.id
+                        expandedQuestionMsgId = lastMsg.id
+                    }
                 }
             }
             if (detectedQuestion != null && lastMsg != null) {

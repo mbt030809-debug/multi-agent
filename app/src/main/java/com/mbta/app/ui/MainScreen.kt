@@ -355,7 +355,8 @@ fun MainScreen(
                     userMessage = subPrompt,
                     sessionId = "${session.id}_sub_${run.id}",
                     cwd = effectiveDir,
-                    effort = subEffort
+                    effort = subEffort,
+                    skipPermissions = session.skipPermissions
                 )
                 if (reply.inputTokens > 0L || reply.outputTokens > 0L) {
                     onRecordTokens(effectiveSubConn.id, effectiveSubConn.kind, reply.inputTokens, reply.outputTokens)
@@ -501,7 +502,8 @@ fun MainScreen(
                                 sessionId = session.id,
                                 cwd = effectiveDir,
                                 cliSessionId = session.cliSessionId,
-                                effort = session.selectedEffort
+                                effort = session.selectedEffort,
+                                skipPermissions = session.skipPermissions
                             )
                             totalInTok += reply.inputTokens
                             totalOutTok += reply.outputTokens
@@ -816,7 +818,7 @@ fun MainScreen(
         } else null
 
         val job = scope.launch {
-            val reply = AiApiClient.send(effectiveConn, historyBefore, effectivePrompt, session.id, cwd = effectiveDir, cliSessionId = session.cliSessionId, effort = session.selectedEffort)
+            val reply = AiApiClient.send(effectiveConn, historyBefore, effectivePrompt, session.id, cwd = effectiveDir, cliSessionId = session.cliSessionId, effort = session.selectedEffort, skipPermissions = session.skipPermissions)
             pollJob?.cancel()
             activeJobs.remove(session.id)
             val assistantMsg = ChatMessage(
@@ -1066,6 +1068,13 @@ fun MainScreen(
         val trimmed = newTitle.trim()
         if (trimmed.isEmpty()) return
         sessions = sessions.map { if (it.id == session.id) it.copy(title = trimmed) else it }
+        store.saveSessions(sessions)
+    }
+
+    fun toggleSkipPermissions(session: AgentSession) {
+        sessions = sessions.map { s ->
+            if (s.id == session.id) s.copy(skipPermissions = !s.skipPermissions) else s
+        }
         store.saveSessions(sessions)
     }
 
@@ -1640,6 +1649,7 @@ fun MainScreen(
                         onAttachOrchestration = { en, subId, subM, subE, maxP, maxR ->
                             attachOrchestrationToSession(primarySession, en, subId, subM, subE, maxP, maxR)
                         },
+                        onToggleSkipPermissions = { toggleSkipPermissions(primarySession) },
                         modifier = Modifier.fillMaxSize()
                     )
                 }
@@ -1695,6 +1705,7 @@ fun MainScreen(
                             onAttachOrchestration = { en, subId, subM, subE, maxP, maxR ->
                                 attachOrchestrationToSession(primarySession, en, subId, subM, subE, maxP, maxR)
                             },
+                            onToggleSkipPermissions = { toggleSkipPermissions(primarySession) },
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .weight(1f)
@@ -1754,6 +1765,7 @@ fun MainScreen(
                             onAttachOrchestration = { en, subId, subM, subE, maxP, maxR ->
                                 attachOrchestrationToSession(secondarySession ?: primarySession, en, subId, subM, subE, maxP, maxR)
                             },
+                            onToggleSkipPermissions = { toggleSkipPermissions(secondarySession ?: primarySession) },
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .weight(1f)
@@ -1812,6 +1824,7 @@ fun MainScreen(
                             onAttachOrchestration = { en, subId, subM, subE, maxP, maxR ->
                                 attachOrchestrationToSession(primarySession, en, subId, subM, subE, maxP, maxR)
                             },
+                            onToggleSkipPermissions = { toggleSkipPermissions(primarySession) },
                             modifier = Modifier
                                 .fillMaxSize()
                                 .weight(1f)
@@ -1871,6 +1884,7 @@ fun MainScreen(
                             onAttachOrchestration = { en, subId, subM, subE, maxP, maxR ->
                                 attachOrchestrationToSession(secondarySession ?: primarySession, en, subId, subM, subE, maxP, maxR)
                             },
+                            onToggleSkipPermissions = { toggleSkipPermissions(secondarySession ?: primarySession) },
                             modifier = Modifier
                                 .fillMaxSize()
                                 .weight(1f)
