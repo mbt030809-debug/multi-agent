@@ -24,6 +24,12 @@ import java.util.UUID
 import kotlin.coroutines.resume
 import kotlin.math.ceil
 
+data class ExternalSessionItem(
+    val id: String,
+    val title: String,
+    val url: String = ""
+)
+
 class HeadlessWebBridge(
     private val context: Context,
     private val onFileChooserRequested: (Intent, ValueCallback<Array<Uri>>) -> Unit
@@ -326,6 +332,56 @@ class HeadlessWebBridge(
     }
 
     fun currentUrl(key: String): String? = pool[key]?.url
+
+    fun fetchWebSessions(key: String, onResult: (List<ExternalSessionItem>) -> Unit) {
+        val wv = pool[key]
+        if (wv == null) {
+            onResult(emptyList())
+            return
+        }
+        val js = """
+            (function() {
+                try {
+                    var seen = {};
+                    var out = [];
+                    var links = document.querySelectorAll('a[href]');
+                    for (var i = 0; i < links.length; i++) {
+                        var href = links[i].href || '';
+                        if (!/(\/c\/|\/chat\/|\/app\/|\/r\/)/.test(href)) continue;
+                        if (seen[href]) continue;
+                        seen[href] = true;
+                        var title = (links[i].innerText || links[i].getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
+                        if (!title) title = href.split('/').pop() || href;
+                        out.push({ id: href, title: title.slice(0, 60), url: href });
+                        if (out.length >= 25) break;
+                    }
+                    return JSON.stringify(out);
+                } catch(e) { return '[]'; }
+            })();
+        """.trimIndent()
+        wv.evaluateJavascript(js) { raw ->
+            val list = mutableListOf<ExternalSessionItem>()
+            try {
+                val cleaned = raw?.trim()?.let {
+                    if (it.startsWith("\"") && it.endsWith("\"")) {
+                        org.json.JSONTokener(it).nextValue().toString()
+                    } else it
+                } ?: "[]"
+                val arr = org.json.JSONArray(cleaned)
+                for (i in 0 until arr.length()) {
+                    val obj = arr.getJSONObject(i)
+                    list.add(
+                        ExternalSessionItem(
+                            id = obj.optString("id"),
+                            title = obj.optString("title"),
+                            url = obj.optString("url")
+                        )
+                    )
+                }
+            } catch (_: Exception) {}
+            onResult(list)
+        }
+    }
 
     fun checkLoginStatus(
         key: String,

@@ -43,6 +43,25 @@ object GitBridgeClient {
         }
     }
 
+    suspend fun fetchBridgeSessions(kind: String): List<com.mbta.app.webview.ExternalSessionItem> = withContext(Dispatchers.IO) {
+        try {
+            val req = Request.Builder().url("$BASE/sessions?kind=$kind").get().build()
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return@withContext emptyList()
+                val raw = resp.body?.string().orEmpty()
+                val arr = json.parseToJsonElement(raw).jsonObject["sessions"]?.jsonArray ?: return@withContext emptyList()
+                arr.mapNotNull { el ->
+                    val obj = el.jsonObject
+                    val id = obj["id"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+                    val title = obj["title"]?.jsonPrimitive?.contentOrNull ?: id
+                    com.mbta.app.webview.ExternalSessionItem(id = id, title = title)
+                }
+            }
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
     suspend fun fetchStatus(cwd: String): GitStatusResult = withContext(Dispatchers.IO) {
         try {
             val body = buildJsonObject { put("cwd", JsonPrimitive(cwd)) }.toString()

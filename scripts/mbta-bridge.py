@@ -85,7 +85,24 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/health":
-            self._send_json(200, {"status": "ok", "endpoints": ["/claude", "/agy", "/exec"]})
+            self._send_json(200, {"status": "ok", "endpoints": ["/claude", "/agy", "/exec", "/sessions"]})
+        elif self.path.startswith("/sessions"):
+            import glob
+            kind = "claude" if "kind=claude" in self.path else ("agy" if "kind=agy" in self.path else "all")
+            items = []
+            if kind in ("claude", "all"):
+                files = sorted(glob.glob(os.path.expanduser("~/.claude/projects/*/*.jsonl")), key=os.path.getmtime, reverse=True)[:20]
+                for f in files:
+                    sid = os.path.splitext(os.path.basename(f))[0]
+                    proj = os.path.basename(os.path.dirname(f)).lstrip("-").replace("-", "/")
+                    items.append({"id": sid, "title": f"Claude · {proj} ({sid[:8]})", "kind": "claude"})
+            if kind in ("agy", "all"):
+                dirs = [d for d in glob.glob(os.path.expanduser("~/.gemini/antigravity-cli/brain/*")) if os.path.isdir(d) and os.path.basename(d) != "tempmediaStorage"]
+                dirs = sorted(dirs, key=os.path.getmtime, reverse=True)[:20]
+                for d in dirs:
+                    sid = os.path.basename(d)
+                    items.append({"id": sid, "title": f"Antigravity · {sid[:8]}", "kind": "agy"})
+            self._send_json(200, {"sessions": items})
         else:
             self._send_json(404, {"error": "Not found"})
 
@@ -195,6 +212,8 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
             if key:
                 with SESSION_LOCK:
                     cli_sid = load_sessions().get(key)
+                if not cli_sid and data.get("cli_session_id"):
+                    cli_sid = str(data.get("cli_session_id")).strip()
                 if cli_sid:
                     cmd.extend(["--resume", cli_sid])
             proc = run_cli(cmd, cwd=cwd)
@@ -230,6 +249,8 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
             if key:
                 with SESSION_LOCK:
                     cli_sid = load_sessions().get(key)
+                if not cli_sid and data.get("cli_session_id"):
+                    cli_sid = str(data.get("cli_session_id")).strip()
                 if cli_sid:
                     cmd.extend(["--resume", cli_sid])
             proc = run_cli(cmd, cwd=cwd)

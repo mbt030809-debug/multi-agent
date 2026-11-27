@@ -136,6 +136,7 @@ fun MainScreen(
     var showNewProjectDialog by remember { mutableStateOf(false) }
     var editingProject by remember { mutableStateOf<Project?>(null) }
     var showNewSessionDialog by remember { mutableStateOf(false) }
+    var showExistingSessionDialog by remember { mutableStateOf(false) }
 
     val sendingMap = remember { mutableStateMapOf<String, Boolean>() }
     val unreadDoneSessions = remember { mutableStateMapOf<String, Boolean>() }
@@ -325,7 +326,7 @@ fun MainScreen(
         sendingMap[session.id] = true
 
         scope.launch {
-            val reply = AiApiClient.send(effectiveConn, historyBefore, effectivePrompt, session.id, cwd = effectiveDir)
+            val reply = AiApiClient.send(effectiveConn, historyBefore, effectivePrompt, session.id, cwd = effectiveDir, cliSessionId = session.cliSessionId)
             val assistantMsg = ChatMessage(
                 id = "msg_${UUID.randomUUID()}",
                 role = MessageRole.ASSISTANT,
@@ -1308,6 +1309,10 @@ fun MainScreen(
                 showNewSessionDialog = false
                 showSettings = true
             },
+            onOpenExisting = {
+                showNewSessionDialog = false
+                showExistingSessionDialog = true
+            },
             onCreate = { title, connId, useWorktree ->
                 val conn = enabledConnections.find { it.id == connId } ?: return@NewSessionDialog
                 showNewSessionDialog = false
@@ -1330,6 +1335,32 @@ fun MainScreen(
                     activeSessionId = newSess.id
                     store.saveActiveSessionId(newSess.id)
                 }
+            }
+        )
+    }
+
+    if (showExistingSessionDialog) {
+        ExistingSessionPickerDialog(
+            enabledConnections = enabledConnections,
+            headlessWebBridge = headlessWebBridge,
+            onDismiss = { showExistingSessionDialog = false },
+            onPick = { conn, item ->
+                showExistingSessionDialog = false
+                val newSess = AgentSession(
+                    id = "sess_${UUID.randomUUID()}",
+                    projectId = activeProject.id,
+                    title = item.title.take(30),
+                    connectionId = conn.id,
+                    webConversationUrl = item.url,
+                    cliSessionId = if (item.url.isBlank()) item.id else ""
+                )
+                if (conn.usesHiddenWebBridge() && item.url.isNotBlank()) {
+                    headlessWebBridge.navigateIfNeeded(conn.id, item.url)
+                }
+                sessions = sessions + newSess
+                store.saveSessions(sessions)
+                activeSessionId = newSess.id
+                store.saveActiveSessionId(newSess.id)
             }
         )
     }
@@ -1401,12 +1432,101 @@ private fun ProjectEditorDialog(
 }
 
 @Composable
+private fun ExistingSessionPickerDialog(
+    enabledConnections: List<AiConnection>,
+    headlessWebBridge: HeadlessWebBridge,
+    onDismiss: () -> Unit,
+    onPick: (AiConnection, com.mbta.app.webview.ExternalSessionItem) -> Unit
+) {
+    val selectable = enabledConnections.filter {
+        it.usesHiddenWebBridge() || it.kind == ConnectionKind.REMOTE_CONTROL
+    }
+    var selectedConn by remember { mutableStateOf(selectable.firstOrNull()) }
+    var loading by remember { mutableStateOf(false) }
+    var items by remember { mutableStateOf<List<com.mbta.app.webview.ExternalSessionItem>>(emptyList()) }
+
+    LaunchedEffect(selectedConn?.id) {
+        val conn = selectedConn ?: return@LaunchedEffect
+        loading = true
+        items = emptyList()
+        if (conn.usesHiddenWebBridge()) {
+            headlessWebBridge.fetchWebSessions(conn.id) { list ->
+                items = list
+                loading = false
+            }
+        } else {
+            val bridgeKind = if (conn.endpointUrl.lowercase().contains("/agy")) "agy" else "claude"
+            items = GitBridgeClient.fetchBridgeSessions(bridgeKind)
+            loading = false
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("기존 세션 불러오기") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (selectable.isEmpty()) {
+                    Text("불러올 수 있는 웹/로컬 브릿지 연결이 없습니다.", fontSize = 13.sp)
+                } else {
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        selectable.forEach { c ->
+                            FilterChip(
+                                selected = c.id == selectedConn?.id,
+                                onClick = { selectedConn = c },
+                                label = { Text(c.name, fontSize = 11.sp) }
+                            )
+                        }
+                    }
+                    if (loading) {
+                        Text("세션 목록 불러오는 중...", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    } else if (items.isEmpty()) {
+                        Text("불러올 기존 세션이 없습니다. (웹은 로그인 후 사이드바가 열려 있어야 합니다)", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier.heightIn(max = 260.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            items(items, key = { it.id }) { item ->
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { selectedConn?.let { onPick(it, item) } }
+                                ) {
+                                    Text(
+                                        text = item.title,
+                                        fontSize = 13.sp,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.padding(10.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("닫기") }
+        }
+    )
+}
+
+@Composable
 private fun NewSessionDialog(
     enabledConnections: List<AiConnection>,
     hasWorkDir: Boolean,
     defaultIndex: Int,
     onDismiss: () -> Unit,
     onOpenSettings: () -> Unit,
+    onOpenExisting: () -> Unit = {},
     onCreate: (title: String, connectionId: String, useWorktree: Boolean) -> Unit
 ) {
     var title by remember { mutableStateOf("세션 $defaultIndex") }
@@ -1454,6 +1574,14 @@ private fun NewSessionDialog(
                                 Text(conn.name, fontWeight = FontWeight.Medium, fontSize = 14.sp)
                                 Text(conn.kind.displayLabel(), fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
                             }
+                        }
+                    }
+                    if (enabledConnections.isNotEmpty()) {
+                        OutlinedButton(
+                            onClick = onOpenExisting,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("기존 외부 세션 불러오기", fontSize = 12.sp)
                         }
                     }
                     if (hasWorkDir) {
