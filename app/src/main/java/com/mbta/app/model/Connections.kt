@@ -191,7 +191,18 @@ fun defaultContextLimitForKind(kind: ConnectionKind): Long? = when (kind) {
     ConnectionKind.CLAUDE_WEB, ConnectionKind.CLAUDE_API -> 200_000L
     ConnectionKind.CHATGPT_WEB, ConnectionKind.OPENAI_API -> 128_000L
     ConnectionKind.GEMINI_WEB, ConnectionKind.GEMINI_API -> 1_000_000L
+    ConnectionKind.REMOTE_CONTROL, ConnectionKind.REMOTE_WEB -> 1_000_000L
     else -> null
+}
+
+fun defaultContextLimitFor(connection: AiConnection): Long? {
+    val lower = connection.endpointUrl.lowercase()
+    if ((connection.kind == ConnectionKind.REMOTE_CONTROL || connection.kind == ConnectionKind.REMOTE_WEB) &&
+        (lower.contains("/claude") || lower.contains("claude.ai"))
+    ) {
+        return 200_000L
+    }
+    return defaultContextLimitForKind(connection.kind)
 }
 
 data class DetectedConnection(

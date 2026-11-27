@@ -103,6 +103,7 @@ import com.mbta.app.model.MessageRole
 import com.mbta.app.model.Project
 import com.mbta.app.model.availableEffortsFor
 import com.mbta.app.model.availableModelsFor
+import com.mbta.app.model.defaultContextLimitFor
 import com.mbta.app.model.defaultContextLimitForKind
 import com.mbta.app.model.defaultModelFor
 import com.mbta.app.model.displayLabel
@@ -468,12 +469,31 @@ fun SessionPane(
             Spacer(modifier = Modifier.weight(1f))
 
             if (connection != null) {
-                val totalTok = tokenUsage?.totalTokens ?: 0L
+                val ctxLimit = tokenUsage?.customLimit ?: tokenUsage?.contextLimit ?: defaultContextLimitFor(connection)
+                val lastTracked = session.messages.lastOrNull { it.inputTokens > 0L || it.outputTokens > 0L }
+                val sessionCtxTokens = if (lastTracked != null) {
+                    lastTracked.inputTokens + lastTracked.outputTokens
+                } else {
+                    session.messages.sumOf { (it.content.length / 3L).coerceAtLeast(0L) }
+                }
+                val totalTok = tokenUsage?.totalTokens ?: sessionCtxTokens
                 val remPct = tokenUsage?.quotaPercent
-                val badgeText = if (remPct != null) "${formatTokens(totalTok)} · 잔여 $remPct%" else formatTokens(totalTok)
+                val usedPct = if (ctxLimit != null && ctxLimit > 0L) {
+                    ((sessionCtxTokens.toDouble() / ctxLimit.toDouble()) * 100.0).coerceIn(0.0, 100.0)
+                } else null
+                val pctLabel = usedPct?.let { p ->
+                    if (p > 0.0 && p < 10.0) String.format(java.util.Locale.US, "%.1f%%", p)
+                    else "${p.roundToInt()}%"
+                }
+                val badgeText = when {
+                    remPct != null && pctLabel != null -> "$pctLabel · 잔여 $remPct%"
+                    remPct != null -> "${formatTokens(totalTok)} · 잔여 $remPct%"
+                    pctLabel != null -> pctLabel
+                    else -> formatTokens(totalTok)
+                }
                 val badgeColor = when {
-                    remPct != null && remPct <= 10 -> MaterialTheme.colorScheme.error
-                    remPct != null && remPct <= 25 -> androidx.compose.ui.graphics.Color(0xFFFF9800)
+                    (remPct != null && remPct <= 10) || (usedPct != null && usedPct >= 85.0) -> MaterialTheme.colorScheme.error
+                    (remPct != null && remPct <= 25) || (usedPct != null && usedPct >= 65.0) -> androidx.compose.ui.graphics.Color(0xFFFF9800)
                     else -> MaterialTheme.colorScheme.primary
                 }
                 Surface(
