@@ -111,6 +111,92 @@ import com.mbta.app.webview.HeadlessWebBridge
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
+private val codeFenceRegex = Regex("```[\\s\\S]*?```")
+private val inlineCodeRegex = Regex("`[^`\\n]+`")
+private val urlRegex = Regex("https?://\\S+")
+private val permissionPromptRegex = Regex(
+    "(?:\\[y/n]|\\(y/n\\)|\\(yes/no\\)|allow\\s+once|always\\s+allow|" +
+        "do\\s+you\\s+want\\s+to\\s+(?:allow|approve|grant|run|execute)|" +
+        "would\\s+you\\s+like\\s+to\\s+(?:allow|approve|grant)|" +
+        "(?:권한|허용|승인)[^\\n?.!]{0,16}(?:할까요|하시겠습니까|해\\s*드릴까요|해도\\s*될까요|필요합니다\\s*\\?))",
+    RegexOption.IGNORE_CASE
+)
+private val openEndedSignoffRegex = Regex(
+    "(?:도와드릴까요|궁금한|있으신가요|있으세요|있나요|있을까요|말씀해\\s*주세요|알려\\s*주세요|확인해\\s*보시고)",
+    RegexOption.IGNORE_CASE
+)
+private val confirmQuestionEndingRegex = Regex(
+    "(?:할까요|진행할까요|적용할까요|수정할까요|푸시할까요|빌드할까요|드릴까요|하시겠습니까|할래요|원하시나요|어떨까요|괜찮을까요|좋을까요|맞나요|맞을까요)\\s*\\??$"
+)
+private val englishYesNoQuestionRegex = Regex(
+    "^(?:shall|should|would|do|can|could|may)\\s+[^\\n]{3,}\\?$",
+    RegexOption.IGNORE_CASE
+)
+private val numberedOptionRegex = Regex("^\\s*([1-4])[.)]\\s+(.+)$")
+
+private fun detectQuickReplies(rawContent: String): List<String> {
+    if (rawContent.isBlank()) return emptyList()
+    val cleaned = rawContent
+        .replace(codeFenceRegex, "")
+        .replace(inlineCodeRegex, "")
+        .replace(urlRegex, "")
+        .trim()
+    if (cleaned.isEmpty()) return emptyList()
+
+    val nonBlankLines = cleaned.lines().map { it.trim() }.filter { it.isNotEmpty() }
+    if (nonBlankLines.isEmpty()) return emptyList()
+
+    val tailLines = nonBlankLines.takeLast(3)
+    val tailText = tailLines.joinToString("\n")
+    val lastLine = nonBlankLines.last()
+
+    // 1. 실제 권한/승인 요청 프롬프트인 경우에만 허용/거부 필 표시
+    if (permissionPromptRegex.containsMatchIn(tailText)) {
+        return listOf("허용", "항상 허용", "거부")
+    }
+
+    // 2. 마지막 문장이 의례적인 마무리 인사/열린 질문이면 표시하지 않음
+    if (openEndedSignoffRegex.containsMatchIn(lastLine)) {
+        return emptyList()
+    }
+
+    // 3. 꼬리 영역(마지막 8줄)에 실제 질문 + 1번부터 시작하는 연속 선택지(2~4개)가 함께 있을 때만 선택지 추출
+    val tailBlock = nonBlankLines.takeLast(8)
+    val hasQuestionInTail = tailBlock.any { line ->
+        !openEndedSignoffRegex.containsMatchIn(line) && (
+            line.endsWith("?") ||
+                confirmQuestionEndingRegex.containsMatchIn(line) ||
+                englishYesNoQuestionRegex.containsMatchIn(line)
+            )
+    }
+    if (!hasQuestionInTail) return emptyList()
+
+    val optionMatches = tailBlock.mapNotNull { line ->
+        val m = numberedOptionRegex.matchEntire(line) ?: return@mapNotNull null
+        val num = m.groupValues[1].toIntOrNull() ?: return@mapNotNull null
+        val label = m.groupValues[2]
+            .replace("**", "")
+            .replace("__", "")
+            .trim()
+            .take(36)
+        if (label.isNotEmpty()) num to label else null
+    }
+    val startsFromOne = optionMatches.size >= 2 && optionMatches.first().first == 1 &&
+        optionMatches.map { it.first } == (1..optionMatches.size).toList()
+    if (startsFromOne) {
+        return optionMatches.map { it.second }
+    }
+
+    // 4. 마지막 줄 자체가 명확한 확인/예·아니오 질문일 때만 표시
+    val isClearConfirmation = lastLine.endsWith("?") && (
+        confirmQuestionEndingRegex.containsMatchIn(lastLine) ||
+            englishYesNoQuestionRegex.containsMatchIn(lastLine) ||
+            Regex("(?:할까요|하시겠습니까|할래요|괜찮을까요|맞나요|진행해|바꿀까요|넣을까요|뺄까요)").containsMatchIn(lastLine)
+        ) || confirmQuestionEndingRegex.containsMatchIn(lastLine)
+
+    return if (isClearConfirmation) listOf("네, 진행해줘", "아니요") else emptyList()
+}
+
 private data class PendingAttachment(
     val name: String,
     val mimeType: String,
@@ -677,32 +763,14 @@ fun SessionPane(
             }
 
             val lastMsg = session.messages.lastOrNull()
-            val tailText = remember(lastMsg?.id, lastMsg?.content) {
-                lastMsg?.content?.lines()?.filter { it.isNotBlank() }?.takeLast(6)?.joinToString("\n").orEmpty()
-            }
-            val isPermissionPrompt = remember(lastMsg?.id, tailText) {
-                Regex("(허용|승인|권한|동의|거부|allow|approve|permission|confirm|authorize|y/n|yes/no)", RegexOption.IGNORE_CASE)
-                    .containsMatchIn(tailText)
-            }
-            val isQuestionMsg = !isSending && lastMsg != null && lastMsg.role == MessageRole.ASSISTANT && !lastMsg.isError &&
-                lastMsg.id != dismissedQuestionMsgId && (
-                    isPermissionPrompt ||
-                        tailText.contains("?") ||
-                        Regex("(할까요|드릴까요|원하시나요|선택해|선택하|알려주세요|어떻게 할까요|진행할까요|하시겠습니까|할지|말지)", RegexOption.IGNORE_CASE)
-                            .containsMatchIn(tailText)
-                    )
-            if (isQuestionMsg && lastMsg != null) {
-                val quickChoices = remember(lastMsg.id, isPermissionPrompt) {
-                    val numbered = Regex("^\\s*[1-4][.)]\\s+(.+)$", RegexOption.MULTILINE)
-                        .findAll(lastMsg.content)
-                        .map { it.groupValues[1].trim().take(36) }
-                        .toList()
-                    when {
-                        numbered.isNotEmpty() -> numbered
-                        isPermissionPrompt -> listOf("허용", "항상 허용", "거부")
-                        else -> listOf("네, 진행해줘", "아니요")
-                    }
+            val quickChoices = remember(lastMsg?.id, lastMsg?.content, isSending, dismissedQuestionMsgId) {
+                if (isSending || lastMsg == null || lastMsg.role != MessageRole.ASSISTANT || lastMsg.isError || lastMsg.id == dismissedQuestionMsgId) {
+                    emptyList()
+                } else {
+                    detectQuickReplies(lastMsg.content)
                 }
+            }
+            if (quickChoices.isNotEmpty() && lastMsg != null) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
