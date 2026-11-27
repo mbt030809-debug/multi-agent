@@ -663,15 +663,18 @@ fun SessionPane(
                                 for (att in pendingAtts) {
                                     val ext = att.name.substringAfterLast('.', "").lowercase()
                                     if ((att.mimeType.startsWith("text/") || ext in textExts) && att.bytes.size <= 65536) {
-                                        extra.append("\n\n[첨부파일: ${att.name}]\n```\n${att.bytes.toString(Charsets.UTF_8)}\n```")
+                                        extra.append("\n\n[📎 첨부: ${att.name}]\n```\n${att.bytes.toString(Charsets.UTF_8)}\n```")
                                     } else if (connection.usesHiddenWebBridge()) {
                                         val b64 = android.util.Base64.encodeToString(att.bytes, android.util.Base64.NO_WRAP)
                                         headlessWebBridge.attachFileToWebInput(connection.id, att.name, att.mimeType, b64)
+                                        extra.append("\n[📎 첨부: ${att.name}]")
                                         webAttached = true
                                     } else {
                                         val savedPath = GitBridgeClient.uploadFile(att.name, att.bytes)
                                         if (savedPath != null) {
-                                            extra.append("\n\n[첨부파일 경로: $savedPath]")
+                                            extra.append("\n[📎 첨부: ${att.name}]\n경로: $savedPath")
+                                        } else {
+                                            extra.append("\n[📎 첨부 실패: ${att.name}]")
                                         }
                                     }
                                 }
