@@ -1390,21 +1390,50 @@ fun MainScreen(
             onDismiss = { showExistingSessionDialog = false },
             onPick = { conn, item ->
                 showExistingSessionDialog = false
+                val sessId = "sess_${UUID.randomUUID()}"
+                val loadingMsg = ChatMessage(
+                    id = "msg_${UUID.randomUUID()}",
+                    role = MessageRole.SYSTEM,
+                    content = "이전 대화 기록 불러오는 중..."
+                )
                 val newSess = AgentSession(
-                    id = "sess_${UUID.randomUUID()}",
+                    id = sessId,
                     projectId = activeProject.id,
                     title = item.title.take(30),
                     connectionId = conn.id,
                     webConversationUrl = item.url,
-                    cliSessionId = if (item.url.isBlank()) item.id else ""
+                    cliSessionId = if (item.url.isBlank()) item.id else "",
+                    messages = listOf(loadingMsg)
                 )
-                if (conn.usesHiddenWebBridge() && item.url.isNotBlank()) {
-                    headlessWebBridge.navigateIfNeeded(conn.id, item.url)
-                }
                 sessions = sessions + newSess
                 store.saveSessions(sessions)
                 activeSessionId = newSess.id
                 store.saveActiveSessionId(newSess.id)
+
+                val applyMessages: (List<ChatMessage>) -> Unit = { fetched ->
+                    val finalMsgs = if (fetched.isNotEmpty()) {
+                        fetched
+                    } else {
+                        listOf(
+                            ChatMessage(
+                                id = "msg_${UUID.randomUUID()}",
+                                role = MessageRole.SYSTEM,
+                                content = "연결됨 — 새 메시지를 보내면 기존 대화에 이어집니다."
+                            )
+                        )
+                    }
+                    sessions = sessions.map { if (it.id == sessId) it.copy(messages = finalMsgs) else it }
+                    store.saveSessions(sessions)
+                }
+
+                if (conn.usesHiddenWebBridge() && item.url.isNotBlank()) {
+                    headlessWebBridge.fetchWebSessionMessages(conn.id, conn.kind, item.url, conn.name, applyMessages)
+                } else {
+                    val bridgeKind = if (conn.endpointUrl.lowercase().contains("/agy")) "agy" else "claude"
+                    scope.launch {
+                        applyMessages(GitBridgeClient.fetchSessionMessages(bridgeKind, item.id, conn.name))
+                    }
+                }
             }
         )
     }

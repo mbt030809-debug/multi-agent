@@ -335,6 +335,73 @@ class HeadlessWebBridge(
 
     fun currentUrl(key: String): String? = pool[key]?.url
 
+    fun fetchWebSessionMessages(
+        key: String,
+        kind: ConnectionKind,
+        url: String,
+        agentName: String,
+        onResult: (List<com.mbta.app.model.ChatMessage>) -> Unit
+    ) {
+        val wv = getOrCreateWebView(key, url)
+        val navigated = navigateIfNeeded(key, url)
+        val delayMs = if (navigated) 2500L else 300L
+        val selector = when (kind) {
+            ConnectionKind.CHATGPT_WEB -> "[data-message-author-role=\"user\"], [data-message-author-role=\"assistant\"]"
+            ConnectionKind.CLAUDE_WEB -> "[data-testid=\"user-message\"], .font-user-message, .font-claude-response, .font-claude-message"
+            ConnectionKind.GEMINI_WEB -> "user-query, model-response"
+            else -> "[data-message-author-role], article"
+        }
+        val js = """
+            (function() {
+                try {
+                    var nodes = document.querySelectorAll('$selector');
+                    var out = [];
+                    for (var i = 0; i < nodes.length; i++) {
+                        var el = nodes[i];
+                        var tag = (el.tagName || '').toLowerCase();
+                        var roleAttr = (el.getAttribute && el.getAttribute('data-message-author-role')) || '';
+                        var cls = (el.className || '').toString().toLowerCase();
+                        var testId = (el.getAttribute && el.getAttribute('data-testid')) || '';
+                        var isUser = roleAttr === 'user' || tag === 'user-query' || testId === 'user-message' || cls.indexOf('user-message') !== -1;
+                        var txt = (el.innerText || '').trim();
+                        if (!txt) continue;
+                        out.push({ role: isUser ? 'user' : 'assistant', content: txt });
+                    }
+                    return JSON.stringify(out.slice(-40));
+                } catch(e) { return '[]'; }
+            })();
+        """.trimIndent()
+        mainHandler.postDelayed({
+            wv.evaluateJavascript(js) { raw ->
+                val list = mutableListOf<com.mbta.app.model.ChatMessage>()
+                try {
+                    val cleaned = raw?.trim()?.let {
+                        if (it.startsWith("\"") && it.endsWith("\"")) {
+                            org.json.JSONTokener(it).nextValue().toString()
+                        } else it
+                    } ?: "[]"
+                    val arr = org.json.JSONArray(cleaned)
+                    for (i in 0 until arr.length()) {
+                        val obj = arr.getJSONObject(i)
+                        val roleStr = obj.optString("role")
+                        val content = obj.optString("content").trim()
+                        if (content.isBlank()) continue
+                        val role = if (roleStr == "user") com.mbta.app.model.MessageRole.USER else com.mbta.app.model.MessageRole.ASSISTANT
+                        list.add(
+                            com.mbta.app.model.ChatMessage(
+                                id = "msg_${UUID.randomUUID()}",
+                                role = role,
+                                content = content,
+                                agentName = if (role == com.mbta.app.model.MessageRole.ASSISTANT) agentName else ""
+                            )
+                        )
+                    }
+                } catch (_: Exception) {}
+                onResult(list)
+            }
+        }, delayMs)
+    }
+
     fun fetchWebSessions(
         key: String,
         kind: ConnectionKind = ConnectionKind.GEMINI_WEB,

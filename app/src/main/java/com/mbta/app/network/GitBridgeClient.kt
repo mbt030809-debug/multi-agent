@@ -43,6 +43,38 @@ object GitBridgeClient {
         }
     }
 
+    suspend fun fetchSessionMessages(
+        kind: String,
+        sessionId: String,
+        agentName: String
+    ): List<com.mbta.app.model.ChatMessage> = withContext(Dispatchers.IO) {
+        if (sessionId.isBlank()) return@withContext emptyList()
+        try {
+            val encoded = java.net.URLEncoder.encode(sessionId, "UTF-8")
+            val req = Request.Builder().url("$BASE/session_messages?kind=$kind&id=$encoded").get().build()
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return@withContext emptyList()
+                val raw = resp.body?.string().orEmpty()
+                val arr = json.parseToJsonElement(raw).jsonObject["messages"]?.jsonArray ?: return@withContext emptyList()
+                arr.mapNotNull { el ->
+                    val obj = el.jsonObject
+                    val roleStr = obj["role"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+                    val content = obj["content"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+                    if (content.isBlank()) return@mapNotNull null
+                    val role = if (roleStr == "user") com.mbta.app.model.MessageRole.USER else com.mbta.app.model.MessageRole.ASSISTANT
+                    com.mbta.app.model.ChatMessage(
+                        id = "msg_${java.util.UUID.randomUUID()}",
+                        role = role,
+                        content = content,
+                        agentName = if (role == com.mbta.app.model.MessageRole.ASSISTANT) agentName else ""
+                    )
+                }
+            }
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
     suspend fun fetchProgress(sessionId: String): List<String> = withContext(Dispatchers.IO) {
         if (sessionId.isBlank()) return@withContext emptyList()
         try {

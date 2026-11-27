@@ -141,6 +141,65 @@ def append_progress(key, line):
             del arr[:-30]
 
 
+def load_agy_messages(sid, limit=40):
+    tpath = os.path.expanduser(f"~/.gemini/antigravity-cli/brain/{sid}/.system_generated/logs/transcript.jsonl")
+    msgs = []
+    try:
+        with open(tpath, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    obj = json.loads(line)
+                except Exception:
+                    continue
+                t = obj.get("type")
+                if t == "USER_INPUT":
+                    c = str(obj.get("content") or "")
+                    m = re.search(r"<USER_REQUEST>\s*(.*?)\s*</USER_REQUEST>", c, re.S)
+                    txt = (m.group(1) if m else c).strip()
+                    if txt:
+                        msgs.append({"role": "user", "content": txt})
+                elif t == "PLANNER_RESPONSE":
+                    txt = str(obj.get("content") or "").strip()
+                    if txt:
+                        msgs.append({"role": "assistant", "content": txt})
+    except Exception:
+        pass
+    return msgs[-limit:]
+
+
+def load_claude_messages(sid, limit=40):
+    import glob
+    matches = glob.glob(os.path.expanduser(f"~/.claude/projects/*/{sid}.jsonl"))
+    if not matches:
+        return []
+    msgs = []
+    try:
+        with open(matches[0], "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    obj = json.loads(line)
+                except Exception:
+                    continue
+                t = obj.get("type")
+                if t in ("user", "assistant"):
+                    msg = obj.get("message", {})
+                    content = msg.get("content") if isinstance(msg, dict) else ""
+                    if isinstance(content, list):
+                        content = "\n".join(
+                            b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"
+                        )
+                    txt = str(content or "").strip()
+                    if txt:
+                        msgs.append({"role": t, "content": txt})
+    except Exception:
+        pass
+    return msgs[-limit:]
+
+
 def run_cli(cmd, cwd=None, timeout=300, progress_key=""):
     work_dir = cwd if (cwd and os.path.isdir(cwd)) else None
     if not progress_key:
@@ -363,6 +422,13 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
             with PROGRESS_LOCK:
                 lines = list(PROGRESS_MAP.get(sid, []))
             self._send_json(200, {"lines": lines})
+        elif self.path.startswith("/session_messages"):
+            from urllib.parse import urlparse, parse_qs
+            qs = parse_qs(urlparse(self.path).query)
+            kind = (qs.get("kind") or ["agy"])[0]
+            sid = (qs.get("id") or [""])[0]
+            msgs = load_agy_messages(sid) if kind == "agy" else load_claude_messages(sid)
+            self._send_json(200, {"messages": msgs})
         elif self.path.startswith("/sessions"):
             kind = "claude" if "kind=claude" in self.path else ("agy" if "kind=agy" in self.path else "all")
             items = []
