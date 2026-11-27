@@ -380,16 +380,6 @@ fun SessionPane(
                 }
             }
 
-            IconButton(
-                onClick = onDeleteSession,
-                modifier = Modifier.size(28.dp)
-            ) {
-                Icon(
-                    Icons.Default.DeleteOutline,
-                    contentDescription = "세션 삭제",
-                    modifier = Modifier.size(16.dp)
-                )
-            }
         }
 
         if (connection == null) {
