@@ -226,7 +226,7 @@ fun SessionPane(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(38.dp)
+                .height(30.dp)
                 .background(
                     if (isFocused && showFocusBorder) {
                         MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f)
@@ -234,15 +234,18 @@ fun SessionPane(
                         MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
                     }
                 )
-                .padding(horizontal = 10.dp),
+                .padding(horizontal = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            ProviderMarkIcon(connection = connection, size = 14.dp)
+            Spacer(modifier = Modifier.size(4.dp))
             Text(
-                text = connection?.name ?: "연결 없음",
-                fontSize = 12.sp,
+                text = session.title.ifBlank { connection?.name ?: "연결 없음" },
+                fontSize = 11.sp,
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.widthIn(max = 120.dp)
             )
             if (connection != null) {
                 var dynamicModels by remember(connection.id, connection.endpointUrl) { mutableStateOf<List<String>>(emptyList()) }
@@ -265,11 +268,11 @@ fun SessionPane(
                         ) {
                             Text(
                                 text = "$activeModel ▾",
-                                fontSize = 10.sp,
+                                fontSize = 9.5.sp,
                                 color = MaterialTheme.colorScheme.primary,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
                             )
                         }
                         DropdownMenu(
@@ -323,9 +326,9 @@ fun SessionPane(
                 ) {
                     Text(
                         text = badgeText,
-                        fontSize = 10.sp,
+                        fontSize = 9.5.sp,
                         color = badgeColor,
-                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
                     )
                 }
             }
@@ -340,19 +343,19 @@ fun SessionPane(
                 ) {
                     Text(
                         text = if (isLoggedIn) "● 로그인됨" else "○ 로그인 필요",
-                        fontSize = 10.sp,
+                        fontSize = 9.5.sp,
                         color = if (isLoggedIn) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
-                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
                     )
                 }
                 IconButton(
                     onClick = { onLoginConnection(connection) },
-                    modifier = Modifier.size(28.dp)
+                    modifier = Modifier.size(24.dp)
                 ) {
                     Icon(
                         Icons.Default.Visibility,
                         contentDescription = "숨김 화면 보기",
-                        modifier = Modifier.size(16.dp)
+                        modifier = Modifier.size(15.dp)
                     )
                 }
             }
@@ -360,7 +363,7 @@ fun SessionPane(
             if (session.messages.isNotEmpty()) {
                 IconButton(
                     onClick = onShareMarkdown,
-                    modifier = Modifier.size(28.dp)
+                    modifier = Modifier.size(24.dp)
                 ) {
                     Icon(
                         Icons.Default.Share,

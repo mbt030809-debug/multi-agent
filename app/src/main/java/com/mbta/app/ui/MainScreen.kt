@@ -16,15 +16,19 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -71,6 +75,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -748,132 +753,141 @@ fun MainScreen(
                 Scaffold(
         topBar = {
             Column(modifier = Modifier.background(MaterialTheme.colorScheme.surface)) {
-                TopAppBar(
-                    title = {
-                        Box {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier
-                                    .clickable { showProjectMenu = true }
-                                    .padding(vertical = 4.dp)
-                            ) {
-                                Text(
-                                    text = activeProject.name,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 17.sp,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                Icon(Icons.Default.ArrowDropDown, contentDescription = "프로젝트 선택")
-                            }
-                            DropdownMenu(
-                                expanded = showProjectMenu,
-                                onDismissRequest = { showProjectMenu = false }
-                            ) {
-                                projects.forEach { proj ->
-                                    DropdownMenuItem(
-                                        text = {
-                                            Text(
-                                                proj.name,
-                                                fontWeight = if (proj.id == activeProject.id) FontWeight.Bold else FontWeight.Normal
-                                            )
-                                        },
-                                        onClick = {
-                                            activeProjectId = proj.id
-                                            store.saveActiveProjectId(proj.id)
-                                            val firstSess = sessions.firstOrNull { it.projectId == proj.id }
-                                            if (firstSess != null) {
-                                                activeSessionId = firstSess.id
-                                                store.saveActiveSessionId(firstSess.id)
-                                            }
-                                            showProjectMenu = false
-                                        }
-                                    )
-                                }
-                                HorizontalDivider()
-                                DropdownMenuItem(
-                                    text = { Text("+ 새 프로젝트") },
-                                    onClick = {
-                                        showProjectMenu = false
-                                        showNewProjectDialog = true
-                                    }
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("현재 프로젝트 편집") },
-                                    onClick = {
-                                        showProjectMenu = false
-                                        editingProject = activeProject
-                                    }
-                                )
-                            }
-                        }
-                    },
-                    colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = MaterialTheme.colorScheme.surface,
-                        titleContentColor = MaterialTheme.colorScheme.onSurface
-                    ),
-                    actions = {
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = MaterialTheme.colorScheme.primaryContainer,
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .statusBarsPadding()
+                        .height(40.dp)
+                        .padding(horizontal = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier
-                                .padding(end = 4.dp)
-                                .clickable { showTokenDashboard = true }
+                                .clickable { showProjectMenu = true }
+                                .padding(vertical = 2.dp)
                         ) {
                             Text(
-                                text = "Tokens ${formatTokens(totalTokensAll)}",
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                text = activeProject.name,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Icon(
+                                Icons.Default.ArrowDropDown,
+                                contentDescription = "프로젝트 선택",
+                                modifier = Modifier.size(18.dp)
                             )
                         }
-                        if (activeProject.workDir.isNotBlank()) {
-                            IconButton(onClick = { showGitDialog = true }) {
-                                Icon(Icons.Default.Code, contentDescription = "Git · Diff · CI")
+                        DropdownMenu(
+                            expanded = showProjectMenu,
+                            onDismissRequest = { showProjectMenu = false }
+                        ) {
+                            projects.forEach { proj ->
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            proj.name,
+                                            fontWeight = if (proj.id == activeProject.id) FontWeight.Bold else FontWeight.Normal
+                                        )
+                                    },
+                                    onClick = {
+                                        activeProjectId = proj.id
+                                        store.saveActiveProjectId(proj.id)
+                                        val firstSess = sessions.firstOrNull { it.projectId == proj.id }
+                                        if (firstSess != null) {
+                                            activeSessionId = firstSess.id
+                                            store.saveActiveSessionId(firstSess.id)
+                                        }
+                                        showProjectMenu = false
+                                    }
+                                )
                             }
-                        }
-                        if (enabledConnections.size >= 2) {
-                            IconButton(onClick = { showFanOutDialog = true }) {
-                                Icon(Icons.Default.CompareArrows, contentDescription = "동시 비교")
-                            }
-                        }
-                        if (enabledConnections.isNotEmpty()) {
-                            IconButton(onClick = { showOrchestrationDialog = true }) {
-                                Icon(Icons.Default.AccountTree, contentDescription = "오케스트레이션")
-                            }
-                        }
-                        IconButton(onClick = { cycleSplitMode() }) {
-                            val icon = when (splitMode) {
-                                SplitMode.SINGLE -> Icons.Default.ViewAgenda
-                                SplitMode.SPLIT_VERTICAL -> Icons.Default.ViewStream
-                                SplitMode.SPLIT_HORIZONTAL -> Icons.Default.ViewColumn
-                            }
-                            Icon(icon, contentDescription = "화면 분할")
-                        }
-                        IconButton(onClick = { showSettings = true }) {
-                            Icon(Icons.Default.Settings, contentDescription = "설정")
+                            HorizontalDivider()
+                            DropdownMenuItem(
+                                text = { Text("+ 새 프로젝트") },
+                                onClick = {
+                                    showProjectMenu = false
+                                    showNewProjectDialog = true
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("현재 프로젝트 편집") },
+                                onClick = {
+                                    showProjectMenu = false
+                                    editingProject = activeProject
+                                }
+                            )
                         }
                     }
-                )
+                    Spacer(modifier = Modifier.weight(1f))
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                        modifier = Modifier
+                            .padding(end = 4.dp)
+                            .clickable { showTokenDashboard = true }
+                    ) {
+                        Text(
+                            text = "Tokens ${formatTokens(totalTokensAll)}",
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
+                    if (activeProject.workDir.isNotBlank()) {
+                        IconButton(onClick = { showGitDialog = true }, modifier = Modifier.size(32.dp)) {
+                            Icon(Icons.Default.Code, contentDescription = "Git · Diff · CI", modifier = Modifier.size(18.dp))
+                        }
+                    }
+                    if (enabledConnections.size >= 2) {
+                        IconButton(onClick = { showFanOutDialog = true }, modifier = Modifier.size(32.dp)) {
+                            Icon(Icons.Default.CompareArrows, contentDescription = "동시 비교", modifier = Modifier.size(18.dp))
+                        }
+                    }
+                    if (enabledConnections.isNotEmpty()) {
+                        IconButton(onClick = { showOrchestrationDialog = true }, modifier = Modifier.size(32.dp)) {
+                            Icon(Icons.Default.AccountTree, contentDescription = "오케스트레이션", modifier = Modifier.size(18.dp))
+                        }
+                    }
+                    IconButton(onClick = { cycleSplitMode() }, modifier = Modifier.size(32.dp)) {
+                        val icon = when (splitMode) {
+                            SplitMode.SINGLE -> Icons.Default.ViewAgenda
+                            SplitMode.SPLIT_VERTICAL -> Icons.Default.ViewStream
+                            SplitMode.SPLIT_HORIZONTAL -> Icons.Default.ViewColumn
+                        }
+                        Icon(icon, contentDescription = "화면 분할", modifier = Modifier.size(18.dp))
+                    }
+                    IconButton(onClick = { showSettings = true }, modifier = Modifier.size(32.dp)) {
+                        Icon(Icons.Default.Settings, contentDescription = "설정", modifier = Modifier.size(18.dp))
+                    }
+                }
 
                 LazyRow(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(bottom = 6.dp),
-                    contentPadding = PaddingValues(horizontal = 12.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        .padding(top = 2.dp, bottom = 4.dp),
+                    contentPadding = PaddingValues(horizontal = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(5.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    items(validProjectSessions, key = { it.id }) { sess ->
-                        val connName = enabledConnections.find { it.id == sess.connectionId }?.name
+                    itemsIndexed(validProjectSessions, key = { _, it -> it.id }) { idx, sess ->
+                        val conn = enabledConnections.find { it.id == sess.connectionId }
                         val isSelected = if (splitMode == SplitMode.SINGLE) {
                             sess.id == primarySession?.id
                         } else {
                             sess.id == primarySession?.id || sess.id == secondarySession?.id
                         }
-                        FilterChip(
-                            selected = isSelected,
+                        val dotColor = when {
+                            sendingMap[sess.id] == true -> Color(0xFFF59E0B)
+                            sess.messages.lastOrNull()?.isError == true -> Color(0xFFEF4444)
+                            unreadDoneSessions[sess.id] == true -> Color(0xFF22C55E)
+                            else -> null
+                        }
+                        Surface(
                             onClick = {
                                 unreadDoneSessions.remove(sess.id)
                                 if (splitMode == SplitMode.SINGLE || focusedPane == 0) {
@@ -884,33 +898,59 @@ fun MainScreen(
                                     store.saveSecondarySessionId(sess.id)
                                 }
                             },
-                            label = {
-                                val statusDot = when {
-                                    sendingMap[sess.id] == true -> "🟡 "
-                                    sess.messages.lastOrNull()?.isError == true -> "🔴 "
-                                    unreadDoneSessions[sess.id] == true -> "🟢 "
-                                    else -> ""
-                                }
-                                val label = if (connName != null) "$statusDot${sess.title} · $connName" else "$statusDot${sess.title}"
-                                Text(label, maxLines = 1)
+                            shape = RoundedCornerShape(8.dp),
+                            color = if (isSelected) {
+                                MaterialTheme.colorScheme.primaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
                             },
-                            trailingIcon = {
+                            border = BorderStroke(
+                                1.dp,
+                                if (isSelected) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
+                            )
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                if (dotColor != null) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(6.dp)
+                                            .background(dotColor, CircleShape)
+                                    )
+                                }
+                                ProviderMarkIcon(connection = conn, size = 16.dp)
+                                Text(
+                                    text = "${idx + 1}",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = if (isSelected) {
+                                        MaterialTheme.colorScheme.onPrimaryContainer
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    },
+                                    maxLines = 1
+                                )
                                 Icon(
                                     Icons.Default.Close,
                                     contentDescription = "세션 삭제",
                                     modifier = Modifier
-                                        .size(16.dp)
-                                        .clickable { sessionPendingDelete = sess }
+                                        .size(13.dp)
+                                        .clickable { sessionPendingDelete = sess },
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f)
                                 )
                             }
-                        )
+                        }
                     }
                     item {
                         IconButton(
                             onClick = { showNewSessionDialog = true },
-                            modifier = Modifier.size(32.dp)
+                            modifier = Modifier.size(26.dp)
                         ) {
-                            Icon(Icons.Default.Add, contentDescription = "새 하위 세션")
+                            Icon(Icons.Default.Add, contentDescription = "새 하위 세션", modifier = Modifier.size(16.dp))
                         }
                     }
                 }
