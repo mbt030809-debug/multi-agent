@@ -372,7 +372,11 @@ class HeadlessWebBridge(
                     var all = queryAllDeep('*');
                     for (var k = 0; k < all.length; k++) {
                         try {
-                            if (all[k] && all[k].isContentEditable && isVisible(all[k])) return all[k];
+                            var node = all[k];
+                            if (!node) continue;
+                            if (node.isContentEditable && isVisible(node)) return node;
+                            var ph = (node.getAttribute && (node.getAttribute('placeholder') || node.getAttribute('data-placeholder') || node.getAttribute('aria-label'))) || '';
+                            if (/ask anything|message|물어보기|입력/i.test(ph) && isVisible(node)) return node;
                         } catch(e) {}
                     }
                     return null;
@@ -493,7 +497,9 @@ class HeadlessWebBridge(
                         clearInterval(waitTimer);
                         if (window.MbtABridge) {
                             var loc = (location.hostname || '') + (location.pathname || '');
-                            window.MbtABridge.onError(reqId, 'NEED_LOGIN', '입력창을 찾을 수 없습니다 (' + loc + '). 상단 👁️ 버튼으로 화면 상태를 확인해주세요.');
+                            var iframes = document.querySelectorAll('iframe').length;
+                            var ta = queryAllDeep('textarea, input, [contenteditable]').length;
+                            window.MbtABridge.onError(reqId, 'NEED_LOGIN', '입력창을 찾을 수 없습니다 (' + loc + ', iframe=' + iframes + ', editable=' + ta + '). 상단 👁️ 버튼으로 화면 상태를 확인해주세요.');
                         }
                     }
                 }, 400);
