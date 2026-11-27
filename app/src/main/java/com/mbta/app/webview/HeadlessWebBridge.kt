@@ -567,12 +567,19 @@ class HeadlessWebBridge(
         kind: ConnectionKind,
         url: String,
         agentName: String,
+        forceReload: Boolean = false,
         onResult: (List<com.mbta.app.model.ChatMessage>) -> Unit
     ) {
         val wv = getOrCreateWebView(key, url)
         val navigated = navigateIfNeeded(key, url)
+        val reloaded = if (!navigated && forceReload) {
+            loadedUrls[key] = false
+            log("fetchWebSessionMessages reload key=$key url=$url")
+            wv.reload()
+            true
+        } else false
         val expectedPath = runCatching { Uri.parse(url).path.orEmpty() }.getOrDefault("")
-        val delayMs = if (navigated) 1200L else 300L
+        val delayMs = if (navigated || reloaded) 1500L else 300L
         val selector = when (kind) {
             ConnectionKind.CHATGPT_WEB -> "[data-message-author-role=\"user\"], [data-message-author-role=\"assistant\"]"
             ConnectionKind.CLAUDE_WEB -> "[data-testid=\"user-message\"], .font-user-message, .font-claude-response, .font-claude-message"

@@ -549,6 +549,45 @@ fun MainScreen(
         store.saveSessions(sessions)
     }
 
+    val lastRefreshAtMap = remember { mutableStateMapOf<String, Long>() }
+    fun refreshSessionFromRemote(sess: AgentSession) {
+        if (sendingMap[sess.id] == true) return
+        val now = System.currentTimeMillis()
+        val prev = lastRefreshAtMap[sess.id] ?: 0L
+        if (now - prev < 3000L) return
+        lastRefreshAtMap[sess.id] = now
+
+        val conn = connections.find { it.id == sess.connectionId } ?: return
+        val mergeFetched: (List<ChatMessage>) -> Unit = { fetched ->
+            if (fetched.isNotEmpty() && sendingMap[sess.id] != true) {
+                val latestSess = sessions.find { it.id == sess.id }
+                val curNonSys = latestSess?.messages?.filter { it.role != MessageRole.SYSTEM }.orEmpty()
+                val hasNew = fetched.size > curNonSys.size ||
+                    fetched.last().content != curNonSys.lastOrNull()?.content ||
+                    fetched.last().role != curNonSys.lastOrNull()?.role
+                if (hasNew) {
+                    sessions = sessions.map { if (it.id == sess.id) it.copy(messages = fetched) else it }
+                    store.saveSessions(sessions)
+                }
+            }
+        }
+        if (conn.usesHiddenWebBridge() && sess.webConversationUrl.isNotBlank()) {
+            headlessWebBridge.fetchWebSessionMessages(
+                key = conn.id,
+                kind = conn.kind,
+                url = sess.webConversationUrl,
+                agentName = conn.name,
+                forceReload = true,
+                onResult = mergeFetched
+            )
+        } else if (!conn.usesHiddenWebBridge() && sess.cliSessionId.isNotBlank()) {
+            val bridgeKind = if (conn.endpointUrl.lowercase().contains("/agy")) "agy" else "claude"
+            scope.launch {
+                mergeFetched(GitBridgeClient.fetchSessionMessages(bridgeKind, sess.cliSessionId, conn.name))
+            }
+        }
+    }
+
     fun retryLastInSession(session: AgentSession, conn: AiConnection) {
         val lastUserIdx = session.messages.indexOfLast { it.role == MessageRole.USER }
         if (lastUserIdx == -1) return
@@ -939,6 +978,7 @@ fun MainScreen(
                                     secondarySessionId = sess.id
                                     store.saveSecondarySessionId(sess.id)
                                 }
+                                refreshSessionFromRemote(sess)
                             },
                             shape = RoundedCornerShape(10.dp),
                             color = if (isSelected) {
@@ -1659,7 +1699,7 @@ fun MainScreen(
                 }
 
                 if (conn.usesHiddenWebBridge() && item.url.isNotBlank()) {
-                    headlessWebBridge.fetchWebSessionMessages(conn.id, conn.kind, item.url, conn.name, applyMessages)
+                    headlessWebBridge.fetchWebSessionMessages(conn.id, conn.kind, item.url, conn.name, onResult = applyMessages)
                 } else {
                     val bridgeKind = if (conn.endpointUrl.lowercase().contains("/agy")) "agy" else "claude"
                     scope.launch {
