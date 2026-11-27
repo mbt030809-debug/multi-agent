@@ -129,6 +129,7 @@ def extract_claude_title(jsonl_path):
 PROGRESS_LOCK = threading.Lock()
 PROGRESS_MAP = {}
 ACTIVE_PROCS = {}
+ACTIVE_STARTED = {}
 MODELS_CACHE = {}
 JOBS_LOCK = threading.Lock()
 JOBS_MAP = {}
@@ -246,12 +247,13 @@ def load_claude_messages(sid, limit=40):
     return msgs[-limit:]
 
 
-def run_cli(cmd, cwd=None, timeout=1800, progress_key=""):
+def run_cli(cmd, cwd=None, timeout=1800, progress_key="", stream_mode=False):
     work_dir = cwd if (cwd and os.path.isdir(cwd)) else None
     if not progress_key:
         return subprocess.run(cmd, cwd=work_dir, capture_output=True, text=True, timeout=timeout)
     with PROGRESS_LOCK:
         PROGRESS_MAP[progress_key] = [f"▶ {' '.join(cmd[:3])} 실행 중..."]
+        ACTIVE_STARTED[progress_key] = time.time()
     proc = subprocess.Popen(
         cmd,
         cwd=work_dir,
@@ -262,6 +264,9 @@ def run_cli(cmd, cwd=None, timeout=1800, progress_key=""):
     with PROGRESS_LOCK:
         ACTIVE_PROCS[progress_key] = proc
     stderr_lines = []
+    stdout_lines = []
+    final_result = None
+    delta_buf = ""
 
     def _read_err():
         try:
@@ -274,7 +279,54 @@ def run_cli(cmd, cwd=None, timeout=1800, progress_key=""):
     t = threading.Thread(target=_read_err, daemon=True)
     t.start()
     try:
-        out, _ = proc.communicate(timeout=timeout)
+        if stream_mode and proc.stdout:
+            for line in proc.stdout:
+                stdout_lines.append(line)
+                s = line.strip()
+                if not s:
+                    continue
+                try:
+                    obj = json.loads(s)
+                except Exception:
+                    continue
+                ev = obj.get("event")
+                tp = obj.get("type")
+                if ev == "init":
+                    append_progress(progress_key, "🔗 Antigravity 세션 연결됨")
+                elif ev == "step_update":
+                    su = obj.get("step_update") or {}
+                    st = su.get("step_type", "")
+                    state = su.get("state", "")
+                    delta = su.get("text_delta", "")
+                    if delta:
+                        delta_buf = (delta_buf + delta)[-120:]
+                        with PROGRESS_LOCK:
+                            arr = PROGRESS_MAP.setdefault(progress_key, [])
+                            msg = f"💬 {delta_buf.replace(chr(10), ' ')}"
+                            if arr and arr[-1].startswith("💬 "):
+                                arr[-1] = msg
+                            else:
+                                arr.append(msg)
+                    elif st and st != "user_input":
+                        append_progress(progress_key, f"⚙️ {st} ({state})")
+                elif ev == "result":
+                    final_result = obj.get("result")
+                elif tp == "system" and obj.get("subtype") == "init":
+                    append_progress(progress_key, "🔗 Claude 세션 연결됨")
+                elif tp == "assistant":
+                    msg = obj.get("message") or {}
+                    for blk in (msg.get("content") or []):
+                        if isinstance(blk, dict):
+                            if blk.get("type") == "tool_use":
+                                append_progress(progress_key, f"🔧 도구 실행: {blk.get('name', '')}")
+                            elif blk.get("type") == "text" and blk.get("text"):
+                                append_progress(progress_key, f"💬 {blk['text'][:100].replace(chr(10), ' ')}")
+                elif tp == "result":
+                    final_result = obj
+            proc.wait(timeout=timeout)
+            out = json.dumps(final_result, ensure_ascii=False) if final_result is not None else "".join(stdout_lines)
+        else:
+            out, _ = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
         proc.kill()
         out, _ = proc.communicate()
@@ -282,6 +334,7 @@ def run_cli(cmd, cwd=None, timeout=1800, progress_key=""):
         with PROGRESS_LOCK:
             if ACTIVE_PROCS.get(progress_key) is proc:
                 ACTIVE_PROCS.pop(progress_key, None)
+            ACTIVE_STARTED.pop(progress_key, None)
     t.join(timeout=1)
     return subprocess.CompletedProcess(cmd, proc.returncode, out or "", "".join(stderr_lines))
 
@@ -473,7 +526,15 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
             sid = (qs.get("session_id") or [""])[0]
             with PROGRESS_LOCK:
                 lines = list(PROGRESS_MAP.get(sid, []))
-            self._send_json(200, {"lines": lines})
+                proc = ACTIVE_PROCS.get(sid)
+                alive = proc is not None and proc.poll() is None
+                started = ACTIVE_STARTED.get(sid)
+            elapsed_sec = int(time.time() - started) if (alive and started) else 0
+            if alive:
+                mins, secs = divmod(elapsed_sec, 60)
+                t_str = f"{mins}분 {secs}초" if mins > 0 else f"{secs}초"
+                lines = [f"🟢 프로세스 활성 · {t_str} 경과"] + lines
+            self._send_json(200, {"lines": lines, "alive": alive, "elapsed_sec": elapsed_sec})
         elif self.path.startswith("/session_messages"):
             from urllib.parse import urlparse, parse_qs
             qs = parse_qs(urlparse(self.path).query)
@@ -693,7 +754,7 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
             key = f"claude:{mbta_session_id}" if mbta_session_id else ""
             cwd = (data.get("cwd") or "").strip()
             permission_mode = (data.get("permission_mode") or "").strip()
-            cmd = ["claude", "-p", prompt, "--output-format", "json"]
+            cmd = ["claude", "-p", prompt, "--output-format", "stream-json", "--verbose"]
             if data.get("model"):
                 cmd.extend(["--model", data["model"]])
             if permission_mode in ("plan", "acceptEdits", "auto", "default", "bypassPermissions", "dontAsk"):
@@ -705,7 +766,7 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                     cli_sid = str(data.get("cli_session_id")).strip()
                 if cli_sid:
                     cmd.extend(["--resume", cli_sid])
-            proc = run_cli(cmd, cwd=cwd, progress_key=mbta_session_id)
+            proc = run_cli(cmd, cwd=cwd, progress_key=mbta_session_id, stream_mode=True)
             if proc.returncode != 0:
                 self._send_json(500, {"error": proc.stderr or proc.stdout or "claude failed"})
                 return
@@ -733,7 +794,7 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
             cwd = (data.get("cwd") or "").strip()
             model = normalize_agy_model(data.get("model") or "")
             permission_mode = (data.get("permission_mode") or "").strip()
-            cmd = ["agy", "-p", prompt, "--output-format", "json"]
+            cmd = ["agy", "-p", prompt, "--output-format", "stream-json"]
             if permission_mode == "plan":
                 cmd.extend(["--mode", "plan"])
             elif permission_mode == "auto":
@@ -749,7 +810,7 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                     cli_sid = str(data.get("cli_session_id")).strip()
                 if cli_sid:
                     cmd.extend(["--resume", cli_sid])
-            proc = run_cli(cmd, cwd=cwd, progress_key=mbta_session_id)
+            proc = run_cli(cmd, cwd=cwd, progress_key=mbta_session_id, stream_mode=True)
             if proc.returncode != 0 and "invalid model selection" in ((proc.stderr or "") + (proc.stdout or "")).lower():
                 fallback_cmd = ["agy", "-p", prompt, "--output-format", "json"]
                 if key and cli_sid:
