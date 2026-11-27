@@ -307,7 +307,7 @@ fun SessionPane(
     onTogglePinMessage: (String) -> Unit = {},
     onStopSubagent: (String) -> Unit = {},
     onRetrySubagent: (String) -> Unit = {},
-    onAttachOrchestration: (enabled: Boolean, subConnId: String?, subModel: String, subEffort: String, maxParallel: Int, maxRounds: Int) -> Unit = { _, _, _, _, _, _ -> },
+    onAttachOrchestration: (enabled: Boolean, subConnId: String?, subModel: String, subEffort: String, maxParallel: Int, maxRounds: Int, sensitivity: String) -> Unit = { _, _, _, _, _, _, _ -> },
     onToggleSkipPermissions: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
@@ -680,8 +680,13 @@ fun SessionPane(
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.primary
                         )
+                        val sensLabel = when (session.subagentSensitivity) {
+                            "high" -> "높음"
+                            "low" -> "낮음"
+                            else -> "보통"
+                        }
                         Text(
-                            text = "서브: ${subConn?.name ?: "동일"}${if (subModelLabel.isNotBlank()) " · $subModelLabel" else ""} (최대 ${session.maxParallelSubagents}×${session.maxDelegationRounds})",
+                            text = "서브: ${subConn?.name ?: "동일"}${if (subModelLabel.isNotBlank()) " · $subModelLabel" else ""} (${session.maxParallelSubagents}×${session.maxDelegationRounds} · $sensLabel)",
                             fontSize = 9.5.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
@@ -1743,6 +1748,7 @@ fun SessionPane(
         }
         var maxParallel by remember(session.id) { mutableStateOf(session.maxParallelSubagents.coerceIn(1, 8)) }
         var maxRounds by remember(session.id) { mutableStateOf(session.maxDelegationRounds.coerceIn(1, 6)) }
+        var sensitivity by remember(session.id) { mutableStateOf(session.subagentSensitivity.ifBlank { "medium" }) }
 
         AlertDialog(
             onDismissRequest = { showAttachOrchDialog = false },
@@ -1885,13 +1891,48 @@ fun SessionPane(
                             ) { Text("+", fontSize = 13.sp) }
                         }
                     }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("호출 민감도", fontSize = 12.sp)
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            listOf("low" to "낮음", "medium" to "보통", "high" to "높음").forEach { (key, lbl) ->
+                                val sel = sensitivity == key
+                                Surface(
+                                    onClick = { sensitivity = key },
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = if (sel) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
+                                    border = BorderStroke(1.dp, if (sel) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+                                ) {
+                                    Text(
+                                        text = lbl,
+                                        fontSize = 10.5.sp,
+                                        fontWeight = if (sel) FontWeight.SemiBold else FontWeight.Normal,
+                                        color = if (sel) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    Text(
+                        text = when (sensitivity) {
+                            "high" -> "단순 인사 외 대부분 작업을 서브에이전트에 분할 위임"
+                            "low" -> "대규모 병렬 작업에만 최소한으로 서브에이전트 호출"
+                            else -> "2개 이상 파일 수정·조사·검증 시 적극 위임 (추천)"
+                        },
+                        fontSize = 10.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             },
             confirmButton = {
                 Button(
                     onClick = {
                         showAttachOrchDialog = false
-                        onAttachOrchestration(true, subConn?.id, subModel, subEffort, maxParallel, maxRounds)
+                        onAttachOrchestration(true, subConn?.id, subModel, subEffort, maxParallel, maxRounds, sensitivity)
                     }
                 ) {
                     Text(if (session.isOrchestration) "적용" else "서브 연결")
@@ -1903,7 +1944,7 @@ fun SessionPane(
                         TextButton(
                             onClick = {
                                 showAttachOrchDialog = false
-                                onAttachOrchestration(false, null, "", "", maxParallel, maxRounds)
+                                onAttachOrchestration(false, null, "", "", maxParallel, maxRounds, sensitivity)
                             }
                         ) { Text("연결 해제", color = MaterialTheme.colorScheme.error) }
                     }

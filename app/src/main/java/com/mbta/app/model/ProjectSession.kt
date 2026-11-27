@@ -71,6 +71,7 @@ data class AgentSession(
     val subEffort: String = "",
     val maxParallelSubagents: Int = 3,
     val maxDelegationRounds: Int = 3,
+    val subagentSensitivity: String = "medium", // low, medium, high
     val skipPermissions: Boolean = false,
     val subagentRuns: List<SubagentRun> = emptyList()
 )
