@@ -214,6 +214,19 @@ fun SettingsScreen(
                             Text(kind.displayLabel(), fontSize = 12.sp)
                         }
                     }
+                    OutlinedButton(onClick = {
+                        editingConnection = AiConnection(
+                            id = "conn_${UUID.randomUUID()}",
+                            name = "Claude Code",
+                            kind = ConnectionKind.REMOTE_WEB,
+                            endpointUrl = "https://claude.ai/code",
+                            enabled = true
+                        )
+                    }) {
+                        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.size(4.dp))
+                        Text("Claude Code (웹)", fontSize = 12.sp)
+                    }
                 }
             }
 
