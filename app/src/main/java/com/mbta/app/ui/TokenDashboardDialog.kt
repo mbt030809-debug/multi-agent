@@ -41,7 +41,6 @@ fun TokenDashboardDialog(
     tokenUsageMap: Map<String, AgentTokenUsage>,
     onResetAgent: (String) -> Unit,
     onResetAll: () -> Unit,
-    onSetCustomLimit: (String, Long?) -> Unit = { _, _ -> },
     onDismiss: () -> Unit
 ) {
     val totalInput = tokenUsageMap.values.sumOf { it.inputTokens }
@@ -155,47 +154,11 @@ fun TokenDashboardDialog(
                                                 .height(5.dp)
                                         )
                                         Text(
-                                            text = "${usage.quotaLabel.ifBlank { "계정 한도" }}: ${usage.quotaPercent}%",
+                                            text = "${usage.quotaLabel.ifBlank { "자동 한도" }} · 잔여 ${usage.quotaPercent}%",
                                             fontSize = 10.sp,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                                             modifier = Modifier.padding(top = 2.dp)
                                         )
-                                    } else if (limit != null && limit > 0L) {
-                                        Spacer(modifier = Modifier.height(6.dp))
-                                        val progress = (usage.totalTokens.toFloat() / limit.toFloat()).coerceIn(0f, 1f)
-                                        LinearProgressIndicator(
-                                            progress = { progress },
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .height(5.dp)
-                                        )
-                                        Text(
-                                            text = "한도 ${formatTokens(limit)} 중 ${(progress * 100).toInt()}%",
-                                            fontSize = 10.sp,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            modifier = Modifier.padding(top = 2.dp)
-                                        )
-                                    }
-                                    Row(
-                                        modifier = Modifier.padding(top = 6.dp),
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                    ) {
-                                        listOf(100_000L to "100K", 500_000L to "500K", 1_000_000L to "1M", 5_000_000L to "5M").forEach { (valLim, lbl) ->
-                                            val sel = usage.customLimit == valLim
-                                            Surface(
-                                                shape = RoundedCornerShape(4.dp),
-                                                color = if (sel) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
-                                                modifier = Modifier.padding(vertical = 2.dp)
-                                            ) {
-                                                TextButton(
-                                                    onClick = { onSetCustomLimit(conn.id, if (sel) null else valLim) },
-                                                    modifier = Modifier.height(24.dp),
-                                                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 6.dp, vertical = 0.dp)
-                                                ) {
-                                                    Text(lbl, fontSize = 10.sp)
-                                                }
-                                            }
-                                        }
                                     }
                                 }
                             }

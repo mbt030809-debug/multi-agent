@@ -413,8 +413,9 @@ class HeadlessWebBridge(
             inputTokens = 0L,
             onChunk = { pctStr ->
                 pending.remove(usageReqId)
-                val pct = pctStr.toIntOrNull()?.coerceIn(0, 100)
-                onResult(pct, "Claude 사용량")
+                val usedPct = pctStr.toIntOrNull()?.coerceIn(0, 100)
+                val remPct = usedPct?.let { (100 - it).coerceIn(0, 100) }
+                onResult(remPct, "Claude 계정")
             },
             onDone = { _, _, _ -> },
             onError = { _ -> }

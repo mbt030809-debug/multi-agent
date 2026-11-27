@@ -207,14 +207,14 @@ object AiApiClient {
             val rlLimit = response.header("anthropic-ratelimit-tokens-limit")?.toLongOrNull()
             val rlRem = response.header("anthropic-ratelimit-tokens-remaining")?.toLongOrNull()
             val quotaPct = if (rlLimit != null && rlRem != null && rlLimit > 0L) {
-                (((rlLimit - rlRem) * 100L) / rlLimit).toInt().coerceIn(0, 100)
+                ((rlRem * 100L) / rlLimit).toInt().coerceIn(0, 100)
             } else null
             return AiReply(
                 text = text,
                 inputTokens = inTok,
                 outputTokens = outTok,
                 quotaPercent = quotaPct,
-                quotaLabel = if (quotaPct != null) "Claude API 한도" else ""
+                quotaLabel = if (quotaPct != null) "Claude API" else ""
             )
         }
     }
@@ -272,14 +272,14 @@ object AiApiClient {
             val rlLimit = response.header("anthropic-ratelimit-tokens-limit")?.toLongOrNull()
             val rlRem = response.header("anthropic-ratelimit-tokens-remaining")?.toLongOrNull()
             val quotaPct = if (rlLimit != null && rlRem != null && rlLimit > 0L) {
-                (((rlLimit - rlRem) * 100L) / rlLimit).toInt().coerceIn(0, 100)
+                ((rlRem * 100L) / rlLimit).toInt().coerceIn(0, 100)
             } else null
             return AiReply(
                 text = text,
                 inputTokens = inTok,
                 outputTokens = outTok,
                 quotaPercent = quotaPct,
-                quotaLabel = if (quotaPct != null) "Claude API 한도" else ""
+                quotaLabel = if (quotaPct != null) "Claude API" else ""
             )
         }
     }
@@ -346,14 +346,14 @@ object AiApiClient {
             val rlLimit = response.header("anthropic-ratelimit-tokens-limit")?.toLongOrNull()
             val rlRem = response.header("anthropic-ratelimit-tokens-remaining")?.toLongOrNull()
             val quotaPct = if (rlLimit != null && rlRem != null && rlLimit > 0L) {
-                (((rlLimit - rlRem) * 100L) / rlLimit).toInt().coerceIn(0, 100)
+                ((rlRem * 100L) / rlLimit).toInt().coerceIn(0, 100)
             } else null
             return AiReply(
                 text = text,
                 inputTokens = inTok,
                 outputTokens = outTok,
                 quotaPercent = quotaPct,
-                quotaLabel = if (quotaPct != null) "Claude API 한도" else ""
+                quotaLabel = if (quotaPct != null) "Claude API" else ""
             )
         }
     }

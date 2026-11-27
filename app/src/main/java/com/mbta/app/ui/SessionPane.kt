@@ -290,14 +290,11 @@ fun SessionPane(
 
             if (connection != null) {
                 val totalTok = tokenUsage?.totalTokens ?: 0L
-                val limitTok = tokenUsage?.customLimit ?: tokenUsage?.contextLimit ?: defaultContextLimitForKind(connection.kind)
-                val pct = tokenUsage?.quotaPercent ?: if (limitTok != null && limitTok > 0L) {
-                    ((totalTok * 100L) / limitTok).toInt().coerceIn(0, 100)
-                } else null
-                val badgeText = if (pct != null) "${formatTokens(totalTok)} ($pct%)" else formatTokens(totalTok)
+                val remPct = tokenUsage?.quotaPercent
+                val badgeText = if (remPct != null) "${formatTokens(totalTok)} · 잔여 $remPct%" else formatTokens(totalTok)
                 val badgeColor = when {
-                    pct != null && pct >= 90 -> MaterialTheme.colorScheme.error
-                    pct != null && pct >= 75 -> androidx.compose.ui.graphics.Color(0xFFFF9800)
+                    remPct != null && remPct <= 10 -> MaterialTheme.colorScheme.error
+                    remPct != null && remPct <= 25 -> androidx.compose.ui.graphics.Color(0xFFFF9800)
                     else -> MaterialTheme.colorScheme.primary
                 }
                 Surface(

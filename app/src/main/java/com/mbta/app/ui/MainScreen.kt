@@ -1249,11 +1249,6 @@ fun MainScreen(
         TokenDashboardDialog(
             connections = enabledConnections,
             tokenUsageMap = tokenUsageMap,
-            onSetCustomLimit = { connId, newLim ->
-                val cur = tokenUsageMap[connId] ?: AgentTokenUsage(panelId = connId)
-                tokenUsageMap[connId] = cur.copy(customLimit = newLim)
-                store.saveTokenUsage(tokenUsageMap)
-            },
             onResetAgent = onResetAgentTokens,
             onResetAll = onResetAllTokens,
             onDismiss = { showTokenDashboard = false }
