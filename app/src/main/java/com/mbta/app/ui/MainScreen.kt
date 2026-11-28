@@ -71,6 +71,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.VerticalDivider
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -435,6 +436,7 @@ fun MainScreen(
         return try {
             val (outText, errText) = if (effectiveSubConn.usesHiddenWebBridge()) {
                 // 웹 서브: 지정된 모델/effort를 웹 화면에 맞춘 뒤 전송
+                headlessWebBridge.ensureLoaded(effectiveSubConn.id, effectiveSubConn.endpointUrl)
                 if (subModelFinal.isNotBlank() && webAppliedModel[effectiveSubConn.id] != subModelFinal) {
                     awaitWebSwitch(true, effectiveSubConn.id, subModelFinal)
                     kotlinx.coroutines.delay(400L)
@@ -647,6 +649,7 @@ fun MainScreen(
                     for (round in 1..(maxRounds + 1)) {
                         val (mainText, mainErr) = if (effectiveMainConn.usesHiddenWebBridge()) {
                             val orchWebKey = com.mbta.app.model.webSessionKey(effectiveMainConn.id, session.id)
+                            headlessWebBridge.ensureLoaded(orchWebKey, session.webConversationUrl.ifBlank { effectiveMainConn.endpointUrl })
                             skipLeftoverWebCard(orchWebKey)
                             if (round == 1) {
                                 val wantModel = session.selectedModel.trim()
@@ -679,7 +682,7 @@ fun MainScreen(
                                                 }
                                             }
                                         }
-                                        kotlinx.coroutines.delay(2500L)
+                                        kotlinx.coroutines.delay(headlessWebBridge.checkIntervalFor(orchWebKey))
                                     }
                                 }
                             } else null
@@ -1008,7 +1011,7 @@ fun MainScreen(
                                 }
                             }
                         }
-                        kotlinx.coroutines.delay(2500L)
+                        kotlinx.coroutines.delay(headlessWebBridge.checkIntervalFor(askKey))
                     }
                     webQuestionMap.remove(askSid)
                 }
@@ -1022,7 +1025,9 @@ fun MainScreen(
             val switchWarns = mutableListOf<String>()
             fun withSwitchWarns(body: String): String =
                 if (switchWarns.isEmpty()) body else switchWarns.joinToString("\n") + "\n\n" + body
-            scope.launch {
+            // 창을 깨우는 동안 중지를 누르면 전송하지 않도록 취소 가능한 작업으로 등록
+            activeJobs[session.id] = scope.launch {
+                headlessWebBridge.ensureLoaded(webSendKey, session.webConversationUrl.ifBlank { targetConn.endpointUrl })
                 skipLeftoverWebCard(webSendKey)
                 if (wantModel.isNotBlank() && webAppliedModel[webSendKey] != wantModel) {
                     awaitWebSwitch(true, webSendKey, wantModel)?.let { switchWarns.add(switchWarnLine(true, it)) }
@@ -1628,11 +1633,15 @@ fun MainScreen(
     }.distinctBy { it.first }
 
     // 세션별 독립 WebView: 화면에 보이거나 응답 중인 웹 세션만 호스트에 붙임 (동시 실행 지원)
-    val sessionWebTargets = sessions.filter { s ->
-        s.id == primarySession?.id || s.id == secondarySession?.id || sendingMap[s.id] == true
-    }.mapNotNull { s ->
-        val c = connections.find { it.id == s.connectionId }
-        if (c != null && c.enabled && c.usesHiddenWebBridge()) com.mbta.app.model.webSessionKey(c.id, s.id) to s.webConversationUrl.ifBlank { c.endpointUrl } else null
+    // 지금 보고 있는 세션 (설정·웹 화면이 덮고 있으면 없음) — 답변 확인 간격을 정함
+    val viewedWebKeys: Set<String> = if (showSettings || loginConnection != null) emptySet() else {
+        listOfNotNull(primarySession, secondarySession.takeIf { splitMode != SplitMode.SINGLE }).mapNotNull { s ->
+            val c = connections.find { it.id == s.connectionId }
+            if (c != null && c.enabled && c.usesHiddenWebBridge()) com.mbta.app.model.webSessionKey(c.id, s.id) else null
+        }.toSet()
+    }
+    SideEffect {
+        headlessWebBridge.setViewState(viewedWebKeys, setOfNotNull(loginConnection?.id))
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -1648,14 +1657,8 @@ fun MainScreen(
                 }
             },
             update = { host ->
-                if (loginConnection == null) {
-                    connections.filter { it.enabled && it.usesHiddenWebBridge() }.forEach { conn ->
-                        headlessWebBridge.attachToHiddenHost(host, conn.id, conn.endpointUrl)
-                    }
-                    sessionWebTargets.forEach { (key, url) ->
-                        headlessWebBridge.attachToHiddenHost(host, key, url)
-                    }
-                }
+                // 여기서는 창을 만들지 않음 (팬딩으로 닫은 창이 화면을 다시 그릴 때마다 되살아나지 않게)
+                if (loginConnection == null) headlessWebBridge.bindHiddenHost(host)
             }
         )
 

@@ -701,6 +701,15 @@ fun SessionPane(
     val attachmentsState = remember(drafts) { drafts?.attsState ?: mutableStateOf<List<PendingAttachment>>(emptyList()) }
     var inputText by inputState
     var attachments by attachmentsState
+    // 팬딩으로 닫힌 웹 창은 글을 쓰기 시작하면 미리 열어 전송 대기를 줄임 (입력 중에는 닫히지 않음)
+    LaunchedEffect(session.id, inputText, isFocused) {
+        if (isFocused && inputText.isNotBlank() && connection != null && connection.kind.isHiddenWebBridge()) {
+            headlessWebBridge.prewake(
+                com.mbta.app.model.webSessionKey(connection.id, session.id),
+                session.webConversationUrl.ifBlank { connection.endpointUrl }
+            )
+        }
+    }
     var showHandoffDialog by remember { mutableStateOf(false) }
     var showAttachOrchDialog by remember { mutableStateOf(false) }
     var showModelMenu by remember { mutableStateOf(false) }
