@@ -460,6 +460,10 @@ class HeadlessWebBridge(
         val wv = getOrCreateWebView(key, conversationUrl.ifBlank { url })
         val navigated = if (conversationUrl.isNotBlank()) navigateIfNeeded(key, conversationUrl) else false
         val reqId = UUID.randomUUID().toString()
+        // 같은 WebView에서 진행 중이던 이전 요청은 새 요청이 타이머를 정리하므로 끝나지 않음 → 오류로 종료시켜 대기 상태로 남지 않게 함
+        activeReqByKey[key]?.let { oldId ->
+            pending.remove(oldId)?.let { old -> mainHandler.post { old.onError("새 요청이 시작되어 이전 요청을 중단했습니다.") } }
+        }
         activeReqByKey[key] = reqId
         log("sendPrompt key=$key kind=${kind.name} navigated=$navigated loaded=${loadedUrls[key]} wvUrl=${wv.url}")
         val estInput = ceil(prompt.length / 3.0).toLong().coerceAtLeast(1L)
@@ -1988,7 +1992,7 @@ class HeadlessWebBridge(
                                 'button[aria-label*="보내기"]',
                                 'button[type="submit"]'
                             ];
-                            var excludeRe = /내보내기|공유|export|share|stop|중지|취소|cancel|opus|sonnet|haiku|fable|flash|pro|모델/i;
+                            var excludeRe = /내보내기|공유|export|share|stop|중지|취소|cancel|opus|sonnet|haiku|fable|flash|\bpro\b|모델/i;
                             var exactSendSelectors = ['button[aria-label="메시지 보내기"]', 'button[aria-label="Send message"]'];
                             var sb = null;
                             for (var si = 0; si < sendSelectors.length && !sb; si++) {
@@ -2017,7 +2021,7 @@ class HeadlessWebBridge(
                                         var btn = btns[b];
                                         if (!btn || btn.disabled || !isVisible(btn)) continue;
                                         var bLabel = ((btn.getAttribute('aria-label') || '') + ' ' + (btn.innerText || '')).toLowerCase();
-                                        if (/attach|upload|mic|voice|record|plus|add|menu|model|gemini|claude|마이크|음성|첨부|업로드|추가|도구|모델|내보내기|공유|export|share|stop|중지|취소|cancel|opus|sonnet|haiku|fable|flash|pro/.test(bLabel)) continue;
+                                        if (/attach|upload|mic|voice|record|plus|add|menu|model|gemini|claude|마이크|음성|첨부|업로드|추가|도구|모델|내보내기|공유|export|share|stop|중지|취소|cancel|opus|sonnet|haiku|fable|flash|\bpro\b/.test(bLabel)) continue;
                                         sb = btn;
                                         break;
                                     }
