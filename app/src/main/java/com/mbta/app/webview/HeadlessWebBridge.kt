@@ -1598,6 +1598,17 @@ class HeadlessWebBridge(
                         if (lastUser && !(lastUser.compareDocumentPosition(a) & Node.DOCUMENT_POSITION_FOLLOWING)) continue;
                         var t = (a.innerText || '').trim();
                         if (t) parts.push(t);
+                        // 파일 카드/다운로드 링크는 글자만으로는 안 보이므로 [📎 이름](주소) 줄로 덧붙임 (앱이 다운로드 버튼으로 표시)
+                        var ls = a.querySelectorAll('a[href]');
+                        for (var li = 0; li < ls.length; li++) {
+                            var l = ls[li];
+                            var href = l.href || '';
+                            if (!href || href.indexOf('blob:') === 0 || t.indexOf(href) >= 0) continue;
+                            if (l.hasAttribute('download') || /\.(apk|zip|pdf|png|jpe?g|gif|webp|mp4|mp3|csv|xlsx?|docx?|pptx?|tar|gz|7z|txt|md|json)(\?|#|$)/i.test(href) || /\/(download|files)\//i.test(href)) {
+                                var nm = ((l.getAttribute('download') || l.innerText || '') + '').trim().split('\n')[0] || href.split('?')[0].split('/').pop();
+                                parts.push('[📎 ' + nm + '](' + href + ')');
+                            }
+                        }
                     }
                     return { count: assts.length, text: parts.join('\n\n') };
                 }

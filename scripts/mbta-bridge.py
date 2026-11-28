@@ -119,6 +119,31 @@ def fetch_real_quota(kind, force=False):
     return res
 
 
+DOWNLOAD_ROOTS = [os.path.expanduser("~"), "/storage/emulated/0", "/sdcard"]
+DOWNLOAD_EXTS = {"apk", "zip", "pdf", "png", "jpg", "jpeg", "gif", "webp", "mp4", "mp3", "csv", "xls", "xlsx", "doc", "docx", "ppt", "pptx", "tar", "gz", "7z", "html", "htm", "txt", "md", "json", "log"}
+
+
+def safe_download_path(raw):
+    """앱에서 파일 카드로 내려받을 수 있는 경로만 허용 (홈 폴더/공용 저장소 하위의 실제 파일)"""
+    if not raw:
+        return ""
+    p = os.path.realpath(os.path.expanduser(raw))
+    if not os.path.isfile(p):
+        return ""
+    # 자격증명 등이 새지 않도록: 산출물 확장자만, 숨김 파일/폴더(.claude, .bashrc 등) 차단
+    ext = os.path.splitext(p)[1].lower().lstrip(".")
+    if ext not in DOWNLOAD_EXTS:
+        return ""
+    for root in DOWNLOAD_ROOTS:
+        rr = os.path.realpath(root)
+        if p.startswith(rr + os.sep):
+            rel = p[len(rr) + 1:]
+            if any(part.startswith(".") for part in rel.split(os.sep)):
+                return ""
+            return p
+    return ""
+
+
 def load_sessions():
     try:
         with open(SESSION_FILE, "r", encoding="utf-8") as f:
@@ -644,6 +669,32 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/health":
             self._send_json(200, {"status": "ok", "endpoints": ["/claude", "/agy", "/exec", "/sessions", "/progress"]})
+        elif self.path.startswith("/filestat") or self.path.startswith("/download"):
+            from urllib.parse import urlparse, parse_qs
+            qs = parse_qs(urlparse(self.path).query)
+            raw = (qs.get("path") or [""])[0]
+            full = safe_download_path(raw)
+            if not full:
+                self._send_json(404, {"error": "not found or not allowed"})
+                return
+            if self.path.startswith("/filestat"):
+                self._send_json(200, {"name": os.path.basename(full), "size": os.path.getsize(full)})
+                return
+            import mimetypes
+            ctype = mimetypes.guess_type(full)[0] or "application/octet-stream"
+            size = os.path.getsize(full)
+            from urllib.parse import quote
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(size))
+            self.send_header("Content-Disposition", "attachment; filename*=UTF-8''" + quote(os.path.basename(full)))
+            self.end_headers()
+            with open(full, "rb") as f:
+                while True:
+                    chunk = f.read(65536)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
         elif self.path.startswith("/progress"):
             from urllib.parse import urlparse, parse_qs
             qs = parse_qs(urlparse(self.path).query)
