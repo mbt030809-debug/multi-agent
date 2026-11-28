@@ -15,14 +15,11 @@ internal object IdleWebViewPolicy {
     const val SWEEP_MS = 5_000L
     /** 새로 연 페이지가 화면을 그릴 때까지의 여유 */
     const val SETTLE_MS = 3_000L
-    /** 다시 보게 됐을 때 이 시간 동안 답변 변화가 없었으면 한 번만 새로고침 */
-    const val STALL_RELOAD_MS = 30_000L
+    /** 답변 대기 중 이 시간 동안 변화가 없으면 사용자에게 재시도·중지를 안내 (자동으로 건드리지 않음) */
+    const val STALL_NOTICE_MS = 30_000L
 
     fun checkIntervalMs(viewing: Boolean): Long = if (viewing) ACTIVE_CHECK_MS else SLOW_CHECK_MS
 
     fun shouldSleep(keepAlive: Boolean, busy: Boolean, idleMs: Long): Boolean =
         !keepAlive && !busy && idleMs >= IDLE_MS
-
-    fun shouldReloadOnView(busy: Boolean, alreadyReloaded: Boolean, sinceProgressMs: Long): Boolean =
-        busy && !alreadyReloaded && sinceProgressMs >= STALL_RELOAD_MS
 }

@@ -20,13 +20,4 @@ class IdleWebViewPolicyTest {
         assertFalse(IdleWebViewPolicy.shouldSleep(keepAlive = true, busy = false, idleMs = idle * 10))
         assertFalse(IdleWebViewPolicy.shouldSleep(keepAlive = false, busy = true, idleMs = idle * 10))
     }
-
-    @Test
-    fun reloadsOnlyOnceWhenStalled() {
-        val stall = IdleWebViewPolicy.STALL_RELOAD_MS
-        assertTrue(IdleWebViewPolicy.shouldReloadOnView(busy = true, alreadyReloaded = false, sinceProgressMs = stall))
-        assertFalse(IdleWebViewPolicy.shouldReloadOnView(busy = true, alreadyReloaded = true, sinceProgressMs = stall))
-        assertFalse(IdleWebViewPolicy.shouldReloadOnView(busy = false, alreadyReloaded = false, sinceProgressMs = stall))
-        assertFalse(IdleWebViewPolicy.shouldReloadOnView(busy = true, alreadyReloaded = false, sinceProgressMs = stall - 1))
-    }
 }

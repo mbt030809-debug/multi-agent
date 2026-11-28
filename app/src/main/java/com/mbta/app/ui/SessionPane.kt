@@ -685,6 +685,7 @@ fun SessionPane(
     headlessWebBridge: HeadlessWebBridge,
     queuedMessages: List<String> = emptyList(),
     onCancelSending: () -> Unit = {},
+    onRetryStalled: () -> Unit = {},
     onRemoveQueued: (Int) -> Unit = {},
     onSendQueuedNow: (Int) -> Unit = {},
     onRenameSession: (String) -> Unit = {},
@@ -1358,6 +1359,36 @@ fun SessionPane(
                             color = if (useProjectContext) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
                         )
+                    }
+                }
+            }
+
+            // 웹 답변이 한동안 멈추면 알려주고, 어떻게 할지는 사용자가 정함
+            var stalledSec by remember(session.id) { mutableStateOf(0L) }
+            LaunchedEffect(session.id, isSending) {
+                stalledSec = 0L
+                while (isSending) {
+                    kotlinx.coroutines.delay(5000L)
+                    stalledSec = headlessWebBridge.stalledSeconds(session.id)
+                }
+            }
+            if (isSending && stalledSec > 0L && parseAskMarker(session.messages.lastOrNull()?.content.orEmpty()) == null) {
+                Surface(
+                    color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.55f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "답변이 ${stalledSec}초째 그대로예요. 다시 보내면 웹 대화에 같은 글이 두 번 남을 수 있어요.",
+                            fontSize = 10.5.sp,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            modifier = Modifier.weight(1f)
+                        )
+                        TextButton(onClick = onRetryStalled) { Text("재시도", fontSize = 11.sp) }
+                        TextButton(onClick = onCancelSending) { Text("중지", fontSize = 11.sp) }
                     }
                 }
             }

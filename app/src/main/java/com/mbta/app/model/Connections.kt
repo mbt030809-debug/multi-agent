@@ -167,6 +167,14 @@ fun extractParenEffort(model: String): String =
  * effort가 모델 이름의 "(Low/Medium/High)" 변형으로 표현되는 연결(Antigravity 등)에서,
  * 별도로 고른 effort를 모델 이름에 반영한다. 변형이 없으면 모델을 그대로 돌려준다.
  */
+/** 새 설정의 기본 모델. 웹 연결은 비워서 웹 화면에 설정된 모델을 그대로 사용 (앱의 모델 이름은 웹과 다를 수 있음) */
+fun initialModelFor(connection: AiConnection): String =
+    if (connection.usesHiddenWebBridge()) "" else connection.model.ifBlank { defaultModelFor(connection) }
+
+/** 모델을 지정하지 않는 선택지의 이름 */
+fun unsetModelLabel(connection: AiConnection): String =
+    if (connection.usesHiddenWebBridge()) "웹 기본" else "기본"
+
 fun modelWithEffort(model: String, effort: String, available: List<String>): String {
     if (model.isBlank() || effort.isBlank()) return model
     if (extractParenEffort(model).isNotBlank()) return model

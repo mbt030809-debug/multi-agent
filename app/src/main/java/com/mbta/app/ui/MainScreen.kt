@@ -1569,6 +1569,20 @@ fun MainScreen(
         sendMessageInSession(cleaned, conn, lastPrompt)
     }
 
+    /** 멈춘 요청을 중지한 뒤 마지막 사용자 메시지를 다시 보냄 */
+    fun retryStalledSession(session: AgentSession, conn: AiConnection) {
+        val job = activeJobs[session.id]
+        cancelSessionTask(session, conn, drainQueue = false)
+        scope.launch {
+            job?.join()
+            // 웹의 중지 처리가 끝나기 전에 입력이 섞이지 않도록 잠시 대기
+            kotlinx.coroutines.delay(1200L)
+            if (sendingMap[session.id] == true) return@launch
+            val latest = sessions.find { it.id == session.id } ?: return@launch
+            retryLastInSession(latest, conn)
+        }
+    }
+
     fun cycleSplitMode() {
         val next = when (splitMode) {
             SplitMode.SINGLE -> SplitMode.SPLIT_VERTICAL
@@ -2051,6 +2065,7 @@ fun MainScreen(
                         headlessWebBridge = headlessWebBridge,
                         queuedMessages = queuedPromptsMap[primarySession.id].orEmpty(),
                         onCancelSending = { if (primaryConn != null) cancelSessionTask(primarySession, primaryConn) },
+                        onRetryStalled = { if (primaryConn != null) retryStalledSession(primarySession, primaryConn) },
                         onRemoveQueued = { idx ->
                             val cur = queuedPromptsMap[primarySession.id].orEmpty()
                             queuedPromptsMap[primarySession.id] = cur.filterIndexed { i, _ -> i != idx }
@@ -2110,6 +2125,7 @@ fun MainScreen(
                             headlessWebBridge = headlessWebBridge,
                             queuedMessages = queuedPromptsMap[primarySession.id].orEmpty(),
                             onCancelSending = { if (primaryConn != null) cancelSessionTask(primarySession, primaryConn) },
+                            onRetryStalled = { if (primaryConn != null) retryStalledSession(primarySession, primaryConn) },
                             onRemoveQueued = { idx ->
                                 val cur = queuedPromptsMap[primarySession.id].orEmpty()
                                 queuedPromptsMap[primarySession.id] = cur.filterIndexed { i, _ -> i != idx }
@@ -2173,6 +2189,7 @@ fun MainScreen(
                             headlessWebBridge = headlessWebBridge,
                             queuedMessages = queuedPromptsMap[primarySession.id].orEmpty(),
                             onCancelSending = { if (primaryConn != null) cancelSessionTask(primarySession, primaryConn) },
+                            onRetryStalled = { if (primaryConn != null) retryStalledSession(primarySession, primaryConn) },
                             onRemoveQueued = { idx ->
                                 val cur = queuedPromptsMap[primarySession.id].orEmpty()
                                 queuedPromptsMap[primarySession.id] = cur.filterIndexed { i, _ -> i != idx }
@@ -2235,6 +2252,7 @@ fun MainScreen(
                             headlessWebBridge = headlessWebBridge,
                             queuedMessages = queuedPromptsMap[primarySession.id].orEmpty(),
                             onCancelSending = { if (primaryConn != null) cancelSessionTask(primarySession, primaryConn) },
+                            onRetryStalled = { if (primaryConn != null) retryStalledSession(primarySession, primaryConn) },
                             onRemoveQueued = { idx ->
                                 val cur = queuedPromptsMap[primarySession.id].orEmpty()
                                 queuedPromptsMap[primarySession.id] = cur.filterIndexed { i, _ -> i != idx }
@@ -2298,6 +2316,7 @@ fun MainScreen(
                             headlessWebBridge = headlessWebBridge,
                             queuedMessages = queuedPromptsMap[primarySession.id].orEmpty(),
                             onCancelSending = { if (primaryConn != null) cancelSessionTask(primarySession, primaryConn) },
+                            onRetryStalled = { if (primaryConn != null) retryStalledSession(primarySession, primaryConn) },
                             onRemoveQueued = { idx ->
                                 val cur = queuedPromptsMap[primarySession.id].orEmpty()
                                 queuedPromptsMap[primarySession.id] = cur.filterIndexed { i, _ -> i != idx }
@@ -3022,7 +3041,7 @@ private fun NewSessionDialog(
     val mainModels = remember(mainConn?.id) { mainConn?.let { availableModelsFor(it) } ?: emptyList() }
 
     var mainModel by remember(mainConn?.id) {
-        mutableStateOf(mainConn?.let { it.model.ifBlank { defaultModelFor(it) } } ?: "")
+        mutableStateOf(mainConn?.let { com.mbta.app.model.initialModelFor(it) } ?: "")
     }
     val mainEfforts = remember(mainConn?.id, mainModel) {
         if (mainConn != null) availableEffortsFor(mainConn, mainModel) else emptyList()
@@ -3142,7 +3161,7 @@ private fun NewSessionDialog(
                         }
                     } else {
                         Text(
-                            "메인 AI와만 대화하면 필요할 때 서브 AI를 자동으로 병렬 생성해 작업합니다.",
+                            "메인 AI가 지휘합니다. 작은 작업은 직접 처리하고, 큰 작업은 서브에게 맡긴 뒤 결과를 검토합니다.",
                             fontSize = 11.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -3170,6 +3189,13 @@ private fun NewSessionDialog(
                                     .horizontalScroll(rememberScrollState()),
                                 horizontalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
+                                if (mainConn != null) {
+                                    FilterChip(
+                                        selected = mainModel.isBlank(),
+                                        onClick = { mainModel = "" },
+                                        label = { Text(com.mbta.app.model.unsetModelLabel(mainConn), fontSize = 10.sp) }
+                                    )
+                                }
                                 mainModels.forEach { m ->
                                     FilterChip(
                                         selected = m == mainModel,

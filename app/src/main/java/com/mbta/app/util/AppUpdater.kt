@@ -42,18 +42,7 @@ object AppUpdater {
         }.getOrElse { "0.0.0" }
     }
 
-    fun isNewerVersion(remote: String, current: String): Boolean {
-        val rParts = remote.trim().removePrefix("v").split(".").map { it.toIntOrNull() ?: 0 }
-        val cParts = current.trim().removePrefix("v").split(".").map { it.toIntOrNull() ?: 0 }
-        val maxLen = maxOf(rParts.size, cParts.size)
-        for (i in 0 until maxLen) {
-            val r = rParts.getOrElse(i) { 0 }
-            val c = cParts.getOrElse(i) { 0 }
-            if (r > c) return true
-            if (r < c) return false
-        }
-        return false
-    }
+    fun isNewerVersion(remote: String, current: String): Boolean = VersionCompare.isNewer(remote, current)
 
     suspend fun checkLatestRelease(context: Context): UpdateInfo? = withContext(Dispatchers.IO) {
         runCatching {

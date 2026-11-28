@@ -24,8 +24,9 @@ import com.mbta.app.model.AiConnection
 import com.mbta.app.model.SubAgentConfig
 import com.mbta.app.model.availableEffortsFor
 import com.mbta.app.model.availableModelsFor
-import com.mbta.app.model.defaultModelFor
+import com.mbta.app.model.initialModelFor
 import com.mbta.app.model.labelIn
+import com.mbta.app.model.unsetModelLabel
 import java.util.UUID
 
 private const val MAX_SUBS = 5
@@ -36,7 +37,7 @@ private fun newUid(): String = UUID.randomUUID().toString().take(8)
 internal fun newSubAgent(existing: List<SubAgentConfig>, connection: AiConnection): SubAgentConfig {
     val used = existing.map { it.id }.toSet()
     val id = generateSequence(1) { it + 1 }.map { "s$it" }.first { it !in used }
-    return SubAgentConfig(id = id, uid = newUid(), connectionId = connection.id, model = defaultModelFor(connection))
+    return SubAgentConfig(id = id, uid = newUid(), connectionId = connection.id, model = initialModelFor(connection))
 }
 
 @Composable
@@ -100,14 +101,17 @@ internal fun SubAgentEditor(
                             PickChip(c.labelIn(connections), c.id == sub.connectionId) {
                                 // AI를 바꾸면 이전 대화는 이어갈 수 없으므로 새 대화로 시작
                                 if (c.id != sub.connectionId) {
-                                    update(sub.resetConversation(newUid()).copy(connectionId = c.id, model = defaultModelFor(c), effort = ""))
+                                    update(sub.resetConversation(newUid()).copy(connectionId = c.id, model = initialModelFor(c), effort = ""))
                                 }
                             }
                         }
                     }
                     val models = conn?.let { availableModelsFor(it) }.orEmpty()
-                    if (models.isNotEmpty()) {
-                        ChipRow { models.forEach { m -> PickChip(m, m == sub.model) { update(sub.copy(model = m, effort = "")) } } }
+                    if (conn != null && models.isNotEmpty()) {
+                        ChipRow {
+                            PickChip(unsetModelLabel(conn), sub.model.isBlank()) { update(sub.copy(model = "", effort = "")) }
+                            models.forEach { m -> PickChip(m, m == sub.model) { update(sub.copy(model = m, effort = "")) } }
+                        }
                     }
                     val efforts = conn?.let { availableEffortsFor(it, sub.model) }.orEmpty()
                     if (efforts.isNotEmpty()) {

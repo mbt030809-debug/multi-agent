@@ -10,13 +10,13 @@ function rawString(src, name) {
   return m[1];
 }
 
-function automationScript({ kind = 'GEMINI_WEB', prompt, checkMs, resume = false }) {
+function automationScript({ kind = 'GEMINI_WEB', prompt, checkMs }) {
   const src = fs.readFileSync(SOURCE, 'utf8');
   let js = rawString(src, 'buildAutomationJs');
   for (const name of ['DEEP_QUERY_JS', 'ROW_TEXT_JS']) js = js.split('$' + name).join(rawString(src, name));
   const values = {
     $quotedReqId: JSON.stringify('r1'), $quotedKind: JSON.stringify(kind), $quotedPrompt: JSON.stringify(prompt),
-    $checkMs: String(checkMs), $resume: String(resume),
+    $checkMs: String(checkMs),
   };
   for (const [k, v] of Object.entries(values)) js = js.split(k).join(v);
   const left = js.match(/\$[A-Za-z{]\w*/g);

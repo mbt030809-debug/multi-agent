@@ -6,12 +6,11 @@ const { automationScript } = require('./extract');
 
 const PROMPT = 'hello world prompt';
 
-function simulate({ checkMs, resume = false, shownPrompt = PROMPT, genStart = 2000, genEnd = 7300 }) {
+function simulate({ checkMs, genStart = 2000, genEnd = 7300 }) {
   let now = 0, seq = 0;
   const timers = new Map(), observers = [], events = [];
   const addTimer = (f, ms, repeat) => { const id = ++seq; timers.set(id, { f, at: now + ms, ms, repeat }); return id; };
-  // 이어 읽기(resume)는 새로고침 뒤라 이미 보낸 상태이고 답변이 화면에 있음
-  let reply = resume ? '저장된 답변' : null, generating = false, sent = resume, clicks = 0;
+  let reply = null, generating = false, sent = false, clicks = 0;
   const mutate = () => observers.forEach(o => o.on && o.cb([]));
   const el = (text, extra = {}) => Object.assign({
     innerText: text, textContent: text, tagName: 'DIV', isContentEditable: false, children: [], shadowRoot: null, parentElement: null,
@@ -34,7 +33,7 @@ function simulate({ checkMs, resume = false, shownPrompt = PROMPT, genStart = 20
     if (s.includes('rich-textarea')) out.push(editor);
     if (s === 'button[aria-label="메시지 보내기"]') out.push(sendButton);
     if (s.startsWith('model-response .markdown') && reply) out.push(el(reply));
-    if (s.startsWith('user-query') && sent) out.push(el(shownPrompt));
+    if (s.startsWith('user-query') && sent) out.push(el(PROMPT));
     if (s.includes('aria-label*="Stop"') && generating) out.push(el(''));
     return out;
   };
@@ -65,7 +64,7 @@ function simulate({ checkMs, resume = false, shownPrompt = PROMPT, genStart = 20
     clearTimeout: id => timers.delete(id), clearInterval: id => timers.delete(id),
   };
   vm.createContext(context);
-  vm.runInContext(automationScript({ prompt: PROMPT, checkMs, resume }), context);
+  vm.runInContext(automationScript({ prompt: PROMPT, checkMs }), context);
   while (now < 240000 && timers.size && !events.some(e => e.type !== 'chunk')) {
     const [id, t] = [...timers].reduce((a, b) => (b[1].at < a[1].at ? b : a));
     now = t.at;
@@ -98,16 +97,4 @@ test('안 보는 중(15초): 생성 종료는 확인 간격을 기다리지 않�
 
 test('안 보는 중(15초): 긴 생성도 종료 직후 완료', () => {
   assertDone(simulate({ checkMs: 15000, genEnd: 20000 }), '최종 답변', 26000);
-});
-
-test('이어 읽기: 다시 보내지 않고 내 글 뒤의 답변을 읽음', () => {
-  const r = simulate({ checkMs: 15000, resume: true });
-  assert.strictEqual(r.clicks, 0);
-  assertDone(r, '저장된 답변', 46000);
-});
-
-test('이어 읽기: 마지막 사용자 글이 다르면 답변을 가져오지 않음', () => {
-  const r = simulate({ checkMs: 15000, resume: true, shownPrompt: '전혀 다른 질문' });
-  assert.strictEqual(r.clicks, 0);
-  assert.strictEqual(r.last.type, 'error');
 });

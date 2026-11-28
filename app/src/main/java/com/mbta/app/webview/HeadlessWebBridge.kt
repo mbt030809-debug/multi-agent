@@ -50,9 +50,8 @@ class HeadlessWebBridge(
     /** 지금 화면에서 보고 있는 세션의 key */
     private var viewedKeys: Set<String> = emptySet()
     private var appForeground = true
-    /** 전송 중인 요청 정보 — 새로고침 뒤 답변 읽기를 이어가기 위해 보관 */
-    private class WatchInfo(val kind: String, val prompt: String, var lastProgressAt: Long, var reloaded: Boolean = false)
-    private val watches = mutableMapOf<String, WatchInfo>()
+    /** 요청별로 답변이 마지막으로 바뀐 시각 — 정지 안내용 */
+    private val lastProgressAt = mutableMapOf<String, Long>()
     private var hiddenHost: FrameLayout? = null
     private val targetUrls = mutableMapOf<String, String>()
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -135,7 +134,7 @@ class HeadlessWebBridge(
     fun cancelActiveRequest(key: String) {
         pendingSendRunnables.remove(key)?.let { mainHandler.removeCallbacks(it) }
         val reqId = activeReqByKey.remove(key)
-        if (reqId != null) { pending.remove(reqId); watches.remove(reqId) }
+        if (reqId != null) { pending.remove(reqId); lastProgressAt.remove(reqId) }
         val wv = pool[key] ?: return
         val js = """
             (function() {
@@ -163,7 +162,7 @@ class HeadlessWebBridge(
         @JavascriptInterface
         fun onChunk(requestId: String, text: String) {
             mainHandler.post {
-                watches[requestId]?.lastProgressAt = System.currentTimeMillis()
+                lastProgressAt[requestId] = System.currentTimeMillis()
                 pending[requestId]?.onChunk?.invoke(cleanWebText(text, final = false))
             }
         }
@@ -172,7 +171,7 @@ class HeadlessWebBridge(
         fun onDone(requestId: String, finalText: String) {
             mainHandler.post {
                 log("onDone req=$requestId len=${finalText.length}")
-                watches.remove(requestId)
+                lastProgressAt.remove(requestId)
                 activeReqByKey.entries.firstOrNull { it.value == requestId }?.let { touch(it.key) }
                 val req = pending.remove(requestId) ?: return@post
                 val cleaned = cleanWebText(finalText)
@@ -185,7 +184,7 @@ class HeadlessWebBridge(
         fun onError(requestId: String, code: String, message: String) {
             mainHandler.post {
                 log("onError req=$requestId code=$code msg=$message")
-                watches.remove(requestId)
+                lastProgressAt.remove(requestId)
                 activeReqByKey.entries.firstOrNull { it.value == requestId }?.let { touch(it.key) }
                 if (code == "NEED_LOGIN") {
                     activeReqByKey.entries.firstOrNull { it.value == requestId }?.key?.let { onNeedLogin?.invoke(it) }
@@ -374,17 +373,14 @@ class HeadlessWebBridge(
         (keepAliveKeys - keepAlive).forEach { touch(it) }
         keepAliveKeys = keepAlive
         if (viewed == viewedKeys) return
-        val newlyViewed = viewed - viewedKeys
         viewedKeys = viewed
         applyCheckIntervals()
-        if (appForeground) newlyViewed.forEach { reloadIfStalled(it) }
     }
 
     fun setAppForeground(foreground: Boolean) {
         if (foreground == appForeground) return
         appForeground = foreground
         applyCheckIntervals()
-        if (foreground) viewedKeys.forEach { reloadIfStalled(it) }
     }
 
     fun checkIntervalFor(key: String): Long =
@@ -403,39 +399,14 @@ class HeadlessWebBridge(
         getOrCreateWebView(key, url)
     }
 
-    /** 답변을 기다리는데 한동안 변화가 없던 세션을 다시 보면 한 번만 새로고침하고, 전송 없이 답변 읽기만 이어감 */
-    private fun reloadIfStalled(key: String) {
-        val reqId = activeReqByKey[key] ?: return
-        val info = watches[reqId] ?: return
-        val wv = pool[key] ?: return
-        // 아직 입력 전이거나, 보낸 글을 다시 찾을 수 없는 종류(Claude Code 웹 등)는 새로고침하지 않음
-        if (pendingSendRunnables.containsKey(key) || info.kind !in RESUMABLE_KINDS) return
-        val since = System.currentTimeMillis() - info.lastProgressAt
-        if (!IdleWebViewPolicy.shouldReloadOnView(isBusy(key), info.reloaded, since)) return
-        info.reloaded = true
-        info.lastProgressAt = System.currentTimeMillis()
-        log("reloadIfStalled key=$key req=$reqId")
-        loadedUrls[key] = false
-        wv.reload()
-        var waited = 0L
-        val resume = object : Runnable {
-            var settled = false
-            override fun run() {
-                if (activeReqByKey[key] != reqId || !pending.containsKey(reqId) || pool[key] !== wv) return
-                if (!settled) {
-                    if (loadedUrls[key] != true && waited < 15000L) {
-                        waited += 250L
-                        mainHandler.postDelayed(this, 250L)
-                    } else {
-                        settled = true
-                        mainHandler.postDelayed(this, IdleWebViewPolicy.SETTLE_MS)
-                    }
-                    return
-                }
-                wv.evaluateJavascript(buildAutomationJs(reqId, info.kind, info.prompt, checkIntervalFor(key), resume = true), null)
-            }
-        }
-        mainHandler.postDelayed(resume, 500L)
+    /** 이 세션(서브 대화 포함)의 웹 답변이 안내 기준 이상 멈춰 있으면 멈춘 초, 아니면 0 */
+    fun stalledSeconds(sessionId: String): Long {
+        val now = System.currentTimeMillis()
+        val stalledMs = activeReqByKey.entries
+            .filter { it.key.substringAfter('#', "").substringBefore('~') == sessionId && pending.containsKey(it.value) }
+            .mapNotNull { entry -> lastProgressAt[entry.value]?.let { now - it } }
+            .maxOrNull() ?: 0L
+        return if (stalledMs >= IdleWebViewPolicy.STALL_NOTICE_MS) stalledMs / 1000L else 0L
     }
 
     /** 작업이 끝나고 보고 있지 않은 WebView 를 닫아 메모리·CPU 를 돌려줌 (대화 주소는 기억) */
@@ -712,7 +683,7 @@ class HeadlessWebBridge(
                 }
                 pendingSendRunnables.remove(key)
                 touch(key)
-                watches[reqId] = WatchInfo(kind.name, prompt, System.currentTimeMillis())
+                lastProgressAt[reqId] = System.currentTimeMillis()
                 wv.evaluateJavascript(buildAutomationJs(reqId, kind.name, prompt, checkIntervalFor(key)), null)
             }
         }
@@ -947,7 +918,7 @@ class HeadlessWebBridge(
     /** 세션 삭제 시 해당 세션 전용 WebView 해제 */
     fun releaseWebView(key: String) {
         pendingSendRunnables.remove(key)?.let { mainHandler.removeCallbacks(it) }
-        activeReqByKey.remove(key)?.let { pending.remove(it); watches.remove(it) }
+        activeReqByKey.remove(key)?.let { pending.remove(it); lastProgressAt.remove(it) }
         sleptUrls.remove(key)
         lastUsedAt.remove(key)
         val wv = pool.remove(key) ?: return
@@ -2051,7 +2022,7 @@ class HeadlessWebBridge(
         hiddenHost = null
         sleptUrls.clear()
         lastUsedAt.clear()
-        watches.clear()
+        lastProgressAt.clear()
         pendingSendRunnables.values.forEach { mainHandler.removeCallbacks(it) }
         pendingSendRunnables.clear()
         pending.clear()
@@ -2072,7 +2043,7 @@ class HeadlessWebBridge(
         }
     }
 
-    private fun buildAutomationJs(reqId: String, kindName: String, prompt: String, checkMs: Long, resume: Boolean = false): String {
+    private fun buildAutomationJs(reqId: String, kindName: String, prompt: String, checkMs: Long): String {
         val quotedPrompt = JSONObject.quote(prompt)
         val quotedReqId = JSONObject.quote(reqId)
         val quotedKind = JSONObject.quote(kindName)
@@ -2083,7 +2054,6 @@ class HeadlessWebBridge(
                 var kind = $quotedKind;
                 var promptText = $quotedPrompt;
                 var checkMs = $checkMs;
-                var resumeOnly = $resume;
                 // 이전 요청의 타이머를 모두 정리하고, 이 요청의 타이머만 유효하도록 등록
                 var prevTimers = Array.isArray(window.__mbtaTimers) ? window.__mbtaTimers : [];
                 prevTimers.forEach(function(t) { clearTimeout(t); clearInterval(t); });
@@ -2254,49 +2224,30 @@ class HeadlessWebBridge(
                         return { count: 0, text: '' };
                     }
 
-                    function replyAfterMyPrompt() {
-                        var users = queryAllDeep('user-query, [data-message-author-role="user"], [data-testid="user-message"], [data-user-message-bubble]');
-                        var lastUser = users.length ? users[users.length - 1] : null;
-                        if (!lastUser) return '';
-                        function squash(s) { return (s || '').replace(/[\s`*_#>|-]+/g, ''); }
-                        var tail = squash(promptText).slice(-30);
-                        if (!tail || squash(lastUser.innerText).indexOf(tail) < 0) return '';
-                        for (var i = 0; i < msgSelectors.length; i++) {
-                            var nodes = [];
-                            try { nodes = queryAllDeep(msgSelectors[i]); } catch(e) { nodes = []; }
-                            if (!nodes.length) continue;
-                            var last = nodes[nodes.length - 1];
-                            return (lastUser.compareDocumentPosition(last) & Node.DOCUMENT_POSITION_FOLLOWING) ? (last.innerText || '').trim() : '';
-                        }
-                        return '';
-                    }
-
                     var before = getLatestMsgText();
                     var beforeBodyLen = (document.body && document.body.innerText) ? document.body.innerText.length : 0;
 
-                    if (!resumeOnly) {
-                        inputEl.focus();
-                        if (inputEl.tagName === 'TEXTAREA' || inputEl.tagName === 'INPUT') {
-                            var proto = inputEl.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
-                            var setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
-                            setter.call(inputEl, promptText);
+                    inputEl.focus();
+                    if (inputEl.tagName === 'TEXTAREA' || inputEl.tagName === 'INPUT') {
+                        var proto = inputEl.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+                        var setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+                        setter.call(inputEl, promptText);
+                        inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+                    } else {
+                        try {
+                            document.execCommand('selectAll', false, null);
+                            document.execCommand('insertText', false, promptText);
+                        } catch(e) {
+                            inputEl.textContent = promptText;
+                        }
+                        try {
+                            inputEl.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: promptText }));
+                        } catch(e) {
                             inputEl.dispatchEvent(new Event('input', { bubbles: true }));
-                        } else {
-                            try {
-                                document.execCommand('selectAll', false, null);
-                                document.execCommand('insertText', false, promptText);
-                            } catch(e) {
-                                inputEl.textContent = promptText;
-                            }
-                            try {
-                                inputEl.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: promptText }));
-                            } catch(e) {
-                                inputEl.dispatchEvent(new Event('input', { bubbles: true }));
-                            }
                         }
                     }
 
-                    var proceedDelay = resumeOnly ? 0 : (promptText.length > 1000 ? 1200 : 300);
+                    var proceedDelay = promptText.length > 1000 ? 1200 : 300;
                     window.__mbtaTimers.push(setTimeout(function() {
                         if (window.__mbtaReqId !== reqId) return;
                         function findSendBtn() {
@@ -2419,7 +2370,7 @@ class HeadlessWebBridge(
                             }, 500);
                             window.__mbtaTimers.push(retryTimer);
                         }
-                        if (!resumeOnly) trySend();
+                        trySend();
 
                         // 화면 안에 떠 있고 마지막 사용자 메시지 이후에 있는 '건너뛰기' 버튼만 질문 카드로 인정 (옛 대화 내용 오탐 방지)
                         function liveSkipOnScreen() {
@@ -2504,12 +2455,10 @@ class HeadlessWebBridge(
 
                             var cur = getLatestMsgText();
                             var candidate = '';
-                            if (resumeOnly) {
-                                candidate = replyAfterMyPrompt();
-                            } else if (cur.count > before.count || (cur.text && cur.text !== before.text)) {
+                            if (cur.count > before.count || (cur.text && cur.text !== before.text)) {
                                 candidate = cur.text;
                             }
-                            if (!resumeOnly && !candidate && (cur.count === 0 || useBodyFallback) && document.body) {
+                            if (!candidate && (cur.count === 0 || useBodyFallback) && document.body) {
                                 var bodyText = document.body.innerText || '';
                                 if (bodyText.length > beforeBodyLen + promptText.length + 5) {
                                     candidate = bodyText.slice(beforeBodyLen).trim();
@@ -2598,7 +2547,6 @@ class HeadlessWebBridge(
     }
 
     companion object {
-        private val RESUMABLE_KINDS = setOf("GEMINI_WEB", "CHATGPT_WEB", "CLAUDE_WEB")
         private const val MOBILE_UA =
             "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
         /** React/Radix 메뉴는 click만으로는 안 열리는 경우가 있어 포인터/마우스 이벤트 전체를 발생시킴 */
