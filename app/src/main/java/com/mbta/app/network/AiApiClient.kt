@@ -41,6 +41,9 @@ object AiApiClient {
         .writeTimeout(30, TimeUnit.SECONDS)
         .build()
 
+    private val attMarker = Regex("<<ATT>>[\\s\\S]*?<</ATT>>")
+    private fun stripAtt(text: String): String = text.replace(attMarker, "").trim()
+
     private val json = Json { ignoreUnknownKeys = true }
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
 
@@ -162,13 +165,13 @@ object AiApiClient {
         val url = connection.endpointUrl.ifBlank { defaultEndpointFor(ConnectionKind.CLAUDE_API) }
         val model = connection.model.ifBlank { defaultModelFor(ConnectionKind.CLAUDE_API) }
         val systemText = history.filter { it.role == MessageRole.SYSTEM }
-            .joinToString("\n\n") { it.content }
+            .joinToString("\n\n") { stripAtt(it.content) }
 
         val messagesArray = buildJsonArray {
             history.filter { it.role != MessageRole.SYSTEM }.forEach { msg ->
                 add(buildJsonObject {
                     put("role", JsonPrimitive(if (msg.role == MessageRole.USER) "user" else "assistant"))
-                    put("content", JsonPrimitive(msg.content))
+                    put("content", JsonPrimitive(stripAtt(msg.content)))
                 })
             }
             add(buildJsonObject {
@@ -240,7 +243,7 @@ object AiApiClient {
                 }
                 add(buildJsonObject {
                     put("role", JsonPrimitive(roleStr))
-                    put("content", JsonPrimitive(msg.content))
+                    put("content", JsonPrimitive(stripAtt(msg.content)))
                 })
             }
             add(buildJsonObject {
@@ -303,14 +306,14 @@ object AiApiClient {
         val url = "$baseUrl/models/$model:generateContent?key=${connection.apiKey.trim()}"
 
         val systemText = history.filter { it.role == MessageRole.SYSTEM }
-            .joinToString("\n\n") { it.content }
+            .joinToString("\n\n") { stripAtt(it.content) }
 
         val contentsArray = buildJsonArray {
             history.filter { it.role != MessageRole.SYSTEM }.forEach { msg ->
                 add(buildJsonObject {
                     put("role", JsonPrimitive(if (msg.role == MessageRole.USER) "user" else "model"))
                     put("parts", buildJsonArray {
-                        add(buildJsonObject { put("text", JsonPrimitive(msg.content)) })
+                        add(buildJsonObject { put("text", JsonPrimitive(stripAtt(msg.content))) })
                     })
                 })
             }
@@ -443,7 +446,7 @@ object AiApiClient {
                 history.forEach { msg ->
                     add(buildJsonObject {
                         put("role", JsonPrimitive(msg.role.name.lowercase()))
-                        put("content", JsonPrimitive(msg.content))
+                        put("content", JsonPrimitive(stripAtt(msg.content)))
                     })
                 }
             })

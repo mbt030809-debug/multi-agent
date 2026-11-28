@@ -444,10 +444,12 @@ fun MainScreen(
         subagentJobsMap[runId] = job
     }
 
-    fun sendMessageInSession(session: AgentSession, conn: AiConnection, text: String) {
+    fun sendMessageInSession(session: AgentSession, conn: AiConnection, textRaw: String) {
+        // 첨부 표시용 마커(<<ATT>>…)는 말풍선에만 남기고 AI로 보내는 프롬프트에서는 제외
+        val text = stripAttMarker(textRaw)
         if (text.isBlank()) return
         if (sendingMap[session.id] == true) {
-            queuedPromptsMap[session.id] = (queuedPromptsMap[session.id] ?: emptyList()) + text.trim()
+            queuedPromptsMap[session.id] = (queuedPromptsMap[session.id] ?: emptyList()) + textRaw.trim()
             return
         }
         if (session.isOrchestration && !text.startsWith("@")) {
@@ -461,7 +463,7 @@ fun MainScreen(
             val userMsg = ChatMessage(
                 id = "msg_${UUID.randomUUID()}",
                 role = MessageRole.USER,
-                content = text
+                content = textRaw
             )
             val placeholderId = "msg_${UUID.randomUUID()}"
             val placeholder = ChatMessage(
@@ -754,7 +756,7 @@ fun MainScreen(
         val userMsg = ChatMessage(
             id = "msg_${UUID.randomUUID()}",
             role = MessageRole.USER,
-            content = text
+            content = textRaw
         )
         val historyBefore = session.messages
         if (targetConn.usesHiddenWebBridge()) {
