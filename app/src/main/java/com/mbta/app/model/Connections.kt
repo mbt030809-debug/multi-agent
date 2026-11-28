@@ -211,7 +211,7 @@ fun availableEffortsFor(
         }
         ConnectionKind.CLAUDE_API -> {
             // 모든 Claude 모델이 thinking budget 을 지원한다고 가정 (AiApiClient.claudeThinkingBudget 와 일치)
-            if (mLower.contains("claude")) {
+            if (com.mbta.app.network.AiApiClient.claudeSupportsThinking(mLower)) {
                 listOf("low", "medium", "high")
             } else emptyList()
         }

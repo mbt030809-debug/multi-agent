@@ -297,6 +297,7 @@ ASK_CAPTURE = {}
 BRIDGE_TOKEN_PATH = os.path.expanduser("~/.mbta-bridge-token")
 BRIDGE_REQUIRE_TOKEN = os.environ.get("MBTA_BRIDGE_REQUIRE_TOKEN") == "1"
 BRIDGE_TOKEN = ""
+TOKEN_WARNED = False
 
 
 def load_or_create_bridge_token():
@@ -732,7 +733,10 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
             return True
         if BRIDGE_REQUIRE_TOKEN:
             return False
-        sys.stderr.write(f"[MbtA-Bridge] 경고: X-MbtA-Token 없음/불일치 ({self.path}); MBTA_BRIDGE_REQUIRE_TOKEN=1 이면 차단됩니다\n")
+        global TOKEN_WARNED
+        if not TOKEN_WARNED:
+            TOKEN_WARNED = True
+            sys.stderr.write("[MbtA-Bridge] 경고: X-MbtA-Token 없는 요청 허용 중 (MBTA_BRIDGE_REQUIRE_TOKEN=1 이면 차단, 이 경고는 1회만 표시)\n")
         return True
 
     def _send_json(self, code, obj):

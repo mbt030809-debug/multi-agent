@@ -79,13 +79,19 @@ object AiApiClient {
     }
 
     /** Claude thinking budget (effort → budget_tokens). 알 수 없는 값이면 null (기존 동작). */
-    private fun claudeThinkingBudget(effort: String): Int? = when (effort.trim().lowercase()) {
+    private fun claudeThinkingBudget(model: String, effort: String): Int? = if (!claudeSupportsThinking(model)) null else when (effort.trim().lowercase()) {
         "low" -> 2048
         "medium" -> 8192
         "high" -> 16384
         "extra", "xhigh" -> 24576
         "max" -> 32000
         else -> null
+    }
+
+    /** thinking 미지원 구형 Claude(3.5 이하) 제외 */
+    fun claudeSupportsThinking(model: String): Boolean {
+        val m = model.lowercase()
+        return m.contains("claude") && !Regex("claude-3-(5|haiku|opus|sonnet)|claude-3\\.5|claude-2|claude-instant").containsMatchIn(m)
     }
 
     /** Gemini thinkingBudget. thinking 미지원 모델(2.0 등)이면 null. */
@@ -268,7 +274,7 @@ object AiApiClient {
             })
         }
 
-        val budget = claudeThinkingBudget(effort)
+        val budget = claudeThinkingBudget(model, effort)
         val payload = buildJsonObject {
             put("model", JsonPrimitive(model))
             if (budget != null) {
