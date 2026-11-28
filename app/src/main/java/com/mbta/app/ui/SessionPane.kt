@@ -536,11 +536,11 @@ internal fun detectQuestionPrompt(rawContent: String, structuredOnly: Boolean = 
     } else null
 }
 
-/** 세션별 입력 초안 보관소 (메모리 전용) */
+/** 모든 세션이 함께 쓰는 입력 초안(글 + 전송 전 첨부) 보관소 (메모리 전용) */
 class SessionDraftStore {
-    val texts = HashMap<String, String>()
-    val atts = HashMap<String, List<PendingAttachment>>()
-    fun clear(sessionId: String) { texts.remove(sessionId); atts.remove(sessionId) }
+    val textState: androidx.compose.runtime.MutableState<String> = androidx.compose.runtime.mutableStateOf("")
+    val attsState: androidx.compose.runtime.MutableState<List<PendingAttachment>> =
+        androidx.compose.runtime.mutableStateOf(emptyList())
 }
 
 data class PendingAttachment(
@@ -611,15 +611,11 @@ fun SessionPane(
     onToggleSkipPermissions: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
-    // 입력 중이던 글/첨부는 세션별로 보관(앱이 켜진 동안만): 다른 세션이나 설정 화면에 다녀와도 유지
-    var inputText by remember(session.id) { mutableStateOf(drafts?.texts?.get(session.id) ?: "") }
-    var attachments by remember(session.id) { mutableStateOf(drafts?.atts?.get(session.id) ?: emptyList<PendingAttachment>()) }
-    androidx.compose.runtime.SideEffect {
-        if (drafts != null) {
-            drafts.texts[session.id] = inputText
-            drafts.atts[session.id] = attachments
-        }
-    }
+    // 입력창의 글/첨부는 모든 세션이 같은 것을 공유(앱이 켜진 동안만): 세션을 옮기거나 설정에 다녀와도 그대로 유지
+    val inputState = remember(drafts) { drafts?.textState ?: mutableStateOf("") }
+    val attachmentsState = remember(drafts) { drafts?.attsState ?: mutableStateOf<List<PendingAttachment>>(emptyList()) }
+    var inputText by inputState
+    var attachments by attachmentsState
     var showHandoffDialog by remember { mutableStateOf(false) }
     var showAttachOrchDialog by remember { mutableStateOf(false) }
     var showModelMenu by remember { mutableStateOf(false) }

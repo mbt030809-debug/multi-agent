@@ -124,13 +124,7 @@ class HeadlessWebBridge(
     /** 웹 화면에서 긁어온 텍스트의 아이콘 폰트 글리프(사설 영역 문자)와 낱자 한자 줄을 제거 */
     private fun cleanWebText(raw: String): String {
         if (raw.startsWith("__")) return raw
-        return raw
-            .replace(Regex("[\\uE000-\\uF8FF]"), "")
-            .lines()
-            .filter { line -> !Regex("^\\s*[\\u4E00-\\u9FFF]\\s*$").matches(line) }
-            .joinToString("\n")
-            .replace(Regex("\\n{3,}"), "\n\n")
-            .trim()
+        return WebTextCleaner.clean(raw)
     }
 
     private inner class JsBridge {
@@ -531,12 +525,14 @@ class HeadlessWebBridge(
                 var picker = findPicker();
                 if (!picker) { res.error = 'nopicker'; send(); return; }
                 res.picker = pickerLabel(picker).replace(/\s+/g, ' ').slice(0, 40);
+                var visBefore = snapshotVisible();
                 var done = false;
                 function pick() {
                     if (done) return;
                     var items = queryAllDeep('[role="menuitem"], [role="option"], [role="menuitemradio"], li, button, div');
                     for (var j = 0; j < items.length; j++) {
                         var el = items[j];
+                        if (visBefore.has(el) || !isShown(el)) continue;
                         if (el === picker || picker.contains(el) || el.contains(picker)) continue;
                         if (el.children && el.children.length > 4) continue;
                         var txt = (el.innerText || '').toLowerCase().trim();
@@ -557,6 +553,7 @@ class HeadlessWebBridge(
                         var items = queryAllDeep('[role="menuitem"], [role="option"], [role="menuitemradio"], li, button, div');
                         for (var q = 0; q < items.length && res.sample.length < 14; q++) {
                             var e2 = items[q];
+                            if (visBefore.has(e2) || !isShown(e2)) continue;
                             if (e2.children && e2.children.length > 4) continue;
                             var t2 = (e2.innerText || '').trim().replace(/\s+/g, ' ');
                             if (t2 && t2.length <= 40) res.sample.push(t2);
@@ -611,10 +608,12 @@ class HeadlessWebBridge(
                 var res = { picker: null, clicked: null, after: '', sample: [] };
                 function send() { try { window.MbtABridge.onChunk($quotedReq, JSON.stringify(res)); } catch(e) {} }
                 var picker = findPicker();
+                var visBefore = snapshotVisible();
                 function clickEffort() {
                     var items = queryAllDeep('[role="menuitem"], [role="option"], [role="menuitemradio"], li, button, div');
                     for (var j = 0; j < items.length; j++) {
                         var el = items[j];
+                        if (visBefore.has(el) || !isShown(el)) continue;
                         if (el.children && el.children.length > 4) continue;
                         if (picker && (el === picker || picker.contains(el) || el.contains(picker))) continue;
                         var txt = (el.innerText || '').trim().split('\n')[0].trim().toLowerCase();
@@ -641,6 +640,7 @@ class HeadlessWebBridge(
                         var items = queryAllDeep('[role="menuitem"], [role="option"], [role="menuitemradio"], li, button, div');
                         for (var q = 0; q < items.length && res.sample.length < 14; q++) {
                             var e2 = items[q];
+                            if (visBefore.has(e2) || !isShown(e2)) continue;
                             if (e2.children && e2.children.length > 4) continue;
                             var t2 = (e2.innerText || '').trim().replace(/\s+/g, ' ');
                             if (t2 && t2.length <= 40) res.sample.push(t2);
@@ -848,6 +848,7 @@ class HeadlessWebBridge(
         } else false
         val expectedPath = runCatching { Uri.parse(url).path.orEmpty() }.getOrDefault("")
         val delayMs = if (navigated || reloaded) 1800L else 300L
+        val codeWebFetch = kind == ConnectionKind.REMOTE_WEB && url.contains("claude.ai", ignoreCase = true)
         val selector = when (kind) {
             ConnectionKind.CHATGPT_WEB -> "[data-message-author-role=\"user\"], [data-message-author-role=\"assistant\"]"
             ConnectionKind.CLAUDE_WEB -> "[data-testid=\"user-message\"], .font-user-message, .font-claude-response, .font-claude-message"
@@ -867,9 +868,23 @@ class HeadlessWebBridge(
                     for (var s = 0; s < scrollers.length; s++) {
                         try { scrollers[s].scrollTop = scrollers[s].scrollHeight; } catch(se) {}
                     }
+                    $ROW_TEXT_JS
                     var nodes = queryAllDeep('$selector');
                     var out = [];
                     var lastTxt = '';
+                    // claude.ai/code: 대화 행 단위로 읽어 코드 블록 등 assistant-message 바깥 내용도 포함
+                    var codeRows = $codeWebFetch ? queryAllDeep('[data-testid="transcript-row"]') : [];
+                    if (codeRows.length) {
+                        for (var ci = 0; ci < codeRows.length; ci++) {
+                            var cr = codeRows[ci];
+                            var um = cr.querySelector('[data-testid="user-message"]');
+                            var ct = um ? (um.innerText || '').trim() : rowText(cr);
+                            if (!ct || ct === lastTxt) continue;
+                            lastTxt = ct;
+                            out.push({ role: um ? 'user' : 'assistant', content: ct });
+                        }
+                        nodes = [];
+                    }
                     for (var i = 0; i < nodes.length; i++) {
                         var el = nodes[i];
                         var tag = (el.tagName || '').toLowerCase();
@@ -877,7 +892,7 @@ class HeadlessWebBridge(
                         var cls = (el.className || '').toString().toLowerCase();
                         var testId = (el.getAttribute && el.getAttribute('data-testid')) || '';
                         var isUser = roleAttr === 'user' || tag === 'user-query' || testId === 'user-message' || cls.indexOf('user-message') !== -1 || cls.indexOf('user-query') !== -1;
-                        var txt = (el.innerText || '').trim();
+                        var txt = (el.innerText || '').trim().replace(/^Claude\s*(응답|said|responded)\s*[:：]\s*/i, '');
                         if (isUser) {
                             txt = txt.replace(/^(?:말씀하신\s*내용|You\s*said)\s*[:：]?\s*\n+/i, '').trim();
                         } else {
@@ -1708,18 +1723,50 @@ class HeadlessWebBridge(
                     }
                 }
 
-                // claude.ai/code: 실제 화면 구조(진단 로그 기준) - 마지막 사용자 메시지 이후의 assistant-message 블록들을 이어 붙여 응답으로 사용
+                $ROW_TEXT_JS
+                // claude.ai/code: 실제 화면 구조(진단 로그 기준) - 마지막 사용자 메시지 이후의 대화 행을 읽음.
+                // 코드 블록이 assistant-message 바깥에 있어도 포함되도록 행 단위로 읽고, 행이 없으면 assistant-message 방식으로 대체
                 var isCodeWeb = (kind === 'REMOTE_WEB' && (location.hostname || '').indexOf('claude.ai') >= 0);
+                function getCodeRowsReply() {
+                    var rows = queryAllDeep('[data-testid="transcript-row"]');
+                    if (!rows.length) return null;
+                    var users = queryAllDeep('[data-testid="user-message"]');
+                    var lastUser = users.length ? users[users.length - 1] : null;
+                    var parts = [];
+                    for (var ri = 0; ri < rows.length; ri++) {
+                        var r = rows[ri];
+                        if (lastUser && !(lastUser.compareDocumentPosition(r) & Node.DOCUMENT_POSITION_FOLLOWING)) continue;
+                        if (r.querySelector('[data-testid="user-message"]')) continue;
+                        var t = rowText(r);
+                        if (t && parts.indexOf(t) < 0) parts.push(t);
+                        var ls = r.querySelectorAll('a[href]');
+                        for (var li = 0; li < ls.length; li++) {
+                            var l = ls[li];
+                            var href = l.href || '';
+                            if (!href || href.indexOf('blob:') === 0 || t.indexOf(href) >= 0) continue;
+                            if (l.hasAttribute('download') || /\.(apk|zip|pdf|png|jpe?g|gif|webp|mp4|mp3|csv|xlsx?|docx?|pptx?|tar|gz|7z|txt|md|json)(\?|#|$)/i.test(href) || /\/(download|files)\//i.test(href)) {
+                                var nm = ((l.getAttribute('download') || l.innerText || '') + '').trim().split('\n')[0] || href.split('?')[0].split('/').pop();
+                                parts.push('[📎 ' + nm + '](' + href + ')');
+                            }
+                        }
+                    }
+                    return { count: rows.length, text: parts.join('\n\n') };
+                }
                 function getCodeReply() {
+                    var viaRows = getCodeRowsReply();
+                    if (viaRows) return viaRows;
                     var users = queryAllDeep('[data-testid="user-message"]');
                     var assts = queryAllDeep('[data-testid="assistant-message"]');
                     var lastUser = users.length ? users[users.length - 1] : null;
+                    // 중첩된 assistant-message는 바깥쪽 하나만 사용 (같은 글이 두 번 잡히는 것 방지)
+                    assts = assts.filter(function(a) { return !assts.some(function(b) { return b !== a && b.contains(a); }); });
                     var parts = [];
                     for (var ai = 0; ai < assts.length; ai++) {
                         var a = assts[ai];
                         if (lastUser && !(lastUser.compareDocumentPosition(a) & Node.DOCUMENT_POSITION_FOLLOWING)) continue;
-                        var t = (a.innerText || '').trim();
-                        if (t) parts.push(t);
+                        // 화면 낭독용 숨은 머리말("Claude 응답:") 제거, 똑같은 블록은 한 번만
+                        var t = (a.innerText || '').trim().replace(/^Claude\s*(응답|said|responded)\s*[:：]\s*/i, '');
+                        if (t && parts.indexOf(t) < 0) parts.push(t);
                         // 파일 카드/다운로드 링크는 글자만으로는 안 보이므로 [📎 이름](주소) 줄로 덧붙임 (앱이 다운로드 버튼으로 표시)
                         var ls = a.querySelectorAll('a[href]');
                         for (var li = 0; li < ls.length; li++) {
@@ -1964,6 +2011,17 @@ class HeadlessWebBridge(
             "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
         /** React/Radix 메뉴는 click만으로는 안 열리는 경우가 있어 포인터/마우스 이벤트 전체를 발생시킴 */
         private const val FULL_CLICK_JS = """
+            // 메뉴를 열기 전에 화면에 보이던 요소를 기억해 두었다가, 열린 뒤 새로 보이는 요소만 메뉴 항목 후보로 사용
+            // (대화 내용에 "opus", "높음" 같은 글자가 있어도 그걸 누르지 않도록)
+            function isShown(el) {
+                try { return !!(el.offsetParent || (el.getClientRects && el.getClientRects().length)); } catch (e) { return true; }
+            }
+            function snapshotVisible() {
+                var set = new Set();
+                var all = queryAllDeep('*');
+                for (var i = 0; i < all.length; i++) { if (isShown(all[i])) set.add(all[i]); }
+                return set;
+            }
             function fullClick(el) {
                 try {
                     el.scrollIntoView({ block: 'center' });
@@ -1976,6 +2034,47 @@ class HeadlessWebBridge(
                         el.dispatchEvent(ev);
                     });
                 } catch (e) { try { el.click(); } catch (e2) {} }
+            }
+        """
+
+        /** claude.ai/code 대화 행의 텍스트 추출: 코드 블록(pre)을 ```로 감싸 포함하고 shadow DOM까지 읽음 (innerText는 둘 다 놓칠 수 있음) */
+        private const val ROW_TEXT_JS = """
+            var ROW_SKIP_TESTIDS = { 'message-actions': 1, 'epitaxy-read-aloud': 1, 'user-message-actions': 1, 'user-message-copy': 1, 'code-working-line': 1, 'response-status-announcer': 1, 'jump-to-latest': 1, 'user-message': 1 };
+            function rowWalk(node, out, inPre) {
+                if (node.nodeType === 3) {
+                    var v = node.nodeValue || '';
+                    if (!inPre) v = v.replace(/\s+/g, ' ');
+                    out.push(v);
+                    return;
+                }
+                if (node.nodeType !== 1) return;
+                var tag = (node.tagName || '').toLowerCase();
+                if (tag === 'script' || tag === 'style' || tag === 'svg' || tag === 'button' || tag === 'noscript') return;
+                var tid = node.getAttribute ? node.getAttribute('data-testid') : null;
+                if (tid && ROW_SKIP_TESTIDS[tid]) return;
+                if (node.getAttribute && node.getAttribute('role') === 'button') return;
+                var st = null;
+                try { st = window.getComputedStyle(node); } catch (e) {}
+                if (st && (st.display === 'none' || st.visibility === 'hidden')) return;
+                if (tag === 'br') { out.push('\n'); return; }
+                var isPre = (tag === 'pre');
+                var block = st ? (st.display !== 'inline' && st.display !== 'inline-block' && st.display !== 'contents')
+                               : /^(div|p|pre|li|ul|ol|h[1-6]|table|tr|blockquote)$/.test(tag);
+                if (isPre) out.push('\n```\n'); else if (block) out.push('\n');
+                var kids = node.shadowRoot ? node.shadowRoot.childNodes : node.childNodes;
+                for (var i = 0; i < kids.length; i++) rowWalk(kids[i], out, inPre || isPre);
+                if (isPre) out.push('\n```\n'); else if (block) out.push('\n');
+            }
+            function rowText(row) {
+                var out = [];
+                rowWalk(row, out, false);
+                var t = out.join('')
+                    .replace(/[ \t]+\n/g, '\n')
+                    .replace(/\n[ \t]+/g, '\n')
+                    .replace(/\n{3,}/g, '\n\n')
+                    .replace(/\n(Text|text|plaintext|bash|shell|sh|json|kotlin|kt|python|py|js|javascript|ts|typescript|html|css|xml|yaml|yml|java|sql|diff|markdown|md)[ \t]*\n+```/g, '\n```')
+                    .trim();
+                return t.replace(/^Claude\s*(응답|said|responded)\s*[:：]\s*/i, '');
             }
         """
 
