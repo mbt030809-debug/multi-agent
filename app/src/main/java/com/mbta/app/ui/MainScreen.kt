@@ -841,6 +841,14 @@ fun MainScreen(
                         replies.isNotEmpty() -> onNotifyEvent(session.id, "❓ ${targetConn.labelIn(connections)} 확인 대기 중", finalText.take(140), true, replies.take(2))
                         else -> onNotifyEvent(session.id, "✅ ${targetConn.labelIn(connections)} 응답 완료", finalText.take(140), false, emptyList())
                     }
+                    // 응답이 끝나면 대기 큐의 다음 메시지를 자동 전송 (질문/권한 대기 중이면 보류)
+                    val queued = queuedPromptsMap[session.id].orEmpty()
+                    if (queued.isNotEmpty() && replies.isEmpty()) {
+                        val nextPrompt = queued.first()
+                        queuedPromptsMap[session.id] = queued.drop(1)
+                        val latestSess = sessions.find { it.id == session.id }
+                        if (latestSess != null) sendMessageInSession(latestSess, conn, nextPrompt)
+                    }
                 },
                 onError = { errMsg ->
                     sessions = sessions.map { s ->
