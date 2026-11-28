@@ -834,10 +834,11 @@ fun SessionPane(
                     }
                     val efforts = availableEffortsFor(connection, activeModel, models)
                     val parenEffort = extractParenEffort(activeModel)
-                    val modelBadgeLabel = if (parenEffort.isNotBlank() && efforts.isNotEmpty()) {
-                        stripParenEffort(activeModel)
-                    } else {
-                        activeModel
+                    val modelBadgeLabel = when {
+                        // 세션에 지정한 모델이 없으면 웹 화면 현재 설정을 그대로 쓰므로, 실제와 다른 기본 모델명을 보이지 않음
+                        session.selectedModel.isBlank() && connection.usesHiddenWebBridge() -> "웹 기본"
+                        parenEffort.isNotBlank() && efforts.isNotEmpty() -> stripParenEffort(activeModel)
+                        else -> activeModel
                     }
                     Spacer(modifier = Modifier.size(6.dp))
                     Box {
@@ -888,6 +889,7 @@ fun SessionPane(
                         val activeEffort = when {
                             parenEffort.isNotBlank() -> parenEffort
                             session.selectedEffort.isNotBlank() && efforts.any { it.equals(session.selectedEffort, ignoreCase = true) } -> session.selectedEffort
+                            session.selectedEffort.isBlank() -> "기본"
                             efforts.any { it.equals("medium", ignoreCase = true) } -> efforts.first { it.equals("medium", ignoreCase = true) }
                             else -> efforts.first()
                         }
