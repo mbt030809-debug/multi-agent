@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>오케스트레이션 테스트 2026-11-28</title>
+<style>
+  :root { --bg:#fff; --fg:#1a1a1a; --muted:#666; --main:#c2410c; --sub:#0369a1; --card:#f5f5f4; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#161616; --fg:#eee; --muted:#aaa; --main:#fb923c; --sub:#38bdf8; --card:#242424; }
+  }
+  body { margin:0; padding:16px; background:var(--bg); color:var(--fg); font:15px/1.5 system-ui,sans-serif; }
+  h1 { font-size:18px; margin:0 0 4px; }
+  .note { color:var(--muted); font-size:13px; margin-bottom:20px; }
+
+  .diagram { position:relative; padding-left:44px; }
+  /* 메인: 세로선 */
+  .diagram::before { content:""; position:absolute; left:16px; top:0; bottom:0; width:4px; background:var(--main); border-radius:2px; }
+  .main-label { position:absolute; left:28px; top:-2px; font-size:12px; color:var(--main); font-weight:600; }
+  .spacer { height:26px; }
+
+  /* 서브: 가로줄 */
+  .row { position:relative; margin:0 0 22px; }
+  .row::before { content:""; position:absolute; left:-28px; top:14px; width:28px; height:4px; background:var(--sub); border-radius:2px; }
+  .tag { display:inline-block; font-size:12px; font-weight:600; color:var(--sub); border-bottom:2px solid var(--sub); padding-bottom:1px; }
+  .card { margin-top:6px; background:var(--card); border-radius:8px; padding:8px 10px; font-size:14px; }
+  .card b { color:var(--muted); font-weight:600; }
+</style>
+</head>
+<body>
+<h1>오케스트레이션 테스트</h1>
+<div class="note">2026-11-28 · 세로선 = 메인 · 가로줄 = 서브(병렬 3개)</div>
+
+<div class="diagram">
+  <div class="main-label">메인 · claude-sonnet-5-5 · effort high</div>
+  <div class="spacer"></div>
+
+  <div class="row">
+    <span class="tag">서브A 구조 · claude-haiku-5-5 · effort 미지정</span>
+    <div class="card">최상위: app/, gradle 설정, scripts/, .github/(APK 빌드), HANDOFF_20261128.md, README.md. 안드로이드(Gradle/Kotlin) 앱 MbtA.</div>
+  </div>
+
+  <div class="row">
+    <span class="tag">서브B 깃이력 · claude-haiku-5-5 · effort 미지정</span>
+    <div class="card">브랜치 claude/gracious-maxwell-do0f79 · 최근 커밋: 1d12219(PR #6 병합), a57fd00(첨부 목록·썸네일), 550f439(응답 완료 후 대기 메시지 처리 수정).</div>
+  </div>
+
+  <div class="row">
+    <span class="tag">서브C 문서 · claude-haiku-5-5 · effort 미지정</span>
+    <div class="card">README.md만 존재(설정 파일 없음). Claude·ChatGPT·Gemini·Remote Control·Termux CLI를 한 앱에서 탭/분할로 쓰는 멀티 에이전트 앱 MbtA.</div>
+  </div>
+</div>
+
+<p class="note" style="margin-top:28px">
+  <b>표기 근거</b><br>
+  · 메인: <code>get_session</code>으로 확인한 모델(sonnet-5-5), effort(high)<br>
+  · 서브: 실행 시 <code>model: haiku</code> 지정, 서브 자기보고가 claude-haiku-5-5. effort는 지정한 적이 없어 서브도 "미지정"으로 보고<br>
+  · 서브는 JSON 블록이 아닌 네이티브 Agent 도구로 실행(블록은 파서 오류 2회)
+</p>
+</body>
+</html>
