@@ -6,7 +6,11 @@ import com.mbta.app.model.ConnectionKind
 import com.mbta.app.model.MessageRole
 import com.mbta.app.model.defaultEndpointFor
 import com.mbta.app.model.defaultModelFor
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -19,10 +23,14 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
+import java.io.IOException
 import java.util.concurrent.TimeUnit
 
 data class AiReply(
@@ -49,6 +57,85 @@ object AiApiClient {
     private val json = Json { ignoreUnknownKeys = true }
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
 
+    /** 로컬 브릿지 작업 최대 대기 시간 (초과 시 작업을 취소하고 오류로 종료) */
+    private const val BRIDGE_MAX_WAIT_MS = 90L * 60L * 1000L
+    /** 브릿지 작업 취소 요청 전용 클라이언트 (짧은 타임아웃) */
+    private val cancelClient: OkHttpClient by lazy { client.newBuilder().callTimeout(5, TimeUnit.SECONDS).build() }
+    private const val TRUNCATED_NOTE = "\n\n(⚠️ 최대 길이에 도달해 응답이 잘렸습니다)"
+    private val GEMINI_BLOCKED_FINISH = setOf("SAFETY", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII", "RECITATION", "IMAGE_SAFETY")
+
+    /** OkHttp 호출을 코루틴 취소와 연동한다. 코루틴이 취소되면 call.cancel() 로 HTTP 요청을 끊는다. */
+    private suspend fun Call.await(): Response = suspendCancellableCoroutine { cont ->
+        cont.invokeOnCancellation { cancel() }
+        enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                if (cont.isActive) cont.resumeWith(Result.failure(e))
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                cont.resume(response) { response.close() }
+            }
+        })
+    }
+
+    /** Claude thinking budget (effort → budget_tokens). 알 수 없는 값이면 null (기존 동작). */
+    private fun claudeThinkingBudget(model: String, effort: String): Int? = if (!claudeSupportsThinking(model)) null else when (effort.trim().lowercase()) {
+        "low" -> 2048
+        "medium" -> 8192
+        "high" -> 16384
+        "extra", "xhigh" -> 24576
+        "max" -> 32000
+        else -> null
+    }
+
+    /** thinking 미지원 구형 Claude(3.5 이하) 제외 */
+    fun claudeSupportsThinking(model: String): Boolean {
+        val m = model.lowercase()
+        return m.contains("claude") && !Regex("claude-3-(5|haiku|opus|sonnet)|claude-3\\.5|claude-2|claude-instant").containsMatchIn(m)
+    }
+
+    /** Gemini thinkingBudget. thinking 미지원 모델(2.0 등)이면 null. */
+    private fun geminiThinkingBudget(model: String, effort: String): Int? {
+        val lower = model.lowercase()
+        val supported = lower.contains("2.5") || lower.contains("gemini-3") || lower.contains("gemini-4")
+        if (!supported) return null
+        return when (effort.trim().lowercase()) {
+            "low" -> 1024
+            "medium" -> 8192
+            "high" -> 16384
+            "extra", "xhigh" -> 24576
+            "max" -> 32768
+            else -> null
+        }
+    }
+
+    /** OpenAI reasoning_effort. o 시리즈(o1, o3 …) 또는 gpt-5 계열만 지원. */
+    private fun openAiReasoningEffort(model: String, effort: String): String? {
+        if (!Regex("^(o\\d|gpt-5)").containsMatchIn(model.lowercase())) return null
+        return when (effort.trim().lowercase()) {
+            "low" -> "low"
+            "medium" -> "medium"
+            "high", "extra", "xhigh", "max" -> "high"
+            else -> null
+        }
+    }
+
+    /** 로컬 브릿지 작업 취소 (best-effort). 코루틴 취소 중에도 실행되도록 NonCancellable 에서 호출한다. */
+    private suspend fun cancelBridgeSession(sessionId: String) = withContext(NonCancellable + Dispatchers.IO) {
+        if (sessionId.isNotBlank()) {
+            runCatching {
+                val body = buildJsonObject { put("session_id", JsonPrimitive(sessionId)) }.toString()
+                val req = Request.Builder()
+                    .url("http://127.0.0.1:8765/cancel")
+                    .addHeader("content-type", "application/json")
+                    .post(body.toRequestBody(jsonMediaType))
+                    .build()
+                cancelClient.newCall(req).execute().close()
+            }
+        }
+        Unit
+    }
+
     suspend fun fetchAvailableModels(connection: AiConnection): List<String> = withContext(Dispatchers.IO) {
         val fallback = com.mbta.app.model.availableModelsFor(connection)
         try {
@@ -56,7 +143,7 @@ object AiApiClient {
                 ConnectionKind.REMOTE_CONTROL -> {
                     val kind = if (connection.endpointUrl.lowercase().contains("/claude")) "claude" else "agy"
                     val req = Request.Builder().url("http://127.0.0.1:8765/models?kind=$kind").get().build()
-                    client.newCall(req).execute().use { resp ->
+                    client.newCall(req).await().use { resp ->
                         if (!resp.isSuccessful) return@withContext fallback
                         val arr = json.parseToJsonElement(resp.body?.string().orEmpty()).jsonObject["models"]?.jsonArray
                         val list = arr?.mapNotNull { it.jsonPrimitive.contentOrNull }?.filter { it.isNotBlank() }.orEmpty()
@@ -70,7 +157,7 @@ object AiApiClient {
                         .addHeader("Authorization", "Bearer ${connection.apiKey.trim()}")
                         .get()
                         .build()
-                    client.newCall(req).execute().use { resp ->
+                    client.newCall(req).await().use { resp ->
                         if (!resp.isSuccessful) return@withContext fallback
                         val arr = json.parseToJsonElement(resp.body?.string().orEmpty()).jsonObject["data"]?.jsonArray
                         val list = arr?.mapNotNull { it.jsonObject["id"]?.jsonPrimitive?.contentOrNull }
@@ -89,7 +176,7 @@ object AiApiClient {
                         .addHeader("anthropic-version", "2023-06-01")
                         .get()
                         .build()
-                    client.newCall(req).execute().use { resp ->
+                    client.newCall(req).await().use { resp ->
                         if (!resp.isSuccessful) return@withContext fallback
                         val arr = json.parseToJsonElement(resp.body?.string().orEmpty()).jsonObject["data"]?.jsonArray
                         val list = arr?.mapNotNull { it.jsonObject["id"]?.jsonPrimitive?.contentOrNull }
@@ -104,7 +191,7 @@ object AiApiClient {
                         .url("https://generativelanguage.googleapis.com/v1beta/models?key=${connection.apiKey.trim()}")
                         .get()
                         .build()
-                    client.newCall(req).execute().use { resp ->
+                    client.newCall(req).await().use { resp ->
                         if (!resp.isSuccessful) return@withContext fallback
                         val arr = json.parseToJsonElement(resp.body?.string().orEmpty()).jsonObject["models"]?.jsonArray
                         val list = arr?.mapNotNull { el ->
@@ -119,6 +206,8 @@ object AiApiClient {
                 }
                 else -> fallback
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (_: Exception) {
             fallback
         }
@@ -149,17 +238,19 @@ object AiApiClient {
             when (connection.kind) {
                 ConnectionKind.CLAUDE_API -> sendClaude(connection, history, userMessage, effort)
                 ConnectionKind.OPENAI_API -> sendOpenAi(connection, history, userMessage, effort)
-                ConnectionKind.GEMINI_API -> sendGemini(connection, history, userMessage)
+                ConnectionKind.GEMINI_API -> sendGemini(connection, history, userMessage, effort)
                 ConnectionKind.TERMUX_CLI -> sendTermuxCli(connection, userMessage)
                 ConnectionKind.REMOTE_CONTROL -> sendRemoteControl(connection, history, userMessage, sessionId, cwd, cliSessionId, effort, skipPermissions, systemPrompt)
                 else -> AiReply(text = "", error = "지원하지 않는 연결 형식입니다.")
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             AiReply(text = "", error = "요청 오류: ${e.message ?: "알 수 없는 오류"}")
         }
     }
 
-    private fun sendClaude(
+    private suspend fun sendClaude(
         connection: AiConnection,
         history: List<ChatMessage>,
         userMessage: String,
@@ -183,9 +274,18 @@ object AiApiClient {
             })
         }
 
+        val budget = claudeThinkingBudget(model, effort)
         val payload = buildJsonObject {
             put("model", JsonPrimitive(model))
-            put("max_tokens", JsonPrimitive(4096))
+            if (budget != null) {
+                put("max_tokens", JsonPrimitive(budget + 8192))
+                put("thinking", buildJsonObject {
+                    put("type", JsonPrimitive("enabled"))
+                    put("budget_tokens", JsonPrimitive(budget))
+                })
+            } else {
+                put("max_tokens", JsonPrimitive(4096))
+            }
             if (systemText.isNotBlank()) {
                 put("system", JsonPrimitive(systemText))
             }
@@ -200,16 +300,18 @@ object AiApiClient {
             .post(payload.toRequestBody(jsonMediaType))
             .build()
 
-        client.newCall(request).execute().use { response ->
+        client.newCall(request).await().use { response ->
             val bodyStr = response.body?.string().orEmpty()
             if (!response.isSuccessful) {
                 return AiReply(text = "", error = "Claude API 오류 (${response.code}): ${extractError(bodyStr)}")
             }
             val root = json.parseToJsonElement(bodyStr).jsonObject
             val text = root["content"]?.jsonArray
+                ?.filter { it.jsonObject["type"]?.jsonPrimitive?.contentOrNull == "text" }
                 ?.mapNotNull { it.jsonObject["text"]?.jsonPrimitive?.contentOrNull }
                 ?.joinToString("")
                 .orEmpty()
+                .let { if (root["stop_reason"]?.jsonPrimitive?.contentOrNull == "max_tokens") it + TRUNCATED_NOTE else it }
             val usage = root["usage"]?.jsonObject
             val inTok = usage?.get("input_tokens")?.jsonPrimitive?.longOrNull ?: 0L
             val outTok = usage?.get("output_tokens")?.jsonPrimitive?.longOrNull ?: 0L
@@ -228,7 +330,7 @@ object AiApiClient {
         }
     }
 
-    private fun sendOpenAi(
+    private suspend fun sendOpenAi(
         connection: AiConnection,
         history: List<ChatMessage>,
         userMessage: String,
@@ -257,9 +359,7 @@ object AiApiClient {
 
         val payload = buildJsonObject {
             put("model", JsonPrimitive(model))
-            if (effort.isNotBlank()) {
-                put("reasoning_effort", JsonPrimitive(effort.lowercase()))
-            }
+            openAiReasoningEffort(model, effort)?.let { put("reasoning_effort", JsonPrimitive(it)) }
             put("messages", messagesArray)
         }.toString()
 
@@ -270,15 +370,16 @@ object AiApiClient {
             .post(payload.toRequestBody(jsonMediaType))
             .build()
 
-        client.newCall(request).execute().use { response ->
+        client.newCall(request).await().use { response ->
             val bodyStr = response.body?.string().orEmpty()
             if (!response.isSuccessful) {
                 return AiReply(text = "", error = "OpenAI API 오류 (${response.code}): ${extractError(bodyStr)}")
             }
             val root = json.parseToJsonElement(bodyStr).jsonObject
-            val text = root["choices"]?.jsonArray?.firstOrNull()
-                ?.jsonObject?.get("message")?.jsonObject?.get("content")
+            val choice = root["choices"]?.jsonArray?.firstOrNull()?.jsonObject
+            val text = choice?.get("message")?.jsonObject?.get("content")
                 ?.jsonPrimitive?.contentOrNull.orEmpty()
+                .let { if (choice?.get("finish_reason")?.jsonPrimitive?.contentOrNull == "length") it + TRUNCATED_NOTE else it }
             val usage = root["usage"]?.jsonObject
             val inTok = usage?.get("prompt_tokens")?.jsonPrimitive?.longOrNull ?: 0L
             val outTok = usage?.get("completion_tokens")?.jsonPrimitive?.longOrNull ?: 0L
@@ -299,10 +400,11 @@ object AiApiClient {
         }
     }
 
-    private fun sendGemini(
+    private suspend fun sendGemini(
         connection: AiConnection,
         history: List<ChatMessage>,
-        userMessage: String
+        userMessage: String,
+        effort: String = ""
     ): AiReply {
         val baseUrl = connection.endpointUrl.ifBlank { defaultEndpointFor(ConnectionKind.GEMINI_API) }.trimEnd('/')
         val model = connection.model.ifBlank { defaultModelFor(ConnectionKind.GEMINI_API) }
@@ -337,6 +439,13 @@ object AiApiClient {
                 })
             }
             put("contents", contentsArray)
+            geminiThinkingBudget(model, effort)?.let { budget ->
+                put("generationConfig", buildJsonObject {
+                    put("thinkingConfig", buildJsonObject {
+                        put("thinkingBudget", JsonPrimitive(budget))
+                    })
+                })
+            }
         }.toString()
 
         val request = Request.Builder()
@@ -345,16 +454,27 @@ object AiApiClient {
             .post(payload.toRequestBody(jsonMediaType))
             .build()
 
-        client.newCall(request).execute().use { response ->
+        client.newCall(request).await().use { response ->
             val bodyStr = response.body?.string().orEmpty()
             if (!response.isSuccessful) {
                 return AiReply(text = "", error = "Gemini API 오류 (${response.code}): ${extractError(bodyStr)}")
             }
             val root = json.parseToJsonElement(bodyStr).jsonObject
-            val parts = root["candidates"]?.jsonArray?.firstOrNull()
-                ?.jsonObject?.get("content")?.jsonObject?.get("parts")?.jsonArray
-            val text = parts?.mapNotNull { it.jsonObject["text"]?.jsonPrimitive?.contentOrNull }
+            val cand = root["candidates"]?.jsonArray?.firstOrNull()?.jsonObject
+            val finish = cand?.get("finishReason")?.jsonPrimitive?.contentOrNull.orEmpty()
+            if (cand == null) {
+                val block = root["promptFeedback"]?.jsonObject?.get("blockReason")?.jsonPrimitive?.contentOrNull
+                val why = listOfNotNull(block, finish.ifBlank { null }).joinToString(", ").ifBlank { "응답 후보 없음" }
+                return AiReply(text = "", error = "Gemini가 응답을 차단했습니다: $why")
+            }
+            val parts = cand["content"]?.jsonObject?.get("parts")?.jsonArray
+            val text = parts
+                ?.filter { it.jsonObject["thought"]?.jsonPrimitive?.contentOrNull != "true" }
+                ?.mapNotNull { it.jsonObject["text"]?.jsonPrimitive?.contentOrNull }
                 ?.joinToString("").orEmpty()
+            if (text.isBlank() && finish in GEMINI_BLOCKED_FINISH) {
+                return AiReply(text = "", error = "Gemini가 응답을 차단했습니다: $finish")
+            }
             val usage = root["usageMetadata"]?.jsonObject
             val inTok = usage?.get("promptTokenCount")?.jsonPrimitive?.longOrNull ?: 0L
             val outTok = usage?.get("candidatesTokenCount")?.jsonPrimitive?.longOrNull ?: 0L
@@ -366,7 +486,7 @@ object AiApiClient {
         }
     }
 
-    private fun sendTermuxCli(
+    private suspend fun sendTermuxCli(
         connection: AiConnection,
         command: String
     ): AiReply {
@@ -384,7 +504,7 @@ object AiApiClient {
         }
 
         return try {
-            client.newCall(reqBuilder.build()).execute().use { response ->
+            client.newCall(reqBuilder.build()).await().use { response ->
                 val bodyStr = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
                     return AiReply(text = "", error = "Termux CLI 오류 (${response.code}): ${extractError(bodyStr)}")
@@ -397,6 +517,8 @@ object AiApiClient {
                 }.getOrElse { bodyStr }
                 AiReply(text = output.ifBlank { "(출력 없음)" })
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             AiReply(
                 text = "",
@@ -405,7 +527,7 @@ object AiApiClient {
         }
     }
 
-    private fun sendRemoteControl(
+    private suspend fun sendRemoteControl(
         connection: AiConnection,
         history: List<ChatMessage>,
         prompt: String,
@@ -465,44 +587,68 @@ object AiApiClient {
                 .addHeader("content-type", "application/json")
                 .post(payload.toRequestBody(jsonMediaType))
                 .build()
-            val jobId = runCatching {
-                client.newCall(startReq).execute().use { resp ->
+            val jobId = try {
+                client.newCall(startReq).await().use { resp ->
                     if (!resp.isSuccessful) return@use null
                     val bodyStr = resp.body?.string().orEmpty()
                     json.parseToJsonElement(bodyStr).jsonObject["job_id"]?.jsonPrimitive?.contentOrNull
                 }
-            }.getOrNull()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                null
+            }
 
             if (!jobId.isNullOrBlank()) {
-                while (!Thread.currentThread().isInterrupted) {
-                    try {
-                        Thread.sleep(1500L)
-                    } catch (_: InterruptedException) {
-                        return AiReply(text = "", error = "작업이 취소되었습니다.")
-                    }
-                    val pollReq = Request.Builder()
-                        .url("http://127.0.0.1:8765/job_status?job_id=$jobId")
-                        .get()
-                        .build()
-                    val pollResult = runCatching {
-                        client.newCall(pollReq).execute().use { resp ->
-                            if (!resp.isSuccessful) return@use null
-                            json.parseToJsonElement(resp.body?.string().orEmpty()).jsonObject
+                val startedAt = System.currentTimeMillis()
+                var consecutiveFailures = 0
+                var finished = false
+                try {
+                    while (true) {
+                        // delay 는 취소를 감지한다. 취소되면 아래 finally 에서 브릿지 작업을 중지한다.
+                        delay(1500L)
+                        if (System.currentTimeMillis() - startedAt > BRIDGE_MAX_WAIT_MS) {
+                            return AiReply(text = "", error = "로컬 브릿지 작업이 최대 대기 시간(90분)을 초과해 중단했습니다.")
                         }
-                    }.getOrNull() ?: continue
-                    val status = pollResult["status"]?.jsonPrimitive?.contentOrNull.orEmpty()
-                    if (status == "done") {
-                        val text = pollResult["response"]?.jsonPrimitive?.contentOrNull.orEmpty()
-                        val inTok = pollResult["input_tokens"]?.jsonPrimitive?.longOrNull ?: 0L
-                        val outTok = pollResult["output_tokens"]?.jsonPrimitive?.longOrNull ?: 0L
-                        val served = pollResult["model"]?.jsonPrimitive?.contentOrNull.orEmpty()
-                        return AiReply(text = text, inputTokens = inTok, outputTokens = outTok, servedModel = served)
-                    } else if (status == "error") {
-                        val err = pollResult["error"]?.jsonPrimitive?.contentOrNull ?: "로컬 브릿지 실행 오류"
-                        return AiReply(text = "", error = err)
+                        val pollReq = Request.Builder()
+                            .url("http://127.0.0.1:8765/job_status?job_id=$jobId")
+                            .get()
+                            .build()
+                        val pollResult = try {
+                            client.newCall(pollReq).await().use { resp ->
+                                if (!resp.isSuccessful) null
+                                else json.parseToJsonElement(resp.body?.string().orEmpty()).jsonObject
+                            }
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (_: Exception) {
+                            null
+                        }
+                        if (pollResult == null) {
+                            consecutiveFailures++
+                            if (consecutiveFailures >= 10) {
+                                return AiReply(text = "", error = "로컬 브릿지 상태 조회가 연속 10회 실패해 중단했습니다.")
+                            }
+                            continue
+                        }
+                        consecutiveFailures = 0
+                        val status = pollResult["status"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                        if (status == "done") {
+                            finished = true
+                            val text = pollResult["response"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                            val inTok = pollResult["input_tokens"]?.jsonPrimitive?.longOrNull ?: 0L
+                            val outTok = pollResult["output_tokens"]?.jsonPrimitive?.longOrNull ?: 0L
+                            val served = pollResult["model"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                            return AiReply(text = text, inputTokens = inTok, outputTokens = outTok, servedModel = served)
+                        } else if (status == "error") {
+                            finished = true
+                            val err = pollResult["error"]?.jsonPrimitive?.contentOrNull ?: "로컬 브릿지 실행 오류"
+                            return AiReply(text = "", error = err)
+                        }
                     }
+                } finally {
+                    if (!finished) cancelBridgeSession(sessionId)
                 }
-                return AiReply(text = "", error = "작업이 취소되었습니다.")
             }
         }
 
@@ -515,7 +661,7 @@ object AiApiClient {
         }
 
         return try {
-            client.newCall(reqBuilder.build()).execute().use { response ->
+            client.newCall(reqBuilder.build()).await().use { response ->
                 val bodyStr = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
                     if (response.code == 405) {
@@ -538,6 +684,8 @@ object AiApiClient {
                 }.getOrElse { AiReply(text = bodyStr) }
                 parsed
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             AiReply(
                 text = "",

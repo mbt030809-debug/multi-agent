@@ -68,7 +68,7 @@ class AgentKeepAliveService : Service() {
                 wakeLock = pm?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "MbtA::AgentKeepAlive")
             }
             if (wakeLock?.isHeld == false) {
-                wakeLock?.acquire(30 * 60 * 1000L)
+                wakeLock?.acquire(95 * 60 * 1000L)
             }
         }
 

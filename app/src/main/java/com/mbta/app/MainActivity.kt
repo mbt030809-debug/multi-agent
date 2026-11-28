@@ -165,6 +165,7 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         isAppInForeground = true
+        headlessWebBridge.resumeAll()
     }
 
     override fun onPause() {

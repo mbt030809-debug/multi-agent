@@ -10,9 +10,12 @@ import android.os.Looper
 import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -102,8 +105,18 @@ class HeadlessWebBridge(
     private val pending = mutableMapOf<String, PendingRequest>()
     private val activeReqByKey = mutableMapOf<String, String>()
     private val pendingAutoUploadUris = mutableMapOf<String, Uri>()
+    /** 지연 전송(postDelayed) 중인 프롬프트 주입 작업 — 중지/해제 시 제거하려고 key별로 보관 */
+    private val pendingSendRunnables = mutableMapOf<String, Runnable>()
+    /** 메인 프레임 로드 실패가 난 key — 이후 onPageFinished 가 loaded=true 로 덮어쓰지 않게 함 */
+    private val loadFailedKeys = mutableSetOf<String>()
+
+    /** 렌더러 종료 등으로 WebView 가 풀에서 사라졌을 때 호출 (세션 키). 외부 캐시 무효화용 */
+    var onWebViewDropped: ((String) -> Unit)? = null
+    /** 웹 자동화가 로그인 필요(NEED_LOGIN)를 보고했을 때 호출 (세션 키) */
+    var onNeedLogin: ((String) -> Unit)? = null
 
     fun cancelActiveRequest(key: String) {
+        pendingSendRunnables.remove(key)?.let { mainHandler.removeCallbacks(it) }
         val reqId = activeReqByKey.remove(key)
         if (reqId != null) pending.remove(reqId)
         val wv = pool[key] ?: return
@@ -152,10 +165,22 @@ class HeadlessWebBridge(
         fun onError(requestId: String, code: String, message: String) {
             mainHandler.post {
                 log("onError req=$requestId code=$code msg=$message")
+                if (code == "NEED_LOGIN") {
+                    activeReqByKey.entries.firstOrNull { it.value == requestId }?.key?.let { onNeedLogin?.invoke(it) }
+                }
                 val req = pending.remove(requestId) ?: return@post
                 req.onError(message)
             }
         }
+    }
+
+    /** 메인 프레임 로드 실패: 진행 중 요청이 있으면 오류로 끝내고 로드 상태를 미완료로 둠 */
+    private fun markLoadFailed(key: String, msg: String) {
+        loadFailedKeys.add(key)
+        loadedUrls[key] = false
+        val reqId = activeReqByKey.remove(key) ?: return
+        val req = pending.remove(reqId) ?: return
+        req.onError(msg)
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -170,6 +195,8 @@ class HeadlessWebBridge(
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
             setBackgroundColor(Color.parseColor("#11111B"))
+            // 백그라운드에서도 렌더러 우선순위를 유지해 페이지 정지를 줄임
+            runCatching { setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false) }
 
             settings.apply {
                 javaScriptEnabled = true
@@ -192,6 +219,7 @@ class HeadlessWebBridge(
             webViewClient = object : WebViewClient() {
                 override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
                     super.onPageStarted(view, url, favicon)
+                    loadFailedKeys.remove(key)
                     log("onPageStarted key=$key url=$url")
                     view?.evaluateJavascript(
                         """
@@ -214,9 +242,50 @@ class HeadlessWebBridge(
 
                 override fun onPageFinished(view: WebView?, loadedUrl: String?) {
                     super.onPageFinished(view, loadedUrl)
-                    loadedUrls[key] = true
-                    log("onPageFinished key=$key url=$loadedUrl")
+                    if (key !in loadFailedKeys) loadedUrls[key] = true
+                    log("onPageFinished key=$key url=$loadedUrl failed=${key in loadFailedKeys}")
                     CookieManager.getInstance().flush()
+                }
+
+                override fun onReceivedError(
+                    view: WebView?,
+                    request: WebResourceRequest?,
+                    error: WebResourceError?
+                ) {
+                    super.onReceivedError(view, request, error)
+                    if (request?.isForMainFrame != true) return
+                    val desc = error?.description?.toString()?.takeIf { it.isNotBlank() } ?: "알 수 없는 오류"
+                    log("onReceivedError key=$key code=${error?.errorCode} desc=$desc")
+                    markLoadFailed(key, "페이지 로드 실패: $desc")
+                }
+
+                override fun onReceivedHttpError(
+                    view: WebView?,
+                    request: WebResourceRequest?,
+                    errorResponse: WebResourceResponse?
+                ) {
+                    super.onReceivedHttpError(view, request, errorResponse)
+                    if (request?.isForMainFrame != true) return
+                    val status = errorResponse?.statusCode ?: 0
+                    // 401/403/429 등은 로그인·보안 확인 페이지가 뒤이어 정상 로드되는 경우가 많아 서버 오류(5xx)만 실패로 처리
+                    if (status < 500) { log("onReceivedHttpError key=$key status=$status (무시)"); return }
+                    log("onReceivedHttpError key=$key status=$status")
+                    markLoadFailed(key, "페이지 로드 실패: HTTP $status")
+                }
+
+                override fun onRenderProcessGone(view: WebView?, detail: RenderProcessGoneDetail?): Boolean {
+                    log("onRenderProcessGone key=$key didCrash=${detail?.didCrash()}")
+                    markLoadFailed(key, "페이지 로드 실패: 웹 렌더러가 종료되었습니다")
+                    // 죽은 WebView 는 풀에서 빼고 해제 — 다음 요청 때 새로 만든다
+                    pool.remove(key)?.let { dead ->
+                        (dead.parent as? ViewGroup)?.removeView(dead)
+                        mainHandler.post { runCatching { dead.destroy() } }
+                    }
+                    loadedUrls.remove(key)
+                    targetUrls.remove(key)
+                    loadFailedKeys.remove(key)
+                    onWebViewDropped?.invoke(key)
+                    return true
                 }
 
                 override fun shouldOverrideUrlLoading(
@@ -470,10 +539,15 @@ class HeadlessWebBridge(
         pending[reqId] = PendingRequest(estInput, onChunk, onDone, onError)
 
         val delayMs = if (!navigated && loadedUrls[key] == true) 50L else 3500L
-        mainHandler.postDelayed({
+        // 같은 key 의 이전 지연 전송은 새 요청으로 대체되므로 취소 (이전 프롬프트가 뒤늦게 주입되지 않게)
+        pendingSendRunnables.remove(key)?.let { mainHandler.removeCallbacks(it) }
+        val sendRunnable = Runnable {
+            pendingSendRunnables.remove(key)
             val js = buildAutomationJs(reqId, kind.name, prompt)
             wv.evaluateJavascript(js, null)
-        }, delayMs)
+        }
+        pendingSendRunnables[key] = sendRunnable
+        mainHandler.postDelayed(sendRunnable, delayMs)
     }
 
     suspend fun sendPromptSuspend(
@@ -533,9 +607,22 @@ class HeadlessWebBridge(
                 res.picker = pickerLabel(picker).replace(/\s+/g, ' ').slice(0, 40);
                 var visBefore = snapshotVisible();
                 var done = false;
+                // 정규화: 소문자, 공백/하이픈/점 제거. 등급 1=완전 일치, 2=메뉴 텍스트가 target 포함, 3=target 토큰(claude 제외) 전부 포함
+                function normText(s) { return (s || '').toLowerCase().replace(/[\s\-.]+/g, ''); }
+                var targetN = normText(target);
+                var targetToks = target.toLowerCase().split(/[\s\-.]+/).filter(function(t) { return t && t !== 'claude'; });
+                function matchTier(txt) {
+                    var nt = normText(txt);
+                    if (!nt || !targetN) return 0;
+                    if (nt === targetN) return 1;
+                    if (nt.indexOf(targetN) !== -1) return 2;
+                    if (targetToks.length && targetToks.every(function(t) { return nt.indexOf(normText(t)) !== -1; })) return 3;
+                    return 0;
+                }
                 function pick() {
                     if (done) return;
                     var items = queryAllDeep('[role="menuitem"], [role="option"], [role="menuitemradio"], li, button, div');
+                    var best = null;
                     for (var j = 0; j < items.length; j++) {
                         var el = items[j];
                         if (visBefore.has(el) || !isShown(el)) continue;
@@ -543,12 +630,19 @@ class HeadlessWebBridge(
                         if (el.children && el.children.length > 4) continue;
                         var txt = (el.innerText || '').toLowerCase().trim();
                         if (!txt || txt.length > 60) continue;
-                        if (txt.indexOf(target) !== -1 || target.indexOf(txt) !== -1) {
-                            done = true;
-                            res.clicked = txt.replace(/\s+/g, ' ').slice(0, 40);
-                            fullClick(el);
-                            return;
+                        var tier = matchTier(txt);
+                        if (!tier) continue;
+                        // 순위: 등급 → 역할 없는 일반 div 는 마지막 → 가장 짧은 텍스트
+                        var divPen = (el.tagName === 'DIV' && !(el.getAttribute && el.getAttribute('role'))) ? 1 : 0;
+                        var key = [tier, divPen, txt.length];
+                        if (!best || key[0] < best.key[0] || (key[0] === best.key[0] && (key[1] < best.key[1] || (key[1] === best.key[1] && key[2] < best.key[2])))) {
+                            best = { el: el, txt: txt, key: key };
                         }
+                    }
+                    if (best) {
+                        done = true;
+                        res.clicked = best.txt.replace(/\s+/g, ' ').slice(0, 40);
+                        fullClick(best.el);
                     }
                 }
                 fullClick(picker);
@@ -675,9 +769,11 @@ class HeadlessWebBridge(
 
     /** 세션 삭제 시 해당 세션 전용 WebView 해제 */
     fun releaseWebView(key: String) {
+        pendingSendRunnables.remove(key)?.let { mainHandler.removeCallbacks(it) }
         activeReqByKey.remove(key)?.let { pending.remove(it) }
         val wv = pool.remove(key) ?: return
         loadedUrls.remove(key)
+        loadFailedKeys.remove(key)
         targetUrls.remove(key)
         (wv.parent as? ViewGroup)?.removeView(wv)
         wv.destroy()
@@ -1765,12 +1861,24 @@ class HeadlessWebBridge(
     }
 
     fun destroyAll() {
+        pendingSendRunnables.values.forEach { mainHandler.removeCallbacks(it) }
+        pendingSendRunnables.clear()
         pending.clear()
         pool.values.forEach { wv ->
             (wv.parent as? ViewGroup)?.removeView(wv)
             wv.destroy()
         }
         pool.clear()
+    }
+
+    /** 앱이 포그라운드로 돌아올 때 풀의 WebView 타이머·렌더링을 다시 켬 */
+    fun resumeAll() {
+        pool.values.forEach { wv ->
+            runCatching {
+                wv.onResume()
+                wv.resumeTimers()
+            }
+        }
     }
 
     private fun buildAutomationJs(reqId: String, kindName: String, prompt: String): String {
@@ -2061,8 +2169,10 @@ class HeadlessWebBridge(
                             } catch(e) {}
                             return info;
                         }
+                        var firstSendAt = 0;
                         function trySend() {
                             sendAttempts++;
+                            if (!firstSendAt) firstSendAt = Date.now();
                             var sb = findSendBtn();
                             var enabled = !!sb && !sb.disabled && sb.getAttribute('aria-disabled') !== 'true';
                             if (enabled && (lastClickAt === 0 || Date.now() - lastClickAt >= 1500)) {
@@ -2079,7 +2189,8 @@ class HeadlessWebBridge(
                             }
                             var retryTimer = setTimeout(function() {
                                 if (window.__mbtaReqId !== reqId) return;
-                                if (sendAttempts < 60 && inputRemaining()) trySend();
+                                // 첫 시도 후 30초(500ms 간격 약 60회) 안에서만 재시도
+                                if (Date.now() - firstSendAt < 30000 && inputRemaining()) trySend();
                             }, 500);
                             window.__mbtaTimers.push(retryTimer);
                         }
@@ -2110,16 +2221,17 @@ class HeadlessWebBridge(
                         }
 
                         var lastText = '';
-                        var stableTicks = 0;
-                        var totalTicks = 0;
-                        var idleTicks = 0;
+                        // 틱 수 대신 실제 경과 시간으로 판정 (백그라운드에서 타이머가 늦게 돌아도 시간 기준은 유지)
+                        var startAt = Date.now();
+                        var lastActiveAt = startAt;
+                        var lastActivityAt = startAt;
+                        var stableSince = startAt;
                         var lastBodyLen = beforeBodyLen;
                         // 일반 채팅(ChatGPT/Claude/Gemini)은 셀렉터만 사용, 그 외(Claude Code 웹 등)는 화면 텍스트 증가분도 보조로 사용
                         var useBodyFallback = (!isCodeWeb && kind !== 'CHATGPT_WEB' && kind !== 'CLAUDE_WEB' && kind !== 'GEMINI_WEB');
-                        var silentWorking = 0;
                         var timer = setInterval(function() {
                             if (window.__mbtaReqId !== reqId) { clearInterval(timer); return; }
-                            totalTicks++;
+                            var now = Date.now();
                             var bodyNow = (document.body && document.body.innerText) ? document.body.innerText.length : 0;
                             var activity = bodyNow !== lastBodyLen;
                             lastBodyLen = bodyNow;
@@ -2130,12 +2242,13 @@ class HeadlessWebBridge(
                                 // Claude Code 웹의 '작업 중' 줄에 글자가 있으면 생성 중 (화면 변화 없이 10분(500ms 틱 1200회)이 지나면 무시)
                                 var wl = document.querySelector('[data-testid="code-working-line"]');
                                 var working = !!(wl && (wl.innerText || '').trim());
-                                if (working && !activity) silentWorking++; else silentWorking = 0;
-                                streamingNow = working && silentWorking < 1200;
+                                // 마지막 화면 변화 시각 기준: 화면 변화 없이 10분이 지나면 '작업 중' 줄이 있어도 생성 중으로 보지 않음
+                                if (activity || !working) lastActivityAt = now;
+                                streamingNow = working && (now - lastActivityAt) < 600000;
                             }
-                            if (activity || streamingNow) idleTicks = 0; else idleTicks++;
+                            if (activity || streamingNow) lastActiveAt = now;
                             // 화면이 계속 변하거나 생성 중이면 오래 걸려도 계속 기다림. 3분간 변화가 없거나 90분이 넘으면 종료
-                            if (totalTicks > 10800 || idleTicks > 360) {
+                            if (now - startAt > 90 * 60 * 1000 || now - lastActiveAt > 180 * 1000) {
                                 clearInterval(timer);
                                 if (lastText) {
                                     var doneText = isCodeWeb ? lastText + '\n\n(⚠️ 응답 대기 시간 초과 — 일부만 수신되었을 수 있음)' : lastText;
@@ -2163,17 +2276,17 @@ class HeadlessWebBridge(
 
                             if (candidate && candidate !== lastText) {
                                 lastText = candidate;
-                                stableTicks = 0;
+                                stableSince = now;
                                 if (window.MbtABridge) window.MbtABridge.onChunk(reqId, lastText);
                             } else if (lastText) {
                                 if (!streamingNow && !activity) {
-                                    stableTicks++;
-                                    if (stableTicks >= 5) {
+                                    // 마지막 텍스트 변화 후 2.5초 경과하면 완료
+                                    if (now - stableSince >= 2500) {
                                         clearInterval(timer);
                                         if (window.MbtABridge) window.MbtABridge.onDone(reqId, lastText);
                                     }
                                 } else {
-                                    stableTicks = 0;
+                                    stableSince = now;
                                 }
                             }
                         }, 500);

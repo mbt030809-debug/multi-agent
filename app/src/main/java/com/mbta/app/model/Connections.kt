@@ -99,7 +99,7 @@ fun ConnectionKind.shortLabel(): String =
     displayLabel().replace(Regex("\\s*\\((?:계정|웹)\\)"), "").trim()
 
 fun defaultModelFor(kind: ConnectionKind): String = when (kind) {
-    ConnectionKind.CLAUDE_API -> "claude-sonnet-4-20250514"
+    ConnectionKind.CLAUDE_API -> "claude-sonnet-5-5"
     ConnectionKind.OPENAI_API -> "gpt-4o"
     ConnectionKind.GEMINI_API -> "gemini-2.5-flash"
     ConnectionKind.CLAUDE_WEB -> "Sonnet"
@@ -111,6 +111,10 @@ fun defaultModelFor(kind: ConnectionKind): String = when (kind) {
 
 fun availableModelsFor(kind: ConnectionKind): List<String> = when (kind) {
     ConnectionKind.CLAUDE_API -> listOf(
+        "claude-opus-5-5",
+        "claude-sonnet-5-5",
+        "claude-haiku-5-5",
+        "claude-fable-5-2",
         "claude-sonnet-4-20250514",
         "claude-opus-4-20250514",
         "claude-3-7-sonnet-latest",
@@ -201,17 +205,19 @@ fun availableEffortsFor(
             }
         }
         ConnectionKind.OPENAI_API -> {
-            if (mLower.startsWith("o1") || mLower.startsWith("o3") || mLower.startsWith("o4") || mLower.startsWith("gpt-5")) {
+            if (Regex("^(o\\d|gpt-5)").containsMatchIn(mLower)) {
                 listOf("low", "medium", "high")
             } else emptyList()
         }
         ConnectionKind.CLAUDE_API -> {
-            if (mLower.contains("sonnet-4") || mLower.contains("opus-4") || mLower.contains("3-7-sonnet")) {
+            // 모든 Claude 모델이 thinking budget 을 지원한다고 가정 (AiApiClient.claudeThinkingBudget 와 일치)
+            if (com.mbta.app.network.AiApiClient.claudeSupportsThinking(mLower)) {
                 listOf("low", "medium", "high")
             } else emptyList()
         }
         ConnectionKind.GEMINI_API -> {
-            if (mLower.contains("2.5-pro") || mLower.contains("2.5-flash") || mLower.contains("gemini-3") || mLower.contains("gemini-4")) {
+            // thinkingBudget 미지원 모델(2.0 등)은 칩을 숨긴다 (AiApiClient.geminiThinkingBudget 와 일치)
+            if (mLower.contains("2.5") || mLower.contains("gemini-3") || mLower.contains("gemini-4")) {
                 listOf("low", "medium", "high")
             } else emptyList()
         }

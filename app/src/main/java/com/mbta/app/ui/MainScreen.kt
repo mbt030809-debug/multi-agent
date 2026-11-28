@@ -182,6 +182,11 @@ fun MainScreen(
     // 웹 화면에 실제로 적용에 성공한 모델/effort (세션 WebView 키별) — 실패하면 다음 전송 때 다시 시도
     val webAppliedModel = remember { mutableMapOf<String, String>() }
     val webAppliedEffort = remember { mutableMapOf<String, String>() }
+    // WebView 해제·대화 이동/초기화 시 적용 캐시를 비워, 다음 전송 때 실제 화면 상태 기준으로 다시 맞추게 함
+    fun forgetWebApplied(key: String) {
+        webAppliedModel.remove(key)
+        webAppliedEffort.remove(key)
+    }
 
     fun summarizeWebSwitch(label: String, json: String, target: String? = null): Pair<Boolean, String> {
         return runCatching {
@@ -222,7 +227,8 @@ fun MainScreen(
         }
     }
 
-    suspend fun awaitWebSwitch(isModel: Boolean, key: String, value: String): Boolean {
+    /** 웹 모델/effort 전환. 성공이면 null, 실패면 사유 문자열을 돌려줌 */
+    suspend fun awaitWebSwitch(isModel: Boolean, key: String, value: String): String? {
         val d = kotlinx.coroutines.CompletableDeferred<String>()
         if (isModel) headlessWebBridge.switchWebModel(key, value) { d.complete(it) }
         else headlessWebBridge.switchWebEffort(key, value) { d.complete(it) }
@@ -231,9 +237,14 @@ fun MainScreen(
         android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_LONG).show()
         if (ok) {
             if (isModel) webAppliedModel[key] = value else webAppliedEffort[key] = value
+            return null
         }
-        return ok
+        return msg.substringAfter("—", msg).trim()
     }
+
+    /** 전환 실패 시 응답 메시지 앞에 붙일 경고 줄 */
+    fun switchWarnLine(isModel: Boolean, reason: String): String =
+        "⚠️ ${if (isModel) "모델" else "effort"} 전환 실패: $reason — 현재 웹 모델로 전송됨"
     // 웹 질문 카드가 떠 있었을 때의 카드 정보 (응답 텍스트에서 카드 글자를 걸러내기 위함)
     val webCardMemory = remember { mutableMapOf<String, String>() }
     // 이번 앱 실행에서 오케스트레이터 전체 프로토콜을 이미 보낸 세션 (기존 대화에 나중에 오케스트레이션을 붙인 세션도 한 번은 전체 프로토콜을 받도록)
@@ -373,11 +384,23 @@ fun MainScreen(
         refreshAllQuotas(force = false)
     }
 
+    // 웹 WebView 가 죽어 풀에서 사라지거나, 웹 자동화가 로그인 만료를 보고했을 때 상태를 맞춤
+    LaunchedEffect(Unit) {
+        headlessWebBridge.onWebViewDropped = { key -> forgetWebApplied(key) }
+        headlessWebBridge.onNeedLogin = { key ->
+            val connId = key.substringBefore('#')
+            loginStatusMap[connId] = false
+            persistConfirmedLogins()
+        }
+    }
+
     LaunchedEffect(activeSessionId) {
         val sess = sessions.find { it.id == activeSessionId } ?: return@LaunchedEffect
         val conn = connections.find { it.id == sess.connectionId } ?: return@LaunchedEffect
         if (conn.usesHiddenWebBridge() && sess.webConversationUrl.isNotBlank()) {
-            headlessWebBridge.navigateIfNeeded(com.mbta.app.model.webSessionKey(conn.id, sess.id), sess.webConversationUrl)
+            val wk = com.mbta.app.model.webSessionKey(conn.id, sess.id)
+            // 실제로 다른 대화 URL 로 이동한 경우에만 적용 캐시를 비움
+            if (headlessWebBridge.navigateIfNeeded(wk, sess.webConversationUrl)) forgetWebApplied(wk)
         }
         refreshQuotaForConnection(conn, force = false)
     }
@@ -618,11 +641,25 @@ fun MainScreen(
                     var finalError: String? = null
                     var totalInTok = 0L
                     var totalOutTok = 0L
+                    // 웹 메인의 모델/effort 전환 실패 경고 (첫 라운드에서만 전환하므로 최종 응답 앞에 한 번 붙음)
+                    val orchSwitchWarns = mutableListOf<String>()
 
                     for (round in 1..(maxRounds + 1)) {
                         val (mainText, mainErr) = if (effectiveMainConn.usesHiddenWebBridge()) {
                             val orchWebKey = com.mbta.app.model.webSessionKey(effectiveMainConn.id, session.id)
                             skipLeftoverWebCard(orchWebKey)
+                            if (round == 1) {
+                                val wantModel = session.selectedModel.trim()
+                                val wantEffort = session.selectedEffort.trim()
+                                if (wantModel.isNotBlank() && webAppliedModel[orchWebKey] != wantModel) {
+                                    awaitWebSwitch(true, orchWebKey, wantModel)?.let { orchSwitchWarns.add(switchWarnLine(true, it)) }
+                                    kotlinx.coroutines.delay(400L)
+                                }
+                                if (wantEffort.isNotBlank() && effectiveMainConn.kind == ConnectionKind.REMOTE_WEB && webAppliedEffort[orchWebKey] != wantEffort) {
+                                    awaitWebSwitch(false, orchWebKey, wantEffort)?.let { orchSwitchWarns.add(switchWarnLine(false, it)) }
+                                    kotlinx.coroutines.delay(400L)
+                                }
+                            }
                             // 메인이 웹 질문 카드를 띄우고 답을 기다리는 동안 앱에도 같은 질문창을 보여줌
                             val orchAskPoll = if (effectiveMainConn.kind == ConnectionKind.REMOTE_WEB) {
                                 scope.launch {
@@ -860,7 +897,8 @@ fun MainScreen(
                     val finalMsg = ChatMessage(
                         id = placeholderId,
                         role = MessageRole.ASSISTANT,
-                        content = finalError ?: ((mainParts + finalAnswer.ifBlank { "(응답 없음)" }).filter { it.isNotBlank() }.joinToString("\n\n") + modelWarning),
+                        content = (if (orchSwitchWarns.isEmpty()) "" else orchSwitchWarns.joinToString("\n") + "\n\n") +
+                            (finalError ?: ((mainParts + finalAnswer.ifBlank { "(응답 없음)" }).filter { it.isNotBlank() }.joinToString("\n\n") + modelWarning)),
                         inputTokens = totalInTok,
                         outputTokens = totalOutTok,
                         agentName = "${conn.labelIn(connections)} (오케스트레이터)",
@@ -980,14 +1018,18 @@ fun MainScreen(
             webCardMemory.remove(session.id)
             val wantModel = session.selectedModel.trim()
             val wantEffort = session.selectedEffort.trim()
+            // 전환이 실패했을 때 이번 응답 메시지 앞에 붙일 경고 줄
+            val switchWarns = mutableListOf<String>()
+            fun withSwitchWarns(body: String): String =
+                if (switchWarns.isEmpty()) body else switchWarns.joinToString("\n") + "\n\n" + body
             scope.launch {
                 skipLeftoverWebCard(webSendKey)
                 if (wantModel.isNotBlank() && webAppliedModel[webSendKey] != wantModel) {
-                    awaitWebSwitch(true, webSendKey, wantModel)
+                    awaitWebSwitch(true, webSendKey, wantModel)?.let { switchWarns.add(switchWarnLine(true, it)) }
                     kotlinx.coroutines.delay(400L)
                 }
                 if (wantEffort.isNotBlank() && targetConn.kind == ConnectionKind.REMOTE_WEB && webAppliedEffort[webSendKey] != wantEffort) {
-                    awaitWebSwitch(false, webSendKey, wantEffort)
+                    awaitWebSwitch(false, webSendKey, wantEffort)?.let { switchWarns.add(switchWarnLine(false, it)) }
                     kotlinx.coroutines.delay(400L)
                 }
             headlessWebBridge.sendPrompt(
@@ -1021,7 +1063,7 @@ fun MainScreen(
                                 webConversationUrl = newConvUrl,
                                 messages = s.messages.map { m ->
                                     if (m.id == placeholderId) {
-                                        m.copy(content = finalText, inputTokens = inTok, outputTokens = outTok)
+                                        m.copy(content = withSwitchWarns(finalText), inputTokens = inTok, outputTokens = outTok)
                                     } else m
                                 }
                             )
@@ -1050,7 +1092,7 @@ fun MainScreen(
                     sessions = sessions.map { s ->
                         if (s.id == session.id) {
                             s.copy(messages = s.messages.map { m ->
-                                if (m.id == placeholderId) m.copy(content = errMsg, isError = true) else m
+                                if (m.id == placeholderId) m.copy(content = withSwitchWarns(errMsg), isError = true) else m
                             })
                         } else s
                     }
@@ -1211,8 +1253,19 @@ fun MainScreen(
         activeJobs[session.id] = job
     }
 
-    fun cancelSessionTask(session: AgentSession, conn: AiConnection) {
-        activeJobs.remove(session.id)?.cancel()
+    /** 취소 뒤 대기열의 다음 항목을 이어서 보냄 (이미 다른 전송이 시작됐으면 그 전송이 끝날 때 처리) */
+    fun drainQueueAfterCancel(sessionId: String, conn: AiConnection) {
+        if (sendingMap[sessionId] == true) return
+        val q = queuedPromptsMap[sessionId].orEmpty()
+        val next = q.firstOrNull() ?: return
+        queuedPromptsMap[sessionId] = q.drop(1)
+        val latest = sessions.find { it.id == sessionId } ?: return
+        sendMessageInSession(latest, conn, next)
+    }
+
+    fun cancelSessionTask(session: AgentSession, conn: AiConnection, drainQueue: Boolean = true) {
+        val cancelledJob = activeJobs.remove(session.id)
+        cancelledJob?.cancel()
         session.subagentRuns.filter { it.status == "running" }.forEach { run ->
             subagentJobsMap.remove(run.id)?.cancel()
         }
@@ -1239,6 +1292,14 @@ fun MainScreen(
             } else s
         }
         store.saveSessions(sessions)
+        if (drainQueue) {
+            // 취소된 작업이 실제로 끝난 뒤 대기열 다음 항목 전송 (웹은 중지 클릭 직후 입력이 섞이지 않도록 잠시 대기)
+            scope.launch {
+                cancelledJob?.join()
+                if (conn.usesHiddenWebBridge()) kotlinx.coroutines.delay(1200L)
+                drainQueueAfterCancel(session.id, conn)
+            }
+        }
     }
 
     fun sendQueuedNow(session: AgentSession, conn: AiConnection, idx: Int) {
@@ -1246,7 +1307,8 @@ fun MainScreen(
         val msg = cur.getOrNull(idx) ?: return
         queuedPromptsMap[session.id] = cur.filterIndexed { i, _ -> i != idx }
         if (sendingMap[session.id] == true) {
-            cancelSessionTask(session, conn)
+            // 바로 보낼 항목을 이어서 보내므로 대기열 자동 처리는 하지 않음
+            cancelSessionTask(session, conn, drainQueue = false)
         }
         val latest = sessions.find { it.id == session.id } ?: session
         sendMessageInSession(latest, conn, msg)
@@ -1261,7 +1323,7 @@ fun MainScreen(
     ) {
         val prevConn = enabledConnections.find { it.id == fromSession.connectionId }
         if (sendingMap[fromSession.id] == true && prevConn != null) {
-            cancelSessionTask(fromSession, prevConn)
+            cancelSessionTask(fromSession, prevConn, drainQueue = false)
         }
         scope.launch {
             val nonSys = fromSession.messages.filter { it.role != MessageRole.SYSTEM }
@@ -1353,7 +1415,9 @@ fun MainScreen(
     }
 
     fun deleteSession(session: AgentSession) {
-        headlessWebBridge.releaseWebView(com.mbta.app.model.webSessionKey(session.connectionId.orEmpty(), session.id))
+        val releasedKey = com.mbta.app.model.webSessionKey(session.connectionId.orEmpty(), session.id)
+        headlessWebBridge.releaseWebView(releasedKey)
+        forgetWebApplied(releasedKey)
         val remainingInProject = validProjectSessions.filterNot { it.id == session.id }
         sessions = sessions.filterNot { it.id == session.id }
         if (activeSessionId == session.id) {
@@ -1364,6 +1428,7 @@ fun MainScreen(
     }
 
     fun clearSessionMessages(session: AgentSession) {
+        forgetWebApplied(com.mbta.app.model.webSessionKey(session.connectionId.orEmpty(), session.id))
         sessions = sessions.map { if (it.id == session.id) it.copy(webConversationUrl = "", messages = emptyList()) else it }
         store.saveSessions(sessions)
     }
