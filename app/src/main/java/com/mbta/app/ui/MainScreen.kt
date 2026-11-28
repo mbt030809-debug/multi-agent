@@ -177,6 +177,7 @@ fun MainScreen(
     var sessionPendingDelete by remember { mutableStateOf<AgentSession?>(null) }
 
     val sendingMap = remember { mutableStateMapOf<String, Boolean>() }
+    val webQuestionMap = remember { mutableStateMapOf<String, String>() }
     val activeSendingCount = sendingMap.values.count { it }
     LaunchedEffect(activeSendingCount) {
         if (activeSendingCount > 0) {
@@ -770,6 +771,31 @@ fun MainScreen(
             store.saveSessions(sessions)
             sendingMap[session.id] = true
 
+            if (targetConn.kind == ConnectionKind.REMOTE_WEB) {
+                // 웹 AI가 질문 카드를 띄우고 답을 기다리는 동안 앱에도 같은 질문창을 보여줌
+                val askSid = session.id
+                val askKey = com.mbta.app.model.webSessionKey(targetConn.id, askSid)
+                scope.launch {
+                    kotlinx.coroutines.delay(4000L)
+                    while (sendingMap[askSid] == true) {
+                        headlessWebBridge.readWebQuestion(askKey) { json ->
+                            if (json != webQuestionMap[askSid]) {
+                                if (json == null) webQuestionMap.remove(askSid) else webQuestionMap[askSid] = json
+                                val suffix = json?.let { "\n\n<<ASK>>$it<</ASK>>" } ?: ""
+                                sessions = sessions.map { s ->
+                                    if (s.id == askSid) {
+                                        s.copy(messages = s.messages.map { m ->
+                                            if (m.id == placeholderId) m.copy(content = stripAskMarker(m.content) + suffix) else m
+                                        })
+                                    } else s
+                                }
+                            }
+                        }
+                        kotlinx.coroutines.delay(2500L)
+                    }
+                    webQuestionMap.remove(askSid)
+                }
+            }
             headlessWebBridge.sendPrompt(
                 key = com.mbta.app.model.webSessionKey(targetConn.id, session.id),
                 kind = targetConn.kind,
@@ -777,10 +803,11 @@ fun MainScreen(
                 prompt = effectivePrompt,
                 conversationUrl = session.webConversationUrl,
                 onChunk = { partial ->
+                    val askSuffix = webQuestionMap[session.id]?.let { "\n\n<<ASK>>$it<</ASK>>" } ?: ""
                     sessions = sessions.map { s ->
                         if (s.id == session.id) {
                             s.copy(messages = s.messages.map { m ->
-                                if (m.id == placeholderId) m.copy(content = partial) else m
+                                if (m.id == placeholderId) m.copy(content = partial + askSuffix) else m
                             })
                         } else s
                     }

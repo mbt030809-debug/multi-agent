@@ -155,7 +155,8 @@ private val numberedOptionRegex = Regex("^\\s*([1-8])[.)]\\s+(.+)$")
 internal data class DetectedQuestion(
     val title: String,
     val options: List<String>,
-    val isPermission: Boolean = false
+    val isPermission: Boolean = false,
+    val webCard: Boolean = false
 )
 
 private val askMarkerRegex = Regex("<<ASK>>([\\s\\S]*?)<</ASK>>")
@@ -185,7 +186,7 @@ internal fun parseAskMarker(raw: String): DetectedQuestion? {
             "\n(추가 질문 ${qs.length() - 1}개는 세부 답변란에 함께 답해 주세요: " +
                 (1 until qs.length()).joinToString(" / ") { qs.getJSONObject(it).optString("question") } + ")"
         } else ""
-        DetectedQuestion(title = question + extra, options = opts, isPermission = false)
+        DetectedQuestion(title = question + extra, options = opts, isPermission = false, webCard = obj.optBoolean("web"))
     }.getOrNull()
 }
 
@@ -1109,7 +1110,7 @@ fun SessionPane(
                     null
                 } else {
                     val q = detectQuestionPrompt(lastMsg.content, structuredOnly = connection?.endpointUrl?.lowercase()?.let { it.contains("/claude") || it.contains("claude.ai") } == true)
-                    if (q != null && (!isSending || q.isPermission)) q else null
+                    if (q != null && (!isSending || q.isPermission || q.webCard)) q else null
                 }
             }
             LaunchedEffect(lastMsg?.id, detectedQuestion?.isPermission, session.skipPermissions) {
@@ -1380,7 +1381,14 @@ fun SessionPane(
                                             }.trim()
                                             dismissedQuestionMsgId = lastMsg.id
                                             expandedQuestionMsgId = null
-                                            if (replyBody.isNotEmpty()) onSendMessage(replyBody)
+                                            if (detectedQuestion.webCard && connection != null && headlessWebBridge != null) {
+                                                // 웹 화면의 질문 카드에서 직접 선택/입력 (원본이 답을 기다리며 멈춰 있음)
+                                                val webKey = com.mbta.app.model.webSessionKey(connection.id, session.id)
+                                                val idx = selectedOpts.sorted().firstOrNull() ?: -1
+                                                headlessWebBridge.answerWebQuestion(webKey, idx, customAnswer.trim()) { ok ->
+                                                    if (!ok) android.widget.Toast.makeText(context, "웹 질문 카드에 답을 입력하지 못했습니다. 웹 화면에서 직접 선택해 주세요.", android.widget.Toast.LENGTH_LONG).show()
+                                                }
+                                            } else if (replyBody.isNotEmpty()) onSendMessage(replyBody)
                                         }
                                     ) {
                                         Text("답변 전송")
@@ -2177,7 +2185,7 @@ private fun ChatBubble(
                             }
                         }
                         Spacer(modifier = Modifier.height(2.dp))
-                        if (isStreaming && (message.content == "응답 대기 중..." || message.content == "⏳ 작업 중...")) {
+                        if (isStreaming && (stripAskMarker(message.content) == "응답 대기 중..." || stripAskMarker(message.content) == "⏳ 작업 중...")) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -2197,7 +2205,7 @@ private fun ChatBubble(
                                 } else {
                                     val statusRegex = Regex("^(?:🟢\\s*)?(프로세스 활성\\s*·\\s*.+경과)$")
                                     var foundStatus: String? = null
-                                    val bodyLines = message.content.lines().filter { line ->
+                                    val bodyLines = stripAskMarker(message.content).lines().filter { line ->
                                         val m = statusRegex.matchEntire(line.trim())
                                         if (m != null) {
                                             foundStatus = m.groupValues[1]
