@@ -1462,6 +1462,10 @@ class HeadlessWebBridge(
                         'input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="file"])'
                     ];
                     msgSelectors = ['[data-message-author-role="assistant"]', '.font-claude-response', '.prose', 'article', 'pre'];
+                    // claude.ai/code: article/pre(코드 블록)를 응답으로 오인하지 않도록 어시스턴트 메시지 셀렉터만 쓰고 나머지는 화면 텍스트 증가분으로 보완
+                    if (kind === 'REMOTE_WEB' && (location.hostname || '').indexOf('claude.ai') >= 0) {
+                        msgSelectors = ['[data-testid="assistant-message"]', '.font-claude-response', '.font-claude-message', '[data-message-author-role="assistant"]'];
+                    }
                 }
 
                 function findAnyEditable() {
@@ -1584,9 +1588,19 @@ class HeadlessWebBridge(
                         var lastText = '';
                         var stableTicks = 0;
                         var totalTicks = 0;
+                        var idleTicks = 0;
+                        var lastBodyLen = beforeBodyLen;
+                        // 일반 채팅(ChatGPT/Claude/Gemini)은 셀렉터만 사용, 그 외(Claude Code 웹 등)는 화면 텍스트 증가분도 보조로 사용
+                        var useBodyFallback = (kind !== 'CHATGPT_WEB' && kind !== 'CLAUDE_WEB' && kind !== 'GEMINI_WEB');
                         var timer = setInterval(function() {
                             totalTicks++;
-                            if (totalTicks > 180) {
+                            var bodyNow = (document.body && document.body.innerText) ? document.body.innerText.length : 0;
+                            var activity = bodyNow !== lastBodyLen;
+                            lastBodyLen = bodyNow;
+                            var streamingNow = !!document.querySelector('button[aria-label*="Stop"], button[aria-label*="중지"], button[data-testid="stop-button"], [data-is-streaming="true"]');
+                            if (activity || streamingNow) idleTicks = 0; else idleTicks++;
+                            // 화면이 계속 변하거나 생성 중이면 오래 걸려도 계속 기다림. 3분간 변화가 없거나 90분이 넘으면 종료
+                            if (totalTicks > 10800 || idleTicks > 360) {
                                 clearInterval(timer);
                                 if (lastText) {
                                     window.MbtABridge.onDone(reqId, lastText);
@@ -1600,7 +1614,8 @@ class HeadlessWebBridge(
                             var candidate = '';
                             if (cur.count > before.count || (cur.text && cur.text !== before.text)) {
                                 candidate = cur.text;
-                            } else if (cur.count === 0 && document.body) {
+                            }
+                            if (!candidate && (cur.count === 0 || useBodyFallback) && document.body) {
                                 var bodyText = document.body.innerText || '';
                                 if (bodyText.length > beforeBodyLen + promptText.length + 5) {
                                     candidate = bodyText.slice(beforeBodyLen).trim();
@@ -1615,13 +1630,14 @@ class HeadlessWebBridge(
                                 stableTicks = 0;
                                 if (window.MbtABridge) window.MbtABridge.onChunk(reqId, lastText);
                             } else if (lastText) {
-                                var streaming = !!document.querySelector('button[aria-label*="Stop"], button[aria-label*="중지"], button[data-testid="stop-button"], [data-is-streaming="true"]');
-                                if (!streaming) {
+                                if (!streamingNow && !activity) {
                                     stableTicks++;
                                     if (stableTicks >= 5) {
                                         clearInterval(timer);
                                         if (window.MbtABridge) window.MbtABridge.onDone(reqId, lastText);
                                     }
+                                } else {
+                                    stableTicks = 0;
                                 }
                             }
                         }, 500);
