@@ -27,6 +27,12 @@ jobs:
         with:
           gradle-version: '8.10.2'
 
+      - name: Test injected web scripts
+        run: node --test tests/injected-js/*.test.js
+
+      - name: Unit tests
+        run: gradle testDebugUnitTest --stacktrace
+
       - name: Build Release APK
         run: gradle assembleRelease --stacktrace
 
