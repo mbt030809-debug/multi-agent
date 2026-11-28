@@ -536,7 +536,14 @@ internal fun detectQuestionPrompt(rawContent: String, structuredOnly: Boolean = 
     } else null
 }
 
-private data class PendingAttachment(
+/** 세션별 입력 초안 보관소 (메모리 전용) */
+class SessionDraftStore {
+    val texts = HashMap<String, String>()
+    val atts = HashMap<String, List<PendingAttachment>>()
+    fun clear(sessionId: String) { texts.remove(sessionId); atts.remove(sessionId) }
+}
+
+data class PendingAttachment(
     val name: String,
     val mimeType: String,
     val bytes: ByteArray,
@@ -597,14 +604,22 @@ fun SessionPane(
     onSendQueuedNow: (Int) -> Unit = {},
     onRenameSession: (String) -> Unit = {},
     onTogglePinMessage: (String) -> Unit = {},
+    drafts: SessionDraftStore? = null,
     onStopSubagent: (String) -> Unit = {},
     onRetrySubagent: (String) -> Unit = {},
     onAttachOrchestration: (enabled: Boolean, subConnId: String?, subModel: String, subEffort: String, maxParallel: Int, maxRounds: Int, sensitivity: String) -> Unit = { _, _, _, _, _, _, _ -> },
     onToggleSkipPermissions: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
-    var inputText by remember(session.id) { mutableStateOf("") }
-    var attachments by remember(session.id) { mutableStateOf<List<PendingAttachment>>(emptyList()) }
+    // 입력 중이던 글/첨부는 세션별로 보관(앱이 켜진 동안만): 다른 세션이나 설정 화면에 다녀와도 유지
+    var inputText by remember(session.id) { mutableStateOf(drafts?.texts?.get(session.id) ?: "") }
+    var attachments by remember(session.id) { mutableStateOf(drafts?.atts?.get(session.id) ?: emptyList<PendingAttachment>()) }
+    androidx.compose.runtime.SideEffect {
+        if (drafts != null) {
+            drafts.texts[session.id] = inputText
+            drafts.atts[session.id] = attachments
+        }
+    }
     var showHandoffDialog by remember { mutableStateOf(false) }
     var showAttachOrchDialog by remember { mutableStateOf(false) }
     var showModelMenu by remember { mutableStateOf(false) }

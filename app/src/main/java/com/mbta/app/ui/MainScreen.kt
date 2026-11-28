@@ -178,6 +178,7 @@ fun MainScreen(
 
     val sendingMap = remember { mutableStateMapOf<String, Boolean>() }
     val webQuestionMap = remember { mutableStateMapOf<String, String>() }
+    val sessionDrafts = remember { SessionDraftStore() }
     // 웹 화면에 실제로 적용에 성공한 모델/effort (세션 WebView 키별) — 실패하면 다음 전송 때 다시 시도
     val webAppliedModel = remember { mutableMapOf<String, String>() }
     val webAppliedEffort = remember { mutableMapOf<String, String>() }
@@ -1273,6 +1274,7 @@ fun MainScreen(
     }
 
     fun deleteSession(session: AgentSession) {
+        sessionDrafts.clear(session.id)
         headlessWebBridge.releaseWebView(com.mbta.app.model.webSessionKey(session.connectionId.orEmpty(), session.id))
         val remainingInProject = validProjectSessions.filterNot { it.id == session.id }
         sessions = sessions.filterNot { it.id == session.id }
@@ -1919,6 +1921,7 @@ fun MainScreen(
             when (splitMode) {
                 SplitMode.SINGLE -> {
                     SessionPane(
+                        drafts = sessionDrafts,
                         showModelControls = !isLandscape,
                         project = activeProject,
                         session = primarySession,
@@ -1976,6 +1979,7 @@ fun MainScreen(
                 SplitMode.SPLIT_VERTICAL -> {
                     Column(modifier = Modifier.fillMaxSize()) {
                         SessionPane(
+                            drafts = sessionDrafts,
                         showModelControls = !isLandscape,
                             project = activeProject,
                             session = primarySession,
@@ -2033,6 +2037,7 @@ fun MainScreen(
                         )
                         HorizontalDivider(thickness = 2.dp, color = MaterialTheme.colorScheme.outline)
                         SessionPane(
+                            drafts = sessionDrafts,
                         showModelControls = !isLandscape,
                             project = activeProject,
                             session = secondarySession ?: primarySession,
@@ -2097,6 +2102,7 @@ fun MainScreen(
                 SplitMode.SPLIT_HORIZONTAL -> {
                     Row(modifier = Modifier.fillMaxSize()) {
                         SessionPane(
+                            drafts = sessionDrafts,
                         showModelControls = !isLandscape,
                             project = activeProject,
                             session = primarySession,
@@ -2154,6 +2160,7 @@ fun MainScreen(
                         )
                         VerticalDivider(thickness = 2.dp, color = MaterialTheme.colorScheme.outline)
                         SessionPane(
+                            drafts = sessionDrafts,
                         showModelControls = !isLandscape,
                             project = activeProject,
                             session = secondarySession ?: primarySession,
