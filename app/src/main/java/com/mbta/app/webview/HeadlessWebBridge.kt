@@ -1754,7 +1754,7 @@ class HeadlessWebBridge(
                             }
                         }
                     }
-                    return { count: rows.length, text: parts.join('\n\n') };
+                    return { count: rows.length, text: parts.join('\n') };
                 }
                 function getCodeReply() {
                     var viaRows = getCodeRowsReply();
@@ -2075,15 +2075,21 @@ class HeadlessWebBridge(
                 var isPre = (tag === 'pre');
                 var block = st ? (st.display !== 'inline' && st.display !== 'inline-block' && st.display !== 'contents')
                                : /^(div|p|pre|li|ul|ol|h[1-6]|table|tr|blockquote)$/.test(tag);
-                if (isPre) out.push('\n```\n'); else if (block) out.push('\n');
+                var hardBlock = /^(p|h[1-6]|ul|ol|blockquote|table)$/.test(tag);
+                var BRK = hardBlock ? '\u0002' : '\u0001';
+                if (isPre) out.push('\n```\n'); else if (block) out.push(BRK);
                 var kids = node.shadowRoot ? node.shadowRoot.childNodes : node.childNodes;
                 for (var i = 0; i < kids.length; i++) rowWalk(kids[i], out, inPre || isPre);
-                if (isPre) out.push('\n```\n'); else if (block) out.push('\n');
+                if (isPre) out.push('\n```\n'); else if (block) out.push(BRK);
             }
             function rowText(row) {
                 var out = [];
                 rowWalk(row, out, false);
+                // 블록 경계: 중첩 div가 빈 줄을 만들지 않도록 연속 경계는 하나로 합침 (문단/제목/목록만 빈 줄 유지)
                 var t = out.join('')
+                    .replace(/([\u0001\u0002])[ \t]+/g, '$1').replace(/[ \t]+([\u0001\u0002])/g, '$1')
+                    .replace(/[\u0001\u0002]*\u0002[\u0001\u0002]*/g, '\n\n')
+                    .replace(/\u0001+/g, '\n')
                     .replace(/[ \t]+\n/g, '\n')
                     .replace(/\n[ \t]+/g, '\n')
                     .replace(/\n{3,}/g, '\n\n')
