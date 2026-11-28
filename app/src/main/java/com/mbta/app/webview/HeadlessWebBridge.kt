@@ -938,7 +938,7 @@ class HeadlessWebBridge(
                     var links = queryAllDeep('a[href]');
                     for (var i = 0; i < links.length; i++) {
                         var href = links[i].href || '';
-                        if (!/(\/c\/[^\/?#]+|\/chat\/[^\/?#]+|\/app\/[^\/?#]+|\/r\/[^\/?#]+|\/gem\/[^\/?#]+\/[^\/?#]+)/.test(href)) continue;
+                        if (!/(\/c\/[^\/?#]+|\/chat\/[^\/?#]+|\/app\/[^\/?#]+|\/r\/[^\/?#]+|\/gem\/[^\/?#]+\/[^\/?#]+|\/code\/(?:session_)?[A-Za-z0-9_-]{8,})/.test(href)) continue;
                         if (/\/(new|settings|pricing|login|signin|about|faq|updates|extensions|gems)(\/|$|\?)/i.test(href)) continue;
                         if (seen[href]) continue;
                         var title = extractTitleFromEl(links[i]);

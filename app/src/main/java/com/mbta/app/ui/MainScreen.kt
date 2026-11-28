@@ -238,7 +238,8 @@ fun MainScreen(
         return lower.contains("/c/") ||
             lower.contains("/chat/") ||
             lower.contains("/app/") ||
-            lower.contains("/r/")
+            lower.contains("/r/") ||
+            Regex("/code/(?:session_)?[a-z0-9_-]{8,}").containsMatchIn(lower)
     }
 
     fun applyQuotaUpdate(connId: String, pct: Int, lbl: String) {
