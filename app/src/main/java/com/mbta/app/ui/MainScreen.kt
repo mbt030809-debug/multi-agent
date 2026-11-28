@@ -390,7 +390,9 @@ fun MainScreen(
         effectiveDir: String,
         run: SubagentRun
     ): SubagentRun {
-        val effectiveSubConn = if (subModel.isNotBlank()) subConn.copy(model = subModel) else subConn
+        // effort가 모델 이름 변형으로 표현되는 연결(Antigravity 등)은 effort를 모델에 반영
+        val subModelFinal = com.mbta.app.model.modelWithEffort(subModel, subEffort, availableModelsFor(subConn))
+        val effectiveSubConn = if (subModelFinal.isNotBlank()) subConn.copy(model = subModelFinal) else subConn
         val subPrompt = buildString {
             append("[서브에이전트 작업 지시 — 역할: ${run.label}]\n")
             if (useProjectContext && effectiveDir.isNotBlank()) append("- 작업 경로: $effectiveDir\n")
@@ -400,6 +402,15 @@ fun MainScreen(
         }
         return try {
             val (outText, errText) = if (effectiveSubConn.usesHiddenWebBridge()) {
+                // 웹 서브: 지정된 모델/effort를 웹 화면에 맞춘 뒤 전송
+                if (subModelFinal.isNotBlank() && webAppliedModel[effectiveSubConn.id] != subModelFinal) {
+                    awaitWebSwitch(true, effectiveSubConn.id, subModelFinal)
+                    kotlinx.coroutines.delay(400L)
+                }
+                if (subEffort.isNotBlank() && effectiveSubConn.kind == ConnectionKind.REMOTE_WEB && webAppliedEffort[effectiveSubConn.id] != subEffort) {
+                    awaitWebSwitch(false, effectiveSubConn.id, subEffort)
+                    kotlinx.coroutines.delay(400L)
+                }
                 val (triple, err) = headlessWebBridge.sendPromptSuspend(
                     key = effectiveSubConn.id,
                     kind = effectiveSubConn.kind,
@@ -497,7 +508,8 @@ fun MainScreen(
             return
         }
         if (session.isOrchestration && !text.startsWith("@")) {
-            val effectiveMainConn = if (session.selectedModel.isNotBlank()) conn.copy(model = session.selectedModel) else conn
+            val mainModelFinal = com.mbta.app.model.modelWithEffort(session.selectedModel, session.selectedEffort, availableModelsFor(conn))
+            val effectiveMainConn = if (mainModelFinal.isNotBlank()) conn.copy(model = mainModelFinal) else conn
             val subConn = enabledConnections.find { it.id == (session.subConnectionId ?: session.connectionId) } ?: conn
             val subModel = session.subModel.ifBlank { defaultModelFor(subConn) }
             val effectiveDir = session.worktreePath.ifBlank { activeProject.workDir }
@@ -852,7 +864,8 @@ fun MainScreen(
 
         val targetConn = mentionedConn ?: conn
         val effectiveConn = if (mentionedConn == null && session.selectedModel.isNotBlank()) {
-            targetConn.copy(model = session.selectedModel)
+            // effort가 모델 이름 변형("(High)")으로 표현되는 연결은 고른 effort를 모델에 반영
+            targetConn.copy(model = com.mbta.app.model.modelWithEffort(session.selectedModel, session.selectedEffort, availableModelsFor(targetConn)))
         } else {
             targetConn
         }

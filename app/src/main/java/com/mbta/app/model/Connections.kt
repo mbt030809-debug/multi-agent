@@ -159,6 +159,19 @@ fun stripParenEffort(model: String): String = model.replace(parenEffortRegex, ""
 fun extractParenEffort(model: String): String =
     parenEffortRegex.find(model)?.groupValues?.getOrNull(1)?.trim().orEmpty()
 
+/**
+ * effort가 모델 이름의 "(Low/Medium/High)" 변형으로 표현되는 연결(Antigravity 등)에서,
+ * 별도로 고른 effort를 모델 이름에 반영한다. 변형이 없으면 모델을 그대로 돌려준다.
+ */
+fun modelWithEffort(model: String, effort: String, available: List<String>): String {
+    if (model.isBlank() || effort.isBlank()) return model
+    if (extractParenEffort(model).isNotBlank()) return model
+    val base = stripParenEffort(model)
+    return available.firstOrNull {
+        stripParenEffort(it).equals(base, ignoreCase = true) && extractParenEffort(it).equals(effort, ignoreCase = true)
+    } ?: model
+}
+
 fun availableEffortsFor(
     connection: AiConnection,
     activeModel: String,

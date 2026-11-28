@@ -523,6 +523,7 @@ class HeadlessWebBridge(
         val js = """
             (function() {
                 $DEEP_QUERY_JS
+                $FULL_CLICK_JS
                 $PICKER_FIND_JS
                 var target = $quoted;
                 var res = { picker: null, clicked: null, after: '', sample: [] };
@@ -543,12 +544,12 @@ class HeadlessWebBridge(
                         if (txt.indexOf(target) !== -1 || target.indexOf(txt) !== -1) {
                             done = true;
                             res.clicked = txt.replace(/\s+/g, ' ').slice(0, 40);
-                            el.click();
+                            fullClick(el);
                             return;
                         }
                     }
                 }
-                picker.click();
+                fullClick(picker);
                 setTimeout(pick, 450);
                 setTimeout(pick, 1300);
                 setTimeout(function() {
@@ -605,6 +606,7 @@ class HeadlessWebBridge(
             (function() {
                 $DEEP_QUERY_JS
                 var cands = [$arr];
+                $FULL_CLICK_JS
                 $PICKER_FIND_JS
                 var res = { picker: null, clicked: null, after: '', sample: [] };
                 function send() { try { window.MbtABridge.onChunk($quotedReq, JSON.stringify(res)); } catch(e) {} }
@@ -620,7 +622,7 @@ class HeadlessWebBridge(
                         for (var k = 0; k < cands.length; k++) {
                             if (txt === cands[k] || (txt.indexOf(cands[k]) === 0 && txt.length - cands[k].length <= 6)) {
                                 res.clicked = txt.slice(0, 40);
-                                el.click();
+                                fullClick(el);
                                 return true;
                             }
                         }
@@ -631,7 +633,7 @@ class HeadlessWebBridge(
                 res.picker = pickerLabel(picker).replace(/\s+/g, ' ').slice(0, 40);
                 var effDone = false;
                 function tryEffort() { if (!effDone && clickEffort()) effDone = true; }
-                picker.click();
+                fullClick(picker);
                 setTimeout(tryEffort, 450);
                 setTimeout(tryEffort, 1300);
                 setTimeout(function() {
@@ -1295,10 +1297,11 @@ class HeadlessWebBridge(
             (function() {
                 try {
                     $DEEP_QUERY_JS
+                    $FULL_CLICK_JS
                     var btns = queryAllDeep('button, [role="button"]');
                     for (var i = 0; i < btns.length; i++) {
                         var t = (btns[i].innerText || '').trim();
-                        if (/^(건너뛰기|skip)$/i.test(t)) { btns[i].click(); return 'clicked'; }
+                        if (/^(건너뛰기|skip)$/i.test(t)) { fullClick(btns[i]); return 'clicked'; }
                     }
                     return 'nocard';
                 } catch(e) { return 'err'; }
@@ -1321,6 +1324,7 @@ class HeadlessWebBridge(
                 try {
 
                 $DEEP_QUERY_JS
+                $FULL_CLICK_JS
                 function lns(e) { return (e.innerText || '').split('\n').map(function(l) { return l.trim(); }).filter(function(l) { return l; }); }
                 var CTRL = /^(건너뛰기|skip|제출|submit|기타|other)$/i;
                 var CLICKABLE = 'button, [role="button"], [role="radio"], [role="option"], [role="checkbox"], label, input';
@@ -1412,7 +1416,7 @@ class HeadlessWebBridge(
                         if (i < 0 || i >= c.opts.length) return;
                         var target = c.opts[i].el;
                         var clickEl = target.matches(CLICKABLE) ? target : (target.querySelector(CLICKABLE) || target);
-                        clickEl.click();
+                        fullClick(clickEl);
                     }
                     // 선택지를 눌러도 '제출' 버튼을 따로 눌러야 하는 카드가 있어, 선택 후 제출 버튼이 있으면 눌러줌
                     function findSubmit() {
@@ -1425,7 +1429,7 @@ class HeadlessWebBridge(
                         }
                         return null;
                     }
-                    function submitSoon(delay) { setTimeout(function() { var sb = findSubmit(); if (sb) sb.click(); }, delay); }
+                    function submitSoon(delay) { setTimeout(function() { var sb = findSubmit(); if (sb) fullClick(sb); }, delay); }
                     if (idxs.length && !text) {
                         idxs.forEach(function(i, n) { setTimeout(function() { clickOpt(i); }, n * 300); });
                         submitSoon(idxs.length * 300 + 450);
@@ -1445,7 +1449,7 @@ class HeadlessWebBridge(
                             var others = Array.prototype.slice.call(c.card.querySelectorAll('button, [role="button"], div'));
                             for (var i = 0; i < others.length; i++) {
                                 var t = (others[i].innerText || '').trim().split('\n')[0].trim();
-                                if (/^(기타|other)$/i.test(t)) { others[i].click(); break; }
+                                if (/^(기타|other)$/i.test(t)) { fullClick(others[i]); break; }
                             }
                             return 'opened_other';
                         }
@@ -1958,6 +1962,23 @@ class HeadlessWebBridge(
     companion object {
         private const val MOBILE_UA =
             "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
+        /** React/Radix 메뉴는 click만으로는 안 열리는 경우가 있어 포인터/마우스 이벤트 전체를 발생시킴 */
+        private const val FULL_CLICK_JS = """
+            function fullClick(el) {
+                try {
+                    el.scrollIntoView({ block: 'center' });
+                    var r = el.getBoundingClientRect();
+                    var x = r.left + r.width / 2, y = r.top + r.height / 2;
+                    var o = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y, button: 0, buttons: 1, pointerId: 1, pointerType: 'mouse', isPrimary: true };
+                    ['pointerover', 'pointerenter', 'mouseover', 'pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'].forEach(function(t) {
+                        var ev;
+                        try { ev = (t.indexOf('pointer') === 0) ? new PointerEvent(t, o) : new MouseEvent(t, o); } catch (e) { ev = new MouseEvent(t === 'click' ? 'click' : t.replace('pointer', 'mouse'), o); }
+                        el.dispatchEvent(ev);
+                    });
+                } catch (e) { try { el.click(); } catch (e2) {} }
+            }
+        """
+
         /** 모델/effort 선택 버튼 찾기: 입력창 근처의 '모델명+숫자' 버튼 우선 (사이드바의 'Claude' 같은 버튼을 잘못 고르지 않도록) */
         private const val PICKER_FIND_JS = """
             function pickerLabel(b) { return ((b.innerText || '') + ' ' + (b.getAttribute('aria-label') || '')).trim(); }
