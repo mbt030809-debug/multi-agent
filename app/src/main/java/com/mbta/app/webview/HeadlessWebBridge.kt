@@ -73,7 +73,12 @@ class HeadlessWebBridge(
                     });
                     var edits = document.querySelectorAll('textarea, input, [contenteditable]').length;
                     var txt = ((document.body && document.body.innerText) || '').replace(/\s+/g, ' ').trim().slice(0, 250);
-                    return 'href=' + location.href + '\nreadyState=' + document.readyState + '\niframes(' + iframes.length + ')=' + iframes.join(' | ') + '\neditable=' + edits + '\nbodyText=' + txt;
+                    var tcount = {};
+                    document.querySelectorAll('[data-testid]').forEach(function(e) { var k = e.getAttribute('data-testid'); tcount[k] = (tcount[k] || 0) + 1; });
+                    var tids = Object.keys(tcount).slice(0, 40).map(function(k) { return k + 'x' + tcount[k]; }).join(', ');
+                    var roles = document.querySelectorAll('[data-message-author-role]').length;
+                    var arts = document.querySelectorAll('article').length;
+                    return 'href=' + location.href + '\nreadyState=' + document.readyState + '\niframes(' + iframes.length + ')=' + iframes.join(' | ') + '\neditable=' + edits + '\ntestids=' + tids + '\nauthorRole=' + roles + ' article=' + arts + '\nbodyText=' + txt;
                 } catch(e) { return 'dump error: ' + e; }
             })();
         """.trimIndent()
@@ -757,6 +762,7 @@ class HeadlessWebBridge(
         val selector = when (kind) {
             ConnectionKind.CHATGPT_WEB -> "[data-message-author-role=\"user\"], [data-message-author-role=\"assistant\"]"
             ConnectionKind.CLAUDE_WEB -> "[data-testid=\"user-message\"], .font-user-message, .font-claude-response, .font-claude-message"
+            ConnectionKind.REMOTE_WEB -> "[data-testid=\"user-message\"], .font-user-message, .font-claude-response, .font-claude-message, [data-message-author-role], article"
             ConnectionKind.GEMINI_WEB -> "user-query, model-response"
             else -> "[data-message-author-role], user-query, model-response, article"
         }
@@ -1064,6 +1070,175 @@ class HeadlessWebBridge(
 
         val initialDelay = if (loadedUrls[key] == true) 50L else 2200L
         mainHandler.postDelayed({ pollScrape(0, false) }, initialDelay)
+    }
+
+    /** claude.ai/code 등 웹 화면에 떠 있는 AI 질문 카드(번호 선택지 + 건너뛰기)를 읽어 JSON으로 반환. 없으면 null */
+    fun readWebQuestion(key: String, onResult: (String?) -> Unit) {
+        val wv = pool[key]
+        if (wv == null) {
+            onResult(null)
+            return
+        }
+        val js = """
+            (function() {
+                try {
+
+                $DEEP_QUERY_JS
+                function parseOpt(e) {
+                    var lines = (e.innerText || '').split('\n').map(function(l) { return l.trim(); }).filter(function(l) { return l; });
+                    if (lines.length < 2 || !/^\d+$/.test(lines[0])) return null;
+                    return { label: lines[1], description: lines.slice(2).join(' '), el: e };
+                }
+                function findCard() {
+                    var btns = queryAllDeep('button, [role="button"]');
+                    var skip = null;
+                    for (var i = 0; i < btns.length; i++) {
+                        var t = (btns[i].innerText || '').trim();
+                        if (/^(건너뛰기|skip)$/i.test(t)) { skip = btns[i]; break; }
+                    }
+                    if (!skip) return null;
+                    var el = skip;
+                    for (var up = 0; up < 8 && el; up++) {
+                        el = el.parentElement;
+                        if (!el) break;
+                        var cands = Array.prototype.slice.call(el.querySelectorAll('button, [role="button"], [role="option"], [role="radio"], label, li, div'));
+                        var parsed = [];
+                        for (var j = 0; j < cands.length; j++) {
+                            var p = parseOpt(cands[j]);
+                            if (p) parsed.push(p);
+                        }
+                        // 가장 안쪽 요소만 유지 (중첩 중복 제거)
+                        var inner = parsed.filter(function(a) {
+                            return !parsed.some(function(b) { return b !== a && a.el.contains(b.el); });
+                        });
+                        if (inner.length >= 2) {
+                            var all = (el.innerText || '').split('\n').map(function(l) { return l.trim(); }).filter(function(l) { return l; });
+                            var q = [];
+                            for (var k = 0; k < all.length; k++) { if (/^\d+$/.test(all[k])) break; q.push(all[k]); }
+                            return { card: el, opts: inner, question: q.join(' ') };
+                        }
+                    }
+                    return null;
+                }
+
+                    var c = findCard();
+                    if (!c || !c.question) return '';
+                    return JSON.stringify({
+                        web: true,
+                        question: c.question,
+                        options: c.opts.map(function(o) { return { label: o.label, description: o.description }; })
+                    });
+                } catch(e) { return ''; }
+            })();
+        """.trimIndent()
+        wv.evaluateJavascript(js) { raw ->
+            val cleaned = raw?.trim()?.let {
+                if (it.startsWith("\"") && it.endsWith("\"")) org.json.JSONTokener(it).nextValue().toString() else it
+            }.orEmpty()
+            onResult(cleaned.ifBlank { null })
+        }
+    }
+
+    /** 웹 질문 카드에서 선택지를 대신 클릭하거나, '기타' 입력란에 직접 답변을 넣어 전송 */
+    fun answerWebQuestion(key: String, optionIndex: Int, freeText: String, onResult: (Boolean) -> Unit) {
+        val wv = pool[key]
+        if (wv == null) {
+            onResult(false)
+            return
+        }
+        val quotedText = JSONObject.quote(freeText)
+        val js = """
+            (function() {
+                try {
+
+                $DEEP_QUERY_JS
+                function parseOpt(e) {
+                    var lines = (e.innerText || '').split('\n').map(function(l) { return l.trim(); }).filter(function(l) { return l; });
+                    if (lines.length < 2 || !/^\d+$/.test(lines[0])) return null;
+                    return { label: lines[1], description: lines.slice(2).join(' '), el: e };
+                }
+                function findCard() {
+                    var btns = queryAllDeep('button, [role="button"]');
+                    var skip = null;
+                    for (var i = 0; i < btns.length; i++) {
+                        var t = (btns[i].innerText || '').trim();
+                        if (/^(건너뛰기|skip)$/i.test(t)) { skip = btns[i]; break; }
+                    }
+                    if (!skip) return null;
+                    var el = skip;
+                    for (var up = 0; up < 8 && el; up++) {
+                        el = el.parentElement;
+                        if (!el) break;
+                        var cands = Array.prototype.slice.call(el.querySelectorAll('button, [role="button"], [role="option"], [role="radio"], label, li, div'));
+                        var parsed = [];
+                        for (var j = 0; j < cands.length; j++) {
+                            var p = parseOpt(cands[j]);
+                            if (p) parsed.push(p);
+                        }
+                        // 가장 안쪽 요소만 유지 (중첩 중복 제거)
+                        var inner = parsed.filter(function(a) {
+                            return !parsed.some(function(b) { return b !== a && a.el.contains(b.el); });
+                        });
+                        if (inner.length >= 2) {
+                            var all = (el.innerText || '').split('\n').map(function(l) { return l.trim(); }).filter(function(l) { return l; });
+                            var q = [];
+                            for (var k = 0; k < all.length; k++) { if (/^\d+$/.test(all[k])) break; q.push(all[k]); }
+                            return { card: el, opts: inner, question: q.join(' ') };
+                        }
+                    }
+                    return null;
+                }
+
+                    var c = findCard();
+                    if (!c) return 'nocard';
+                    var idx = $optionIndex;
+                    var text = $quotedText;
+                    if (idx >= 0 && idx < c.opts.length && !text) {
+                        c.opts[idx].el.click();
+                        return 'clicked';
+                    }
+                    if (text) {
+                        function findInput() {
+                            return c.card.querySelector('textarea, input[type="text"], input:not([type]), [contenteditable="true"]');
+                        }
+                        var inp = findInput();
+                        if (!inp) {
+                            var others = Array.prototype.slice.call(c.card.querySelectorAll('button, [role="button"], div'));
+                            for (var i = 0; i < others.length; i++) {
+                                var t = (others[i].innerText || '').trim().split('\n')[0].trim();
+                                if (/^(기타|other)$/i.test(t)) { others[i].click(); break; }
+                            }
+                            return 'opened_other';
+                        }
+                        inp.focus();
+                        if (inp.isContentEditable) { inp.textContent = text; }
+                        else {
+                            var proto = inp.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+                            Object.getOwnPropertyDescriptor(proto, 'value').set.call(inp, text);
+                        }
+                        inp.dispatchEvent(new Event('input', { bubbles: true }));
+                        var kd = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true };
+                        inp.dispatchEvent(new KeyboardEvent('keydown', kd));
+                        inp.dispatchEvent(new KeyboardEvent('keyup', kd));
+                        var sb = Array.prototype.slice.call(c.card.querySelectorAll('button, [role="button"]')).filter(function(b) {
+                            return /^(제출|보내기|전송|submit|send|확인|답변)/i.test((b.innerText || b.getAttribute('aria-label') || '').trim());
+                        })[0];
+                        if (sb) sb.click();
+                        return 'typed';
+                    }
+                    return 'noop';
+                } catch(e) { return 'err:' + e; }
+            })();
+        """.trimIndent()
+        wv.evaluateJavascript(js) { raw ->
+            val r = raw?.trim()?.trim('"').orEmpty()
+            if (r == "opened_other" && freeText.isNotBlank()) {
+                // '기타' 입력란이 열리면 잠시 후 한 번 더 시도
+                mainHandler.postDelayed({ answerWebQuestion(key, -1, freeText, onResult) }, 500L)
+            } else {
+                onResult(r == "clicked" || r == "typed")
+            }
+        }
     }
 
     /** 세션 목록이 비었을 때 원인 파악용: 현재 페이지의 링크/사이드바 요소를 텍스트로 덤프 */

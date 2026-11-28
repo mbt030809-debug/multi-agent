@@ -30,6 +30,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -155,8 +157,115 @@ private val numberedOptionRegex = Regex("^\\s*([1-8])[.)]\\s+(.+)$")
 internal data class DetectedQuestion(
     val title: String,
     val options: List<String>,
-    val isPermission: Boolean = false
+    val isPermission: Boolean = false,
+    val webCard: Boolean = false
 )
+
+private val attMarkerRegex = Regex("<<ATT>>([\\s\\S]*?)<</ATT>>")
+
+internal data class MsgAttachment(val name: String, val mime: String, val size: Long, val thumbPath: String)
+
+internal fun stripAttMarker(text: String): String = text.replace(attMarkerRegex, "").trim()
+
+internal fun parseAttMarker(text: String): List<MsgAttachment> {
+    val body = attMarkerRegex.find(text)?.groupValues?.getOrNull(1) ?: return emptyList()
+    return runCatching {
+        val arr = org.json.JSONArray(body)
+        (0 until arr.length()).map { i ->
+            val o = arr.getJSONObject(i)
+            MsgAttachment(o.optString("n"), o.optString("m"), o.optLong("s"), o.optString("t"))
+        }
+    }.getOrDefault(emptyList())
+}
+
+internal fun buildAttMarker(list: List<MsgAttachment>): String {
+    if (list.isEmpty()) return ""
+    val arr = org.json.JSONArray()
+    list.forEach { a ->
+        arr.put(org.json.JSONObject().put("n", a.name).put("m", a.mime).put("s", a.size).put("t", a.thumbPath))
+    }
+    return "\n<<ATT>>$arr<</ATT>>"
+}
+
+/** 이미지 첨부는 앱 내부 저장소에 작은 썸네일을 만들어 말풍선에 보여줌 */
+private fun makeAttachmentThumb(context: android.content.Context, bytes: ByteArray): String {
+    return runCatching {
+        val opts = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+        var sample = 1
+        while (opts.outWidth / sample > 1024 || opts.outHeight / sample > 1024) sample *= 2
+        val bmp = android.graphics.BitmapFactory.decodeByteArray(
+            bytes, 0, bytes.size,
+            android.graphics.BitmapFactory.Options().apply { inSampleSize = sample }
+        ) ?: return ""
+        val dir = java.io.File(context.filesDir, "att_thumbs").apply { mkdirs() }
+        val f = java.io.File(dir, "${java.util.UUID.randomUUID()}.jpg")
+        f.outputStream().use { bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, it) }
+        f.absolutePath
+    }.getOrDefault("")
+}
+
+@Composable
+private fun MessageAttachmentStrip(atts: List<MsgAttachment>) {
+    var zoomPath by remember { mutableStateOf<String?>(null) }
+    Column(
+        modifier = Modifier.padding(top = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        atts.forEach { a ->
+            val bmp = remember(a.thumbPath) {
+                if (a.thumbPath.isNotBlank()) {
+                    runCatching { android.graphics.BitmapFactory.decodeFile(a.thumbPath)?.asImageBitmap() }.getOrNull()
+                } else null
+            }
+            if (bmp != null) {
+                androidx.compose.foundation.Image(
+                    bitmap = bmp,
+                    contentDescription = a.name,
+                    contentScale = androidx.compose.ui.layout.ContentScale.Fit,
+                    modifier = Modifier
+                        .widthIn(max = 240.dp)
+                        .heightIn(max = 220.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable { zoomPath = a.thumbPath }
+                )
+            } else {
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.6f)
+                ) {
+                    Text(
+                        text = "📎 ${a.name}${if (a.size > 0) " · ${formatBytes(a.size)}" else ""}",
+                        fontSize = 11.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
+                }
+            }
+        }
+    }
+    val zp = zoomPath
+    if (zp != null) {
+        val zb = remember(zp) { runCatching { android.graphics.BitmapFactory.decodeFile(zp)?.asImageBitmap() }.getOrNull() }
+        androidx.compose.ui.window.Dialog(onDismissRequest = { zoomPath = null }) {
+            if (zb != null) {
+                androidx.compose.foundation.Image(
+                    bitmap = zb,
+                    contentDescription = null,
+                    contentScale = androidx.compose.ui.layout.ContentScale.Fit,
+                    modifier = Modifier.fillMaxWidth().clickable { zoomPath = null }
+                )
+            }
+        }
+    }
+}
+
+private fun formatBytes(n: Long): String = when {
+    n >= 1_048_576L -> String.format(java.util.Locale.US, "%.1fMB", n / 1_048_576.0)
+    n >= 1024L -> "${n / 1024}KB"
+    else -> "${n}B"
+}
 
 private val askMarkerRegex = Regex("<<ASK>>([\\s\\S]*?)<</ASK>>")
 
@@ -185,7 +294,7 @@ internal fun parseAskMarker(raw: String): DetectedQuestion? {
             "\n(추가 질문 ${qs.length() - 1}개는 세부 답변란에 함께 답해 주세요: " +
                 (1 until qs.length()).joinToString(" / ") { qs.getJSONObject(it).optString("question") } + ")"
         } else ""
-        DetectedQuestion(title = question + extra, options = opts, isPermission = false)
+        DetectedQuestion(title = question + extra, options = opts, isPermission = false, webCard = obj.optBoolean("web"))
     }.getOrNull()
 }
 
@@ -1109,7 +1218,7 @@ fun SessionPane(
                     null
                 } else {
                     val q = detectQuestionPrompt(lastMsg.content, structuredOnly = connection?.endpointUrl?.lowercase()?.let { it.contains("/claude") || it.contains("claude.ai") } == true)
-                    if (q != null && (!isSending || q.isPermission)) q else null
+                    if (q != null && (!isSending || q.isPermission || q.webCard)) q else null
                 }
             }
             LaunchedEffect(lastMsg?.id, detectedQuestion?.isPermission, session.skipPermissions) {
@@ -1380,7 +1489,14 @@ fun SessionPane(
                                             }.trim()
                                             dismissedQuestionMsgId = lastMsg.id
                                             expandedQuestionMsgId = null
-                                            if (replyBody.isNotEmpty()) onSendMessage(replyBody)
+                                            if (detectedQuestion.webCard && connection != null && headlessWebBridge != null) {
+                                                // 웹 화면의 질문 카드에서 직접 선택/입력 (원본이 답을 기다리며 멈춰 있음)
+                                                val webKey = com.mbta.app.model.webSessionKey(connection.id, session.id)
+                                                val idx = selectedOpts.sorted().firstOrNull() ?: -1
+                                                headlessWebBridge.answerWebQuestion(webKey, idx, customAnswer.trim()) { ok ->
+                                                    if (!ok) android.widget.Toast.makeText(context, "웹 질문 카드에 답을 입력하지 못했습니다. 웹 화면에서 직접 선택해 주세요.", android.widget.Toast.LENGTH_LONG).show()
+                                                }
+                                            } else if (replyBody.isNotEmpty()) onSendMessage(replyBody)
                                         }
                                     ) {
                                         Text("답변 전송")
@@ -1497,7 +1613,13 @@ fun SessionPane(
                                     }
                                 }
                                 if (webAttached) kotlinx.coroutines.delay(500L)
-                                val combined = (text + extra.toString()).trim().ifBlank { "첨부한 파일을 확인해줘." }
+                                val attMeta = pendingAtts.map { att ->
+                                    val thumb = if (att.mimeType.startsWith("image/")) {
+                                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { makeAttachmentThumb(context, att.bytes) }
+                                    } else ""
+                                    MsgAttachment(att.name, att.mimeType, att.bytes.size.toLong(), thumb)
+                                }
+                                val combined = (text + extra.toString()).trim().ifBlank { "첨부한 파일을 확인해줘." } + buildAttMarker(attMeta)
                                 onSendMessage(combined)
                             }
                         }
@@ -1789,7 +1911,7 @@ fun SessionPane(
             onDismissRequest = { showAttachOrchDialog = false },
             title = {
                 Text(
-                    text = if (session.isOrchestration) "⚡ 서브 모델 설정" else "⚡ 현재 세션에 서브 모델 연결",
+                    text = if (session.isOrchestration) "서브 모델 설정" else "현재 세션에 서브 모델 연결",
                     fontSize = 15.sp,
                     fontWeight = FontWeight.Bold
                 )
@@ -2103,21 +2225,24 @@ private fun ChatBubble(
                     modifier = Modifier.widthIn(max = 300.dp)
                 ) {
                     Column(modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp)) {
+                        val msgAtts = remember(message.content) { parseAttMarker(message.content) }
+                        val shownText = remember(message.content) { stripAttMarker(message.content) }
                         SelectionContainer {
                             Text(
-                                text = if (isCli) "$ ${message.content}" else message.content,
+                                text = if (isCli) "$ $shownText" else shownText,
                                 fontSize = (11.5f * fontScale).sp,
                                 fontFamily = if (isCli) FontFamily.Monospace else FontFamily.Default,
                                 color = MaterialTheme.colorScheme.onPrimaryContainer
                             )
                         }
+                        if (msgAtts.isNotEmpty()) MessageAttachmentStrip(msgAtts)
                         Row(
                             modifier = Modifier.padding(top = 4.dp),
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            ActionSquareBadge("C") { clipboard.setText(AnnotatedString(message.content)) }
-                            ActionSquareBadge("P") { onQuoteToInput(message.content) }
+                            ActionSquareBadge("C") { clipboard.setText(AnnotatedString(stripAttMarker(message.content))) }
+                            ActionSquareBadge("P") { onQuoteToInput(stripAttMarker(message.content)) }
                             Icon(
                                 Icons.Default.PushPin,
                                 contentDescription = if (message.isPinned) "핀 해제" else "핀 고정",
@@ -2177,7 +2302,7 @@ private fun ChatBubble(
                             }
                         }
                         Spacer(modifier = Modifier.height(2.dp))
-                        if (isStreaming && (message.content == "응답 대기 중..." || message.content == "⏳ 작업 중...")) {
+                        if (isStreaming && (stripAskMarker(message.content) == "응답 대기 중..." || stripAskMarker(message.content) == "⏳ 작업 중...")) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -2197,7 +2322,7 @@ private fun ChatBubble(
                                 } else {
                                     val statusRegex = Regex("^(?:🟢\\s*)?(프로세스 활성\\s*·\\s*.+경과)$")
                                     var foundStatus: String? = null
-                                    val bodyLines = message.content.lines().filter { line ->
+                                    val bodyLines = stripAskMarker(message.content).lines().filter { line ->
                                         val m = statusRegex.matchEntire(line.trim())
                                         if (m != null) {
                                             foundStatus = m.groupValues[1]

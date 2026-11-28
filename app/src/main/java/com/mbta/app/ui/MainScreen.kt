@@ -39,6 +39,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AccountTree
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Code
@@ -176,6 +177,7 @@ fun MainScreen(
     var sessionPendingDelete by remember { mutableStateOf<AgentSession?>(null) }
 
     val sendingMap = remember { mutableStateMapOf<String, Boolean>() }
+    val webQuestionMap = remember { mutableStateMapOf<String, String>() }
     val activeSendingCount = sendingMap.values.count { it }
     LaunchedEffect(activeSendingCount) {
         if (activeSendingCount > 0) {
@@ -442,10 +444,12 @@ fun MainScreen(
         subagentJobsMap[runId] = job
     }
 
-    fun sendMessageInSession(session: AgentSession, conn: AiConnection, text: String) {
+    fun sendMessageInSession(session: AgentSession, conn: AiConnection, textRaw: String) {
+        // 첨부 표시용 마커(<<ATT>>…)는 말풍선에만 남기고 AI로 보내는 프롬프트에서는 제외
+        val text = stripAttMarker(textRaw)
         if (text.isBlank()) return
         if (sendingMap[session.id] == true) {
-            queuedPromptsMap[session.id] = (queuedPromptsMap[session.id] ?: emptyList()) + text.trim()
+            queuedPromptsMap[session.id] = (queuedPromptsMap[session.id] ?: emptyList()) + textRaw.trim()
             return
         }
         if (session.isOrchestration && !text.startsWith("@")) {
@@ -459,7 +463,7 @@ fun MainScreen(
             val userMsg = ChatMessage(
                 id = "msg_${UUID.randomUUID()}",
                 role = MessageRole.USER,
-                content = text
+                content = textRaw
             )
             val placeholderId = "msg_${UUID.randomUUID()}"
             val placeholder = ChatMessage(
@@ -634,7 +638,7 @@ fun MainScreen(
                             Regex("<<SUBAGENTS>>[\\s\\S]*?<</SUBAGENTS>>", RegexOption.IGNORE_CASE),
                             ""
                         ).trim().take(280)
-                        val subStatusHeader = "⚡ 라운드 $round/$maxRounds · 서브에이전트 ${runs.size}개 실행 중 (${runs.joinToString(", ") { it.label }})..."
+                        val subStatusHeader = "Orch · 라운드 $round/$maxRounds · 서브에이전트 ${runs.size}개 실행 중 (${runs.joinToString(", ") { it.label }})..."
                         setPlaceholder(if (mainPlanNote.isNotBlank()) "$mainPlanNote\n\n$subStatusHeader" else subStatusHeader)
 
                         val latestSess = sessions.find { it.id == session.id } ?: session
@@ -696,7 +700,7 @@ fun MainScreen(
                     sendingMap[session.id] = false
                     if (activeSessionId != session.id) unreadDoneSessions[session.id] = true
                     if (finalError == null) {
-                        onNotifyEvent(session.id, "⚡ ${conn.labelIn(connections)} 오케스트레이션 완료", finalMsg.content.take(140), false, emptyList())
+                        onNotifyEvent(session.id, "✅ ${conn.labelIn(connections)} 오케스트레이션 완료", finalMsg.content.take(140), false, emptyList())
                     } else {
                         onNotifyEvent(session.id, "❌ ${conn.labelIn(connections)} 오케스트레이션 오류", finalError.take(140), true, listOf("Keep going"))
                     }
@@ -752,7 +756,7 @@ fun MainScreen(
         val userMsg = ChatMessage(
             id = "msg_${UUID.randomUUID()}",
             role = MessageRole.USER,
-            content = text
+            content = textRaw
         )
         val historyBefore = session.messages
         if (targetConn.usesHiddenWebBridge()) {
@@ -769,6 +773,31 @@ fun MainScreen(
             store.saveSessions(sessions)
             sendingMap[session.id] = true
 
+            if (targetConn.kind == ConnectionKind.REMOTE_WEB) {
+                // 웹 AI가 질문 카드를 띄우고 답을 기다리는 동안 앱에도 같은 질문창을 보여줌
+                val askSid = session.id
+                val askKey = com.mbta.app.model.webSessionKey(targetConn.id, askSid)
+                scope.launch {
+                    kotlinx.coroutines.delay(4000L)
+                    while (sendingMap[askSid] == true) {
+                        headlessWebBridge.readWebQuestion(askKey) { json ->
+                            if (json != webQuestionMap[askSid]) {
+                                if (json == null) webQuestionMap.remove(askSid) else webQuestionMap[askSid] = json
+                                val suffix = json?.let { "\n\n<<ASK>>$it<</ASK>>" } ?: ""
+                                sessions = sessions.map { s ->
+                                    if (s.id == askSid) {
+                                        s.copy(messages = s.messages.map { m ->
+                                            if (m.id == placeholderId) m.copy(content = stripAskMarker(m.content) + suffix) else m
+                                        })
+                                    } else s
+                                }
+                            }
+                        }
+                        kotlinx.coroutines.delay(2500L)
+                    }
+                    webQuestionMap.remove(askSid)
+                }
+            }
             headlessWebBridge.sendPrompt(
                 key = com.mbta.app.model.webSessionKey(targetConn.id, session.id),
                 kind = targetConn.kind,
@@ -776,10 +805,11 @@ fun MainScreen(
                 prompt = effectivePrompt,
                 conversationUrl = session.webConversationUrl,
                 onChunk = { partial ->
+                    val askSuffix = webQuestionMap[session.id]?.let { "\n\n<<ASK>>$it<</ASK>>" } ?: ""
                     sessions = sessions.map { s ->
                         if (s.id == session.id) {
                             s.copy(messages = s.messages.map { m ->
-                                if (m.id == placeholderId) m.copy(content = partial) else m
+                                if (m.id == placeholderId) m.copy(content = partial + askSuffix) else m
                             })
                         } else s
                     }
@@ -812,6 +842,14 @@ fun MainScreen(
                         replies.firstOrNull() == "허용" -> onNotifyEvent(session.id, "⚠️ ${targetConn.labelIn(connections)} 권한 승인 필요", finalText.take(140), true, listOf("허용", "거부"))
                         replies.isNotEmpty() -> onNotifyEvent(session.id, "❓ ${targetConn.labelIn(connections)} 확인 대기 중", finalText.take(140), true, replies.take(2))
                         else -> onNotifyEvent(session.id, "✅ ${targetConn.labelIn(connections)} 응답 완료", finalText.take(140), false, emptyList())
+                    }
+                    // 응답이 끝나면 대기 큐의 다음 메시지를 자동 전송 (질문/권한 대기 중이면 보류)
+                    val queued = queuedPromptsMap[session.id].orEmpty()
+                    if (queued.isNotEmpty() && replies.isEmpty()) {
+                        val nextPrompt = queued.first()
+                        queuedPromptsMap[session.id] = queued.drop(1)
+                        val latestSess = sessions.find { it.id == session.id }
+                        if (latestSess != null) sendMessageInSession(latestSess, conn, nextPrompt)
                     }
                 },
                 onError = { errMsg ->
@@ -989,7 +1027,7 @@ fun MainScreen(
         sessions = sessions.map { s ->
             if (s.id == session.id) {
                 val last = s.messages.lastOrNull()
-                val updated = if (last != null && last.role == MessageRole.ASSISTANT && (last.content.startsWith("⏳") || last.content.startsWith("⚡") || last.content == "응답 대기 중...")) {
+                val updated = if (last != null && last.role == MessageRole.ASSISTANT && (last.content.startsWith("⏳") || last.content.startsWith("⚡") || last.content.startsWith("Orch ·") || last.content == "응답 대기 중...")) {
                     s.messages.dropLast(1) + last.copy(content = "⛔ 작업이 취소되었습니다.", isError = true)
                 } else {
                     s.messages + ChatMessage(id = "msg_${UUID.randomUUID()}", role = MessageRole.SYSTEM, content = "⛔ 작업이 취소되었습니다.")
@@ -1406,9 +1444,9 @@ fun MainScreen(
                     onLoginConnection = { conn -> loginConnection = conn },
                     onCopyDiagnostics = {
                         val baseLogs = headlessWebBridge.getLogsText()
-                        val activeWebKey = primarySession?.connectionId?.takeIf { cid ->
-                            connections.find { it.id == cid }?.usesHiddenWebBridge() == true
-                        }
+                        val activeWebKey = primarySession?.takeIf { ps ->
+                            connections.find { it.id == ps.connectionId }?.usesHiddenWebBridge() == true
+                        }?.let { ps -> com.mbta.app.model.webSessionKey(ps.connectionId.orEmpty(), ps.id) }
                         val copyToClip: (String) -> Unit = { fullText ->
                             val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
                             cm.setPrimaryClip(android.content.ClipData.newPlainText("MbtA Diagnostics", fullText))
@@ -1746,7 +1784,7 @@ fun MainScreen(
                                 Button(onClick = { showNewSessionDialog = true }) {
                                     Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
                                     Spacer(modifier = Modifier.size(6.dp))
-                                    Text("+ 새 세션 만들기")
+                                    Text("새 세션 만들기")
                                 }
                             }
                         }
@@ -2542,7 +2580,8 @@ private fun ExistingSessionPickerDialog(
     headlessWebBridge: HeadlessWebBridge,
     onDismiss: () -> Unit,
     onPick: (AiConnection, com.mbta.app.webview.ExternalSessionItem) -> Unit,
-    asPanel: Boolean = false
+    asPanel: Boolean = false,
+    panelModifier: Modifier = Modifier.width(380.dp)
 ) {
     val selectable = enabledConnections.filter {
         it.usesHiddenWebBridge() || it.kind == ConnectionKind.REMOTE_CONTROL
@@ -2680,9 +2719,9 @@ private fun ExistingSessionPickerDialog(
             shape = RoundedCornerShape(28.dp),
             color = androidx.compose.material3.AlertDialogDefaults.containerColor,
             tonalElevation = androidx.compose.material3.AlertDialogDefaults.TonalElevation,
-            modifier = Modifier.width(380.dp)
+            modifier = panelModifier
         ) {
-            Column(modifier = Modifier.padding(24.dp)) {
+            Column(modifier = Modifier.padding(20.dp)) {
                 androidx.compose.runtime.CompositionLocalProvider(
                     androidx.compose.material3.LocalTextStyle provides MaterialTheme.typography.headlineSmall
                 ) { titleC() }
@@ -2788,10 +2827,9 @@ private fun NewSessionDialog(
     var maxRounds by remember { mutableIntStateOf(3) }
     var sensitivity by remember { mutableStateOf("medium") }
     var useWorktree by remember { mutableStateOf(false) }
-    val isWide = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp >= 800
     var pickerConn by remember { mutableStateOf<AiConnection?>(null) }
 
-    val titleC: @Composable () -> Unit = { Text(if (isOrchMode) "⚡ 새 오케스트레이션 세션" else "새 하위 세션", fontSize = 16.sp, fontWeight = FontWeight.Bold) }
+    val titleC: @Composable () -> Unit = { Text(if (isOrchMode) "새 Orch 세션" else "새 하위 세션", fontSize = 16.sp, fontWeight = FontWeight.Bold) }
     val textC: @Composable () -> Unit = {
             Column(
                 modifier = Modifier
@@ -2829,7 +2867,8 @@ private fun NewSessionDialog(
                                     if (title == "세션 $defaultIndex") title = "오케스트레이션 $defaultIndex"
                                 }
                             },
-                            label = { Text("⚡ 오케스트레이션", fontSize = 12.sp) },
+                            label = { Text("Orch", fontSize = 12.sp) },
+                            leadingIcon = { Icon(Icons.Default.AccountTree, contentDescription = null, modifier = Modifier.size(16.dp)) },
                             modifier = Modifier.weight(1f)
                         )
                     }
@@ -2882,7 +2921,7 @@ private fun NewSessionDialog(
                                     }
                                     if (conn.usesHiddenWebBridge() || conn.kind == ConnectionKind.REMOTE_CONTROL) {
                                         IconButton(
-                                            onClick = { if (isWide && headlessWebBridge != null) pickerConn = conn else onOpenExisting(conn) },
+                                            onClick = { if (headlessWebBridge != null) pickerConn = conn else onOpenExisting(conn) },
                                             modifier = Modifier.size(28.dp)
                                         ) {
                                             Icon(
@@ -3135,18 +3174,19 @@ private fun NewSessionDialog(
         onDismissRequest = onDismiss,
         properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)
     ) {
+        val pickerOpen = pickerConn != null && headlessWebBridge != null
         Row(
-            modifier = Modifier.padding(16.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            modifier = Modifier.fillMaxWidth().padding(12.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally),
             verticalAlignment = Alignment.Top
         ) {
             androidx.compose.material3.Surface(
                 shape = RoundedCornerShape(28.dp),
                 color = androidx.compose.material3.AlertDialogDefaults.containerColor,
                 tonalElevation = androidx.compose.material3.AlertDialogDefaults.TonalElevation,
-                modifier = Modifier.widthIn(min = 280.dp, max = 420.dp)
+                modifier = if (pickerOpen) Modifier.weight(1f) else Modifier.widthIn(min = 280.dp, max = 420.dp)
             ) {
-                Column(modifier = Modifier.padding(24.dp)) {
+                Column(modifier = Modifier.padding(if (pickerOpen) 18.dp else 24.dp)) {
                     titleC()
                     Spacer(modifier = Modifier.height(16.dp))
                     textC()
@@ -3159,13 +3199,14 @@ private fun NewSessionDialog(
                 }
             }
             val pc = pickerConn
-            if (isWide && pc != null && headlessWebBridge != null) {
+            if (pc != null && headlessWebBridge != null) {
                 ExistingSessionPickerDialog(
                     enabledConnections = listOf(pc),
                     headlessWebBridge = headlessWebBridge,
                     onDismiss = { pickerConn = null },
                     onPick = onPickExisting,
-                    asPanel = true
+                    asPanel = true,
+                    panelModifier = Modifier.weight(1f)
                 )
             }
         }
