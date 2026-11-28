@@ -236,6 +236,8 @@ fun MainScreen(
     }
     // 웹 질문 카드가 떠 있었을 때의 카드 정보 (응답 텍스트에서 카드 글자를 걸러내기 위함)
     val webCardMemory = remember { mutableMapOf<String, String>() }
+    // 이번 앱 실행에서 오케스트레이터 전체 프로토콜을 이미 보낸 세션 (기존 대화에 나중에 오케스트레이션을 붙인 세션도 한 번은 전체 프로토콜을 받도록)
+    val orchProtocolSent = remember { mutableSetOf<String>() }
     val activeSendingCount = sendingMap.values.count { it }
     LaunchedEffect(activeSendingCount) {
         if (activeSendingCount > 0) {
@@ -595,7 +597,7 @@ fun MainScreen(
                     // Claude 브리지는 프로토콜을 시스템 프롬프트로 분리 전달(사용자 메시지는 순수 요청), 그 외는 첫 턴에 메시지 앞에 붙임
                     val orchSystemPrompt = if (sysChannel) protocolText(true) else ""
                     var currentPrompt = buildString {
-                        if (!sysChannel) append(protocolText(isFirstOrchTurn))
+                        if (!sysChannel) append(protocolText(isFirstOrchTurn || session.id !in orchProtocolSent))
                         if (useProjectContext && (effectiveDir.isNotBlank() || activeProject.memoryText.isNotBlank())) {
                             append(if (sysChannel) "[프로젝트 컨텍스트]\n" else "\n[프로젝트 컨텍스트]\n")
                             if (effectiveDir.isNotBlank()) append("- 작업 경로: $effectiveDir\n")
@@ -606,6 +608,7 @@ fun MainScreen(
                         append(text)
                     }
 
+                    orchProtocolSent.add(session.id)
                     var finalAnswer = ""
                     // 메인 에이전트가 각 라운드에서 한 말(계획/위임 안내)을 대답창에 계속 보여주기 위한 누적 기록
                     val mainParts = mutableListOf<String>()
