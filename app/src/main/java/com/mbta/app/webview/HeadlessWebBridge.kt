@@ -124,13 +124,7 @@ class HeadlessWebBridge(
     /** 웹 화면에서 긁어온 텍스트의 아이콘 폰트 글리프(사설 영역 문자)와 낱자 한자 줄을 제거 */
     private fun cleanWebText(raw: String): String {
         if (raw.startsWith("__")) return raw
-        return raw
-            .replace(Regex("[\\uE000-\\uF8FF]"), "")
-            .lines()
-            .filter { line -> !Regex("^\\s*[\\u4E00-\\u9FFF]\\s*$").matches(line) }
-            .joinToString("\n")
-            .replace(Regex("\\n{3,}"), "\n\n")
-            .trim()
+        return WebTextCleaner.clean(raw)
     }
 
     private inner class JsBridge {
