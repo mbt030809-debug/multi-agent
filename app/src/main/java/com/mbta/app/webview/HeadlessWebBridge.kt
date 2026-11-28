@@ -510,16 +510,26 @@ class HeadlessWebBridge(
         CookieManager.getInstance().flush()
     }
 
-    fun switchWebModel(key: String, modelName: String) {
-        val wv = pool[key] ?: return
+    /** 웹 화면의 모델 메뉴에서 모델 선택. 결과(JSON: picker/clicked/after/sample)를 onResult로 돌려주고 진단 로그에도 남김 */
+    fun switchWebModel(key: String, modelName: String, onResult: (String) -> Unit = {}) {
+        val wv = pool[key]
+        if (wv == null) {
+            onResult("{\"error\":\"nowebview\"}")
+            return
+        }
         val quoted = JSONObject.quote(modelName.lowercase())
+        val reqId = "__swm_$key"
+        val quotedReq = JSONObject.quote(reqId)
         val js = """
             (function() {
                 $DEEP_QUERY_JS
                 $PICKER_FIND_JS
                 var target = $quoted;
+                var res = { picker: null, clicked: null, after: '', sample: [] };
+                function send() { try { window.MbtABridge.onChunk($quotedReq, JSON.stringify(res)); } catch(e) {} }
                 var picker = findPicker();
-                if (!picker) return;
+                if (!picker) { res.error = 'nopicker'; send(); return; }
+                res.picker = pickerLabel(picker).replace(/\s+/g, ' ').slice(0, 40);
                 var done = false;
                 function pick() {
                     if (done) return;
@@ -532,6 +542,7 @@ class HeadlessWebBridge(
                         if (!txt || txt.length > 60) continue;
                         if (txt.indexOf(target) !== -1 || target.indexOf(txt) !== -1) {
                             done = true;
+                            res.clicked = txt.replace(/\s+/g, ' ').slice(0, 40);
                             el.click();
                             return;
                         }
@@ -540,51 +551,115 @@ class HeadlessWebBridge(
                 picker.click();
                 setTimeout(pick, 450);
                 setTimeout(pick, 1300);
+                setTimeout(function() {
+                    if (!done) {
+                        var items = queryAllDeep('[role="menuitem"], [role="option"], [role="menuitemradio"], li, button, div');
+                        for (var q = 0; q < items.length && res.sample.length < 14; q++) {
+                            var e2 = items[q];
+                            if (e2.children && e2.children.length > 4) continue;
+                            var t2 = (e2.innerText || '').trim().replace(/\s+/g, ' ');
+                            if (t2 && t2.length <= 40) res.sample.push(t2);
+                        }
+                    }
+                    var p2 = findPicker();
+                    res.after = p2 ? pickerLabel(p2).replace(/\s+/g, ' ').slice(0, 40) : '';
+                    send();
+                }, 2100);
             })();
         """.trimIndent()
+        pending[reqId] = PendingRequest(
+            inputTokens = 0L,
+            onChunk = { payload ->
+                pending.remove(reqId)
+                log("switchWebModel key=$key target=$modelName -> $payload")
+                onResult(payload)
+            },
+            onDone = { _, _, _ -> },
+            onError = { _ -> }
+        )
         wv.evaluateJavascript(js, null)
     }
 
     /** claude.ai/code 모델 메뉴 하단 '노력(effort)' 항목을 눌러 적용 (낮음/중간/높음/엑스트라/최대) */
-    fun switchWebEffort(key: String, effort: String) {
-        val wv = pool[key] ?: return
+    fun switchWebEffort(key: String, effort: String, onResult: (String) -> Unit = {}) {
+        val wv = pool[key]
+        if (wv == null) {
+            onResult("{\"error\":\"nowebview\"}")
+            return
+        }
         val cands = when (effort.lowercase()) {
             "low" -> listOf("낮음", "low")
             "medium" -> listOf("중간", "medium")
             "high" -> listOf("높음", "high")
             "extra", "xhigh" -> listOf("엑스트라", "extra", "xhigh")
             "max" -> listOf("최대", "max")
-            else -> return
+            else -> {
+                onResult("{\"error\":\"unknown_effort\"}")
+                return
+            }
         }
         val arr = cands.joinToString(",") { JSONObject.quote(it) }
+        val reqId = "__swe_$key"
+        val quotedReq = JSONObject.quote(reqId)
         val js = """
             (function() {
                 $DEEP_QUERY_JS
                 var cands = [$arr];
                 $PICKER_FIND_JS
+                var res = { picker: null, clicked: null, after: '', sample: [] };
+                function send() { try { window.MbtABridge.onChunk($quotedReq, JSON.stringify(res)); } catch(e) {} }
+                var picker = findPicker();
                 function clickEffort() {
                     var items = queryAllDeep('[role="menuitem"], [role="option"], [role="menuitemradio"], li, button, div');
                     for (var j = 0; j < items.length; j++) {
                         var el = items[j];
                         if (el.children && el.children.length > 4) continue;
-                        if (typeof picker !== 'undefined' && picker && (el === picker || picker.contains(el) || el.contains(picker))) continue;
+                        if (picker && (el === picker || picker.contains(el) || el.contains(picker))) continue;
                         var txt = (el.innerText || '').trim().split('\n')[0].trim().toLowerCase();
                         if (!txt) continue;
                         for (var k = 0; k < cands.length; k++) {
-                            if (txt === cands[k] || (txt.indexOf(cands[k]) === 0 && txt.length - cands[k].length <= 6)) { el.click(); return true; }
+                            if (txt === cands[k] || (txt.indexOf(cands[k]) === 0 && txt.length - cands[k].length <= 6)) {
+                                res.clicked = txt.slice(0, 40);
+                                el.click();
+                                return true;
+                            }
                         }
                     }
                     return false;
                 }
-                var picker = findPicker();
-                if (!picker) return;
+                if (!picker) { res.error = 'nopicker'; send(); return; }
+                res.picker = pickerLabel(picker).replace(/\s+/g, ' ').slice(0, 40);
                 var effDone = false;
                 function tryEffort() { if (!effDone && clickEffort()) effDone = true; }
                 picker.click();
                 setTimeout(tryEffort, 450);
                 setTimeout(tryEffort, 1300);
+                setTimeout(function() {
+                    if (!effDone) {
+                        var items = queryAllDeep('[role="menuitem"], [role="option"], [role="menuitemradio"], li, button, div');
+                        for (var q = 0; q < items.length && res.sample.length < 14; q++) {
+                            var e2 = items[q];
+                            if (e2.children && e2.children.length > 4) continue;
+                            var t2 = (e2.innerText || '').trim().replace(/\s+/g, ' ');
+                            if (t2 && t2.length <= 40) res.sample.push(t2);
+                        }
+                    }
+                    var p2 = findPicker();
+                    res.after = p2 ? pickerLabel(p2).replace(/\s+/g, ' ').slice(0, 40) : '';
+                    send();
+                }, 2100);
             })();
         """.trimIndent()
+        pending[reqId] = PendingRequest(
+            inputTokens = 0L,
+            onChunk = { payload ->
+                pending.remove(reqId)
+                log("switchWebEffort key=$key effort=$effort -> $payload")
+                onResult(payload)
+            },
+            onDone = { _, _, _ -> },
+            onError = { _ -> }
+        )
         wv.evaluateJavascript(js, null)
     }
 
@@ -1207,6 +1282,29 @@ class HeadlessWebBridge(
             }.orEmpty()
             onResult(cleaned.ifBlank { null })
         }
+    }
+
+    /** 웹 질문 카드의 '건너뛰기' 버튼을 눌러 질문을 건너뜀 (원본 AI가 건너뛴 것을 알 수 있도록) */
+    fun skipWebQuestion(key: String, onResult: (Boolean) -> Unit) {
+        val wv = pool[key]
+        if (wv == null) {
+            onResult(false)
+            return
+        }
+        val js = """
+            (function() {
+                try {
+                    $DEEP_QUERY_JS
+                    var btns = queryAllDeep('button, [role="button"]');
+                    for (var i = 0; i < btns.length; i++) {
+                        var t = (btns[i].innerText || '').trim();
+                        if (/^(건너뛰기|skip)$/i.test(t)) { btns[i].click(); return 'clicked'; }
+                    }
+                    return 'nocard';
+                } catch(e) { return 'err'; }
+            })();
+        """.trimIndent()
+        wv.evaluateJavascript(js) { raw -> onResult(raw?.trim('"') == "clicked") }
     }
 
     /** 웹 질문 카드에서 선택지를 대신 클릭하거나, '기타' 입력란에 직접 답변을 넣어 전송 */

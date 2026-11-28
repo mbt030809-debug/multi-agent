@@ -394,6 +394,25 @@ private fun FileRefCards(refs: List<FileRef>, fromWeb: Boolean) {
     }
 }
 
+/** 앱에서 질문을 '무시/닫기' 하면 웹 화면의 질문 카드도 '건너뛰기'로 닫음 */
+private fun skipWebCardIfNeeded(
+    context: android.content.Context,
+    bridge: HeadlessWebBridge?,
+    connection: AiConnection?,
+    sessionId: String,
+    webCard: Boolean
+): Boolean {
+    if (!webCard || bridge == null || connection == null || !connection.usesHiddenWebBridge()) return false
+    bridge.skipWebQuestion(com.mbta.app.model.webSessionKey(connection.id, sessionId)) { ok ->
+        android.widget.Toast.makeText(
+            context,
+            if (ok) "⏭ 질문을 건너뛰었습니다 (웹에서도 닫음)" else "웹 질문 카드를 닫지 못했습니다. 웹 화면에서 직접 건너뛰어 주세요.",
+            android.widget.Toast.LENGTH_SHORT
+        ).show()
+    }
+    return true
+}
+
 private val askMarkerRegex = Regex("<<ASK>>([\\s\\S]*?)<</ASK>>")
 
 internal fun stripAskMarker(text: String): String = text.replace(askMarkerRegex, "").trim()
@@ -594,6 +613,7 @@ fun SessionPane(
     var showRenameDialog by remember { mutableStateOf(false) }
     var inspectingSubagentId by remember(session.id) { mutableStateOf<String?>(null) }
     var dismissedQuestionMsgId by remember(session.id) { mutableStateOf("") }
+    var skippedQuestionMsgId by remember(session.id) { mutableStateOf("") }
     var expandedQuestionMsgId by remember(session.id) { mutableStateOf<String?>(null) }
     var autoOpenedQuestionMsgId by remember(session.id) { mutableStateOf("") }
     var autoApprovedMsgId by remember(session.id) { mutableStateOf("") }
@@ -1410,6 +1430,9 @@ fun SessionPane(
                                 .clickable {
                                     dismissedQuestionMsgId = lastMsg.id
                                     expandedQuestionMsgId = null
+                                    if (skipWebCardIfNeeded(context, headlessWebBridge, connection, session.id, detectedQuestion.webCard)) {
+                                        skippedQuestionMsgId = lastMsg.id
+                                    }
                                 }
                         )
                     }
@@ -1593,6 +1616,9 @@ fun SessionPane(
                                         onClick = {
                                             dismissedQuestionMsgId = lastMsg.id
                                             expandedQuestionMsgId = null
+                                            if (skipWebCardIfNeeded(context, headlessWebBridge, connection, session.id, detectedQuestion.webCard)) {
+                                                skippedQuestionMsgId = lastMsg.id
+                                            }
                                         }
                                     ) { Text("무시") }
                                     Spacer(modifier = Modifier.size(6.dp))
@@ -1635,6 +1661,17 @@ fun SessionPane(
                 }
             }
 
+            if (skippedQuestionMsgId.isNotBlank() && lastMsg?.id == skippedQuestionMsgId) {
+                Text(
+                    text = "⏭ AI 질문을 건너뛰었습니다",
+                    fontSize = 10.5.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(MaterialTheme.colorScheme.surface)
+                        .padding(horizontal = 12.dp, vertical = 2.dp)
+                )
+            }
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
