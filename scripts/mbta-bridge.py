@@ -230,6 +230,13 @@ ACTIVE_STARTED = {}
 MODELS_CACHE = {}
 JOBS_LOCK = threading.Lock()
 JOBS_MAP = {}
+ASK_CAPTURE = {}
+
+ASK_SYSTEM_PROMPT = (
+    "사용자의 결정이 필요하거나 질문할 때는 반드시 AskUserQuestion 도구로 선택지(2~4개)와 함께 질문하세요. "
+    "도구를 쓸 수 없으면 답변 끝에 <<ASK>>{\"question\":\"질문\",\"options\":[\"선택지1\",\"선택지2\"]}<</ASK>> 형식으로만 질문하세요. "
+    "질문이 아닌 일반 답변에는 질문창용 선택지를 만들지 마세요."
+)
 
 
 def fetch_agy_models():
@@ -433,6 +440,8 @@ def run_cli(cmd, cwd=None, timeout=1800, progress_key="", stream_mode=False):
                     for blk in (msg.get("content") or []):
                         if isinstance(blk, dict):
                             if blk.get("type") == "tool_use":
+                                if blk.get("name") == "AskUserQuestion" and isinstance(blk.get("input"), dict):
+                                    ASK_CAPTURE[progress_key] = blk["input"]
                                 append_progress(progress_key, f"🔧 도구 실행: {blk.get('name', '')}")
                             elif blk.get("type") == "text" and blk.get("text"):
                                 append_progress(progress_key, f"💬 {blk['text'][:100].replace(chr(10), ' ')}")
@@ -876,7 +885,8 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
             key = f"claude:{mbta_session_id}" if mbta_session_id else ""
             cwd = (data.get("cwd") or "").strip()
             permission_mode = (data.get("permission_mode") or "").strip()
-            cmd = ["claude", "-p", prompt, "--output-format", "stream-json", "--verbose"]
+            cmd = ["claude", "-p", prompt, "--output-format", "stream-json", "--verbose",
+                   "--append-system-prompt", ASK_SYSTEM_PROMPT]
             if data.get("model"):
                 cmd.extend(["--model", data["model"]])
             effort = (data.get("effort") or "").strip().lower()
@@ -893,12 +903,17 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                     cli_sid = str(data.get("cli_session_id")).strip()
                 if cli_sid:
                     cmd.extend(["--resume", cli_sid])
+            ASK_CAPTURE.pop(mbta_session_id, None)
             proc = run_cli(cmd, cwd=cwd, progress_key=mbta_session_id, stream_mode=True)
             if proc.returncode != 0:
                 self._send_json(500, {"error": proc.stderr or proc.stdout or "claude failed"})
                 return
             parsed = extract_json_payload(proc.stdout)
             if parsed:
+                ask = ASK_CAPTURE.pop(mbta_session_id, None)
+                if ask and "<<ASK>>" not in str(parsed.get("result", "")):
+                    parsed["result"] = (str(parsed.get("result", "")).rstrip() + "\n\n<<ASK>>"
+                                        + json.dumps(ask, ensure_ascii=False) + "<</ASK>>")
                 usage = parsed.get("usage", {})
                 new_sid = parsed.get("session_id", "")
                 if key and new_sid:

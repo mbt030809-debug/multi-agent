@@ -157,11 +157,43 @@ internal data class DetectedQuestion(
     val isPermission: Boolean = false
 )
 
+private val askMarkerRegex = Regex("<<ASK>>([\\s\\S]*?)<</ASK>>")
+
+internal fun stripAskMarker(text: String): String = text.replace(askMarkerRegex, "").trim()
+
+/** AI가 보낸 구조화 질문(<<ASK>>{json}<</ASK>>)을 그대로 파싱 — AskUserQuestion 입력 형식과 단순 형식 모두 지원 */
+internal fun parseAskMarker(raw: String): DetectedQuestion? {
+    val body = askMarkerRegex.find(raw)?.groupValues?.getOrNull(1)?.trim() ?: return null
+    return runCatching {
+        val obj = org.json.JSONObject(body)
+        val qs = obj.optJSONArray("questions")
+        val first = if (qs != null && qs.length() > 0) qs.getJSONObject(0) else obj
+        val question = first.optString("question").ifBlank { first.optString("header") }
+        val arr = first.optJSONArray("options") ?: return@runCatching null
+        val opts = (0 until arr.length()).mapNotNull { i ->
+            val o = arr.get(i)
+            val label = if (o is org.json.JSONObject) {
+                val l = o.optString("label")
+                val d = o.optString("description")
+                if (d.isNotBlank()) "$l — $d" else l
+            } else o.toString()
+            label.trim().takeIf { it.isNotEmpty() }
+        }
+        if (question.isBlank() || opts.size < 2) return@runCatching null
+        val extra = if (qs != null && qs.length() > 1) {
+            "\n(추가 질문 ${qs.length() - 1}개는 세부 답변란에 함께 답해 주세요: " +
+                (1 until qs.length()).joinToString(" / ") { qs.getJSONObject(it).optString("question") } + ")"
+        } else ""
+        DetectedQuestion(title = question + extra, options = opts, isPermission = false)
+    }.getOrNull()
+}
+
 internal fun detectQuickReplies(rawContent: String): List<String> =
     detectQuestionPrompt(rawContent)?.options ?: emptyList()
 
 internal fun detectQuestionPrompt(rawContent: String): DetectedQuestion? {
     if (rawContent.isBlank()) return null
+    parseAskMarker(rawContent)?.let { return it }
     val cleaned = rawContent
         .replace(codeFenceRegex, "")
         .replace(inlineCodeRegex, "")
@@ -2156,7 +2188,7 @@ private fun ChatBubble(
                         } else {
                             val (displayBody, processStatus) = remember(message.content, isStreaming) {
                                 if (!isStreaming) {
-                                    message.content to null
+                                    stripAskMarker(message.content) to null
                                 } else {
                                     val statusRegex = Regex("^(?:🟢\\s*)?(프로세스 활성\\s*·\\s*.+경과)$")
                                     var foundStatus: String? = null
