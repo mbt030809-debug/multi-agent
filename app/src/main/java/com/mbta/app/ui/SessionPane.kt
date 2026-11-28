@@ -1368,7 +1368,12 @@ fun SessionPane(
                     queuedMessages.forEachIndexed { idx, q ->
                         Surface(
                             shape = RoundedCornerShape(16.dp),
-                            color = MaterialTheme.colorScheme.tertiaryContainer
+                            color = MaterialTheme.colorScheme.tertiaryContainer,
+                            // 글자를 누르면 큐에서 빼서 입력창으로 되돌려 수정 (입력 중인 글이 있으면 뒤에 이어 붙임)
+                            modifier = Modifier.clickable {
+                                inputText = if (inputText.isBlank()) q else inputText.trimEnd() + "\n" + q
+                                onRemoveQueued(idx)
+                            }
                         ) {
                             Row(
                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
