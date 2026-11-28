@@ -848,6 +848,7 @@ class HeadlessWebBridge(
         } else false
         val expectedPath = runCatching { Uri.parse(url).path.orEmpty() }.getOrDefault("")
         val delayMs = if (navigated || reloaded) 1800L else 300L
+        val codeWebFetch = kind == ConnectionKind.REMOTE_WEB && url.contains("claude.ai", ignoreCase = true)
         val selector = when (kind) {
             ConnectionKind.CHATGPT_WEB -> "[data-message-author-role=\"user\"], [data-message-author-role=\"assistant\"]"
             ConnectionKind.CLAUDE_WEB -> "[data-testid=\"user-message\"], .font-user-message, .font-claude-response, .font-claude-message"
@@ -867,9 +868,23 @@ class HeadlessWebBridge(
                     for (var s = 0; s < scrollers.length; s++) {
                         try { scrollers[s].scrollTop = scrollers[s].scrollHeight; } catch(se) {}
                     }
+                    $ROW_TEXT_JS
                     var nodes = queryAllDeep('$selector');
                     var out = [];
                     var lastTxt = '';
+                    // claude.ai/code: 대화 행 단위로 읽어 코드 블록 등 assistant-message 바깥 내용도 포함
+                    var codeRows = $codeWebFetch ? queryAllDeep('[data-testid="transcript-row"]') : [];
+                    if (codeRows.length) {
+                        for (var ci = 0; ci < codeRows.length; ci++) {
+                            var cr = codeRows[ci];
+                            var um = cr.querySelector('[data-testid="user-message"]');
+                            var ct = um ? (um.innerText || '').trim() : rowText(cr);
+                            if (!ct || ct === lastTxt) continue;
+                            lastTxt = ct;
+                            out.push({ role: um ? 'user' : 'assistant', content: ct });
+                        }
+                        nodes = [];
+                    }
                     for (var i = 0; i < nodes.length; i++) {
                         var el = nodes[i];
                         var tag = (el.tagName || '').toLowerCase();
@@ -1708,9 +1723,38 @@ class HeadlessWebBridge(
                     }
                 }
 
-                // claude.ai/code: 실제 화면 구조(진단 로그 기준) - 마지막 사용자 메시지 이후의 assistant-message 블록들을 이어 붙여 응답으로 사용
+                $ROW_TEXT_JS
+                // claude.ai/code: 실제 화면 구조(진단 로그 기준) - 마지막 사용자 메시지 이후의 대화 행을 읽음.
+                // 코드 블록이 assistant-message 바깥에 있어도 포함되도록 행 단위로 읽고, 행이 없으면 assistant-message 방식으로 대체
                 var isCodeWeb = (kind === 'REMOTE_WEB' && (location.hostname || '').indexOf('claude.ai') >= 0);
+                function getCodeRowsReply() {
+                    var rows = queryAllDeep('[data-testid="transcript-row"]');
+                    if (!rows.length) return null;
+                    var users = queryAllDeep('[data-testid="user-message"]');
+                    var lastUser = users.length ? users[users.length - 1] : null;
+                    var parts = [];
+                    for (var ri = 0; ri < rows.length; ri++) {
+                        var r = rows[ri];
+                        if (lastUser && !(lastUser.compareDocumentPosition(r) & Node.DOCUMENT_POSITION_FOLLOWING)) continue;
+                        if (r.querySelector('[data-testid="user-message"]')) continue;
+                        var t = rowText(r);
+                        if (t && parts.indexOf(t) < 0) parts.push(t);
+                        var ls = r.querySelectorAll('a[href]');
+                        for (var li = 0; li < ls.length; li++) {
+                            var l = ls[li];
+                            var href = l.href || '';
+                            if (!href || href.indexOf('blob:') === 0 || t.indexOf(href) >= 0) continue;
+                            if (l.hasAttribute('download') || /\.(apk|zip|pdf|png|jpe?g|gif|webp|mp4|mp3|csv|xlsx?|docx?|pptx?|tar|gz|7z|txt|md|json)(\?|#|$)/i.test(href) || /\/(download|files)\//i.test(href)) {
+                                var nm = ((l.getAttribute('download') || l.innerText || '') + '').trim().split('\n')[0] || href.split('?')[0].split('/').pop();
+                                parts.push('[📎 ' + nm + '](' + href + ')');
+                            }
+                        }
+                    }
+                    return { count: rows.length, text: parts.join('\n\n') };
+                }
                 function getCodeReply() {
+                    var viaRows = getCodeRowsReply();
+                    if (viaRows) return viaRows;
                     var users = queryAllDeep('[data-testid="user-message"]');
                     var assts = queryAllDeep('[data-testid="assistant-message"]');
                     var lastUser = users.length ? users[users.length - 1] : null;
@@ -1990,6 +2034,47 @@ class HeadlessWebBridge(
                         el.dispatchEvent(ev);
                     });
                 } catch (e) { try { el.click(); } catch (e2) {} }
+            }
+        """
+
+        /** claude.ai/code 대화 행의 텍스트 추출: 코드 블록(pre)을 ```로 감싸 포함하고 shadow DOM까지 읽음 (innerText는 둘 다 놓칠 수 있음) */
+        private const val ROW_TEXT_JS = """
+            var ROW_SKIP_TESTIDS = { 'message-actions': 1, 'epitaxy-read-aloud': 1, 'user-message-actions': 1, 'user-message-copy': 1, 'code-working-line': 1, 'response-status-announcer': 1, 'jump-to-latest': 1, 'user-message': 1 };
+            function rowWalk(node, out, inPre) {
+                if (node.nodeType === 3) {
+                    var v = node.nodeValue || '';
+                    if (!inPre) v = v.replace(/\s+/g, ' ');
+                    out.push(v);
+                    return;
+                }
+                if (node.nodeType !== 1) return;
+                var tag = (node.tagName || '').toLowerCase();
+                if (tag === 'script' || tag === 'style' || tag === 'svg' || tag === 'button' || tag === 'noscript') return;
+                var tid = node.getAttribute ? node.getAttribute('data-testid') : null;
+                if (tid && ROW_SKIP_TESTIDS[tid]) return;
+                if (node.getAttribute && node.getAttribute('role') === 'button') return;
+                var st = null;
+                try { st = window.getComputedStyle(node); } catch (e) {}
+                if (st && (st.display === 'none' || st.visibility === 'hidden')) return;
+                if (tag === 'br') { out.push('\n'); return; }
+                var isPre = (tag === 'pre');
+                var block = st ? (st.display !== 'inline' && st.display !== 'inline-block' && st.display !== 'contents')
+                               : /^(div|p|pre|li|ul|ol|h[1-6]|table|tr|blockquote)$/.test(tag);
+                if (isPre) out.push('\n```\n'); else if (block) out.push('\n');
+                var kids = node.shadowRoot ? node.shadowRoot.childNodes : node.childNodes;
+                for (var i = 0; i < kids.length; i++) rowWalk(kids[i], out, inPre || isPre);
+                if (isPre) out.push('\n```\n'); else if (block) out.push('\n');
+            }
+            function rowText(row) {
+                var out = [];
+                rowWalk(row, out, false);
+                var t = out.join('')
+                    .replace(/[ \t]+\n/g, '\n')
+                    .replace(/\n[ \t]+/g, '\n')
+                    .replace(/\n{3,}/g, '\n\n')
+                    .replace(/\n(Text|text|plaintext|bash|shell|sh|json|kotlin|kt|python|py|js|javascript|ts|typescript|html|css|xml|yaml|yml|java|sql|diff|markdown|md)[ \t]*\n+```/g, '\n```')
+                    .trim();
+                return t.replace(/^Claude\s*(응답|said|responded)\s*[:：]\s*/i, '');
             }
         """
 
