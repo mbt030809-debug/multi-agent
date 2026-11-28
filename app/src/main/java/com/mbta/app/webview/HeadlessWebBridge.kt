@@ -1016,6 +1016,8 @@ class HeadlessWebBridge(
             })();
         """.trimIndent()
 
+        // Claude Code 웹은 /code/ 세션만 (일반 채팅 링크가 섞여 나오는 것 방지)
+        val codeOnly = kind == ConnectionKind.REMOTE_WEB && url.contains("claude.ai/code", ignoreCase = true)
         fun parseResult(raw: String?): List<ExternalSessionItem> {
             val list = mutableListOf<ExternalSessionItem>()
             try {
@@ -1029,6 +1031,7 @@ class HeadlessWebBridge(
                     val obj = arr.getJSONObject(i)
                     val title = obj.optString("title").trim()
                     if (title.isBlank()) continue
+                    if (codeOnly && !obj.optString("url").contains("/code/")) continue
                     list.add(
                         ExternalSessionItem(
                             id = obj.optString("id"),

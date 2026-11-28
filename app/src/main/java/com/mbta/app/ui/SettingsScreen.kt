@@ -79,6 +79,7 @@ import com.mbta.app.model.defaultEndpointFor
 import com.mbta.app.model.defaultModelFor
 import com.mbta.app.model.displayLabel
 import com.mbta.app.model.isHiddenWebBridge
+import com.mbta.app.model.kindBadge
 import com.mbta.app.model.labelIn
 import com.mbta.app.model.shortLabel
 import com.mbta.app.util.AppUpdater
@@ -340,7 +341,7 @@ fun SettingsScreen(
                                 Text(kind.shortLabel(), fontSize = 12.sp, maxLines = 1)
                             }
                         }
-                        if (groupName == "Remote") {
+                        if (groupName == "웹") {
                             OutlinedButton(onClick = {
                                 editingConnection = AiConnection(
                                     id = "conn_${UUID.randomUUID()}",
@@ -403,7 +404,7 @@ fun SettingsScreen(
                                     overflow = TextOverflow.Ellipsis,
                                     modifier = Modifier.weight(1f, fill = false)
                                 )
-                                val badge = conn.kind.shortLabel()
+                                val badge = conn.kindBadge()
                                 if (!conn.name.contains(badge, ignoreCase = true)) {
                                     Surface(
                                         shape = RoundedCornerShape(4.dp),
@@ -469,202 +470,6 @@ fun SettingsScreen(
                                         modifier = Modifier.size(18.dp)
                                     )
                                 }
-                            }
-                        }
-                    }
-                }
-            }
-
-            item {
-                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
-                Spacer(modifier = Modifier.height(6.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("커스텀 / 스킬 (${customSkills.size}개)", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-                    OutlinedButton(onClick = { showAddSkill = true }) {
-                        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.size(4.dp))
-                        Text("스킬 추가", fontSize = 12.sp)
-                    }
-                }
-            }
-
-            items(customSkills, key = { it.id }) { skill ->
-                Surface(
-                    shape = RoundedCornerShape(10.dp),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text("${skill.command} · ${skill.title}", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                            if (skill.description.isNotBlank()) {
-                                Text(skill.description, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                        }
-                        IconButton(onClick = { editingSkill = skill }) {
-                            Icon(Icons.Default.Edit, contentDescription = "편집", modifier = Modifier.size(18.dp))
-                        }
-                        IconButton(onClick = { onDeleteSkill(skill.id) }) {
-                            Icon(Icons.Default.Delete, contentDescription = "삭제", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(18.dp))
-                        }
-                    }
-                }
-            }
-
-            item {
-                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
-                Spacer(modifier = Modifier.height(8.dp))
-                Text("AI · CLI · Remote 연결 추가", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-                Spacer(modifier = Modifier.height(6.dp))
-                val groups = listOf(
-                    "웹" to listOf(ConnectionKind.CLAUDE_WEB, ConnectionKind.CHATGPT_WEB, ConnectionKind.GEMINI_WEB),
-                    "브릿지" to listOf(ConnectionKind.REMOTE_CONTROL, ConnectionKind.TERMUX_CLI),
-                    "API" to listOf(ConnectionKind.CLAUDE_API, ConnectionKind.OPENAI_API, ConnectionKind.GEMINI_API),
-                    "Remote" to listOf(ConnectionKind.REMOTE_WEB)
-                )
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Button(onClick = { showSmartAdd = true }) {
-                        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.size(4.dp))
-                        Text("스마트 연결 추가", fontSize = 12.sp)
-                    }
-                }
-                groups.forEach { (groupName, kinds) ->
-                    Spacer(modifier = Modifier.height(10.dp))
-                    Text(groupName, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Spacer(modifier = Modifier.height(4.dp))
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        kinds.forEach { kind ->
-                            OutlinedButton(onClick = { addingKind = kind }) {
-                                Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.size(4.dp))
-                                Text(kind.shortLabel(), fontSize = 12.sp, maxLines = 1)
-                            }
-                        }
-                        if (groupName == "Remote") {
-                            OutlinedButton(onClick = {
-                                editingConnection = AiConnection(
-                                    id = "conn_${UUID.randomUUID()}",
-                                    name = "Claude Code",
-                                    kind = ConnectionKind.REMOTE_WEB,
-                                    endpointUrl = "https://claude.ai/code",
-                                    enabled = true
-                                )
-                            }) {
-                                Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.size(4.dp))
-                                Text("Claude Code", fontSize = 12.sp, maxLines = 1)
-                            }
-                        }
-                    }
-                }
-            }
-
-            item {
-                Text(
-                    "등록된 연결 (${connections.size}개)",
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 14.sp
-                )
-            }
-
-            if (connections.isEmpty()) {
-                item {
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(
-                            text = "등록된 연결이 없습니다. 위 버튼을 눌러 Claude, ChatGPT, Gemini, Termux CLI 또는 Remote Control을 추가하세요.",
-                            fontSize = 13.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(14.dp)
-                        )
-                    }
-                }
-            } else {
-                items(connections, key = { it.id }) { conn ->
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                ) {
-                                    Text(conn.name, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-                                    Surface(
-                                        shape = RoundedCornerShape(4.dp),
-                                        color = MaterialTheme.colorScheme.primaryContainer
-                                    ) {
-                                        Text(
-                                            text = conn.kind.displayLabel(),
-                                            fontSize = 10.sp,
-                                            color = MaterialTheme.colorScheme.primary,
-                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                        )
-                                    }
-                                }
-                                val subtitle = if (conn.model.isNotBlank()) {
-                                    conn.model
-                                } else {
-                                    conn.endpointUrl.ifBlank { defaultEndpointFor(conn.kind) }
-                                }
-                                Text(
-                                    text = subtitle,
-                                    fontSize = 12.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                            if (conn.kind.isHiddenWebBridge()) {
-                                val isLoggedIn = loginStatusMap[conn.id] == true
-                                OutlinedButton(
-                                    onClick = { onLoginConnection(conn) },
-                                    modifier = Modifier.padding(end = 4.dp)
-                                ) {
-                                    Text(
-                                        text = if (isLoggedIn) "● 로그인됨" else "○ 로그인 필요",
-                                        fontSize = 11.sp,
-                                        color = if (isLoggedIn) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
-                                    )
-                                }
-                            }
-                            Switch(
-                                checked = conn.enabled,
-                                onCheckedChange = { enabled ->
-                                    onSaveConnection(conn.copy(enabled = enabled))
-                                }
-                            )
-                            IconButton(onClick = { editingConnection = conn }) {
-                                Icon(Icons.Default.Edit, contentDescription = "편집", modifier = Modifier.size(18.dp))
-                            }
-                            IconButton(onClick = { onDeleteConnection(conn.id) }) {
-                                Icon(
-                                    Icons.Default.Delete,
-                                    contentDescription = "삭제",
-                                    tint = MaterialTheme.colorScheme.error,
-                                    modifier = Modifier.size(18.dp)
-                                )
                             }
                         }
                     }

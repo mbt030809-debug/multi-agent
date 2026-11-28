@@ -107,6 +107,7 @@ import com.mbta.app.model.defaultModelFor
 import com.mbta.app.model.displayLabel
 import com.mbta.app.model.formatTokens
 import com.mbta.app.model.isHiddenWebBridge
+import com.mbta.app.model.kindBadge
 import com.mbta.app.model.labelIn
 import com.mbta.app.model.shortLabel
 import com.mbta.app.model.usesHiddenWebBridge
@@ -2836,7 +2837,7 @@ private fun NewSessionDialog(
                                     )
                                     if (!conn.name.contains(conn.kind.shortLabel(), ignoreCase = true)) {
                                         Text(
-                                            conn.kind.displayLabel(),
+                                            conn.kindBadge(),
                                             fontSize = 11.sp,
                                             maxLines = 1,
                                             softWrap = false,
