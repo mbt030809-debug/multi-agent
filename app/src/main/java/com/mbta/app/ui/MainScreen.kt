@@ -1407,9 +1407,9 @@ fun MainScreen(
                     onLoginConnection = { conn -> loginConnection = conn },
                     onCopyDiagnostics = {
                         val baseLogs = headlessWebBridge.getLogsText()
-                        val activeWebKey = primarySession?.connectionId?.takeIf { cid ->
-                            connections.find { it.id == cid }?.usesHiddenWebBridge() == true
-                        }
+                        val activeWebKey = primarySession?.takeIf { ps ->
+                            connections.find { it.id == ps.connectionId }?.usesHiddenWebBridge() == true
+                        }?.let { ps -> com.mbta.app.model.webSessionKey(ps.connectionId.orEmpty(), ps.id) }
                         val copyToClip: (String) -> Unit = { fullText ->
                             val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
                             cm.setPrimaryClip(android.content.ClipData.newPlainText("MbtA Diagnostics", fullText))

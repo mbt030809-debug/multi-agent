@@ -73,7 +73,12 @@ class HeadlessWebBridge(
                     });
                     var edits = document.querySelectorAll('textarea, input, [contenteditable]').length;
                     var txt = ((document.body && document.body.innerText) || '').replace(/\s+/g, ' ').trim().slice(0, 250);
-                    return 'href=' + location.href + '\nreadyState=' + document.readyState + '\niframes(' + iframes.length + ')=' + iframes.join(' | ') + '\neditable=' + edits + '\nbodyText=' + txt;
+                    var tcount = {};
+                    document.querySelectorAll('[data-testid]').forEach(function(e) { var k = e.getAttribute('data-testid'); tcount[k] = (tcount[k] || 0) + 1; });
+                    var tids = Object.keys(tcount).slice(0, 40).map(function(k) { return k + 'x' + tcount[k]; }).join(', ');
+                    var roles = document.querySelectorAll('[data-message-author-role]').length;
+                    var arts = document.querySelectorAll('article').length;
+                    return 'href=' + location.href + '\nreadyState=' + document.readyState + '\niframes(' + iframes.length + ')=' + iframes.join(' | ') + '\neditable=' + edits + '\ntestids=' + tids + '\nauthorRole=' + roles + ' article=' + arts + '\nbodyText=' + txt;
                 } catch(e) { return 'dump error: ' + e; }
             })();
         """.trimIndent()
@@ -757,6 +762,7 @@ class HeadlessWebBridge(
         val selector = when (kind) {
             ConnectionKind.CHATGPT_WEB -> "[data-message-author-role=\"user\"], [data-message-author-role=\"assistant\"]"
             ConnectionKind.CLAUDE_WEB -> "[data-testid=\"user-message\"], .font-user-message, .font-claude-response, .font-claude-message"
+            ConnectionKind.REMOTE_WEB -> "[data-testid=\"user-message\"], .font-user-message, .font-claude-response, .font-claude-message, [data-message-author-role], article"
             ConnectionKind.GEMINI_WEB -> "user-query, model-response"
             else -> "[data-message-author-role], user-query, model-response, article"
         }
