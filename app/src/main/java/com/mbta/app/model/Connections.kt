@@ -74,15 +74,19 @@ fun ConnectionKind.displayLabel(): String = when (this) {
     ConnectionKind.REMOTE_CONTROL -> "로컬 브릿지"
 }
 
-/** 같은 AI 계정이 여러 개일 때 구분용 이름: 계정명이 있으면 "이름 · 계정명", 없고 이름/종류가 중복이면 순번 */
+/** 연결 표시 이름: "(계정)/(웹)" 접미사를 떼고, 로그인 계정이 있으면 "이름 (계정ID)", 없고 이름/종류가 중복이면 순번 */
 fun AiConnection.labelIn(all: List<AiConnection>): String {
-    if (accountName.isNotBlank()) return "$name · ${accountName.trim()}"
+    val base = name.replace(Regex("\\s*\\((?:계정|웹)\\)"), "").trim().ifEmpty { name }
+    if (accountName.isNotBlank()) {
+        val acct = accountName.trim().substringBefore("@").ifBlank { accountName.trim() }
+        return "$base ($acct)"
+    }
     val same = all.filter { it.name == name && it.kind == kind }
     if (same.size > 1) {
         val idx = same.indexOfFirst { it.id == id } + 1
-        return "$name #$idx"
+        return "$base #$idx"
     }
-    return name
+    return base
 }
 
 /** 그룹(웹/브릿지/API/Remote)으로 설명되는 "(계정)", "(웹)" 접미사를 뗀 짧은 이름 */

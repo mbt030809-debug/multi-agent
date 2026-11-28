@@ -31,6 +31,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.mbta.app.model.AgentTokenUsage
 import com.mbta.app.model.AiConnection
+import com.mbta.app.model.labelIn
 import com.mbta.app.model.TokenSource
 import com.mbta.app.model.defaultContextLimitFor
 import com.mbta.app.model.displayLabel
@@ -136,7 +137,7 @@ fun TokenDashboardDialog(
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
                                         Text(
-                                            text = conn.name,
+                                            text = conn.labelIn(connections),
                                             fontWeight = FontWeight.SemiBold,
                                             fontSize = 14.sp,
                                             modifier = Modifier.weight(1f)

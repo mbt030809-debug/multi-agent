@@ -104,6 +104,7 @@ import androidx.compose.ui.window.DialogProperties
 import com.mbta.app.model.AgentSession
 import com.mbta.app.model.AgentTokenUsage
 import com.mbta.app.model.AiConnection
+import com.mbta.app.model.labelIn
 import com.mbta.app.model.ChatMessage
 import com.mbta.app.model.ConnectionKind
 import com.mbta.app.model.CustomSkill
@@ -447,7 +448,7 @@ fun SessionPane(
                 ProviderMarkIcon(connection = connection, size = 14.dp)
                 Spacer(modifier = Modifier.size(4.dp))
                 Text(
-                    text = session.title.ifBlank { connection?.name ?: "연결 없음" },
+                    text = session.title.ifBlank { connection?.labelIn(enabledConnections) ?: "연결 없음" },
                     fontSize = 11.sp,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
@@ -1418,7 +1419,7 @@ fun SessionPane(
                         if (inputText.isEmpty()) {
                             Text(
                                 text = if (connection.kind == ConnectionKind.TERMUX_CLI) "Termux 명령어 입력..."
-                                else "${connection.name}에게 메시지 입력...",
+                                else "${connection.labelIn(enabledConnections)}에게 메시지 입력...",
                                 fontSize = 12.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
                                 maxLines = 1
@@ -1796,7 +1797,7 @@ fun SessionPane(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        text = "현재 세션(${connection?.name ?: "메인"})을 메인으로 유지하면서, 필요 시 병렬 호출할 하위 모델을 연결합니다.",
+                        text = "현재 세션(${connection?.labelIn(enabledConnections) ?: "메인"})을 메인으로 유지하면서, 필요 시 병렬 호출할 하위 모델을 연결합니다.",
                         fontSize = 11.5.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

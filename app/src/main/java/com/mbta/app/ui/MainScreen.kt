@@ -203,6 +203,16 @@ fun MainScreen(
                 if (ok) {
                     loginStatusMap[conn.id] = true
                     persistConfirmedLogins()
+                    if (conn.accountName.isBlank()) {
+                        headlessWebBridge.fetchWebAccountName(conn.id, conn.kind, conn.endpointUrl) { acct ->
+                            if (acct.isNotBlank()) {
+                                connections = connections.map {
+                                    if (it.id == conn.id && it.accountName.isBlank()) it.copy(accountName = acct) else it
+                                }
+                                store.saveConnections(connections)
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -454,7 +464,7 @@ fun MainScreen(
                 id = placeholderId,
                 role = MessageRole.ASSISTANT,
                 content = "⏳ 메인 오케스트레이터 분석 중...",
-                agentName = "${conn.name} (오케스트레이터)"
+                agentName = "${conn.labelIn(connections)} (오케스트레이터)"
             )
             val baseHistory = session.messages
             sessions = sessions.map {
@@ -672,7 +682,7 @@ fun MainScreen(
                         content = finalError ?: finalAnswer.ifBlank { "(응답 없음)" },
                         inputTokens = totalInTok,
                         outputTokens = totalOutTok,
-                        agentName = "${conn.name} (오케스트레이터)",
+                        agentName = "${conn.labelIn(connections)} (오케스트레이터)",
                         isError = finalError != null
                     )
                     sessions = sessions.map { s ->
@@ -684,9 +694,9 @@ fun MainScreen(
                     sendingMap[session.id] = false
                     if (activeSessionId != session.id) unreadDoneSessions[session.id] = true
                     if (finalError == null) {
-                        onNotifyEvent(session.id, "⚡ ${conn.name} 오케스트레이션 완료", finalMsg.content.take(140), false, emptyList())
+                        onNotifyEvent(session.id, "⚡ ${conn.labelIn(connections)} 오케스트레이션 완료", finalMsg.content.take(140), false, emptyList())
                     } else {
-                        onNotifyEvent(session.id, "❌ ${conn.name} 오케스트레이션 오류", finalError.take(140), true, listOf("Keep going"))
+                        onNotifyEvent(session.id, "❌ ${conn.labelIn(connections)} 오케스트레이션 오류", finalError.take(140), true, listOf("Keep going"))
                     }
                     val q = queuedPromptsMap[session.id].orEmpty()
                     if (q.isNotEmpty()) {
@@ -735,7 +745,7 @@ fun MainScreen(
         } else {
             cleanPrompt
         }
-        val displayAgentName = if (mentionedConn != null) "@${mentionedConn.name}" else targetConn.name
+        val displayAgentName = if (mentionedConn != null) "@${mentionedConn.labelIn(connections)}" else targetConn.labelIn(connections)
 
         val userMsg = ChatMessage(
             id = "msg_${UUID.randomUUID()}",
@@ -797,9 +807,9 @@ fun MainScreen(
                     if (activeSessionId != session.id) unreadDoneSessions[session.id] = true
                     val replies = detectQuickReplies(finalText, targetConn.endpointUrl.lowercase().let { it.contains("/claude") || it.contains("claude.ai") })
                     when {
-                        replies.firstOrNull() == "허용" -> onNotifyEvent(session.id, "⚠️ ${targetConn.name} 권한 승인 필요", finalText.take(140), true, listOf("허용", "거부"))
-                        replies.isNotEmpty() -> onNotifyEvent(session.id, "❓ ${targetConn.name} 확인 대기 중", finalText.take(140), true, replies.take(2))
-                        else -> onNotifyEvent(session.id, "✅ ${targetConn.name} 응답 완료", finalText.take(140), false, emptyList())
+                        replies.firstOrNull() == "허용" -> onNotifyEvent(session.id, "⚠️ ${targetConn.labelIn(connections)} 권한 승인 필요", finalText.take(140), true, listOf("허용", "거부"))
+                        replies.isNotEmpty() -> onNotifyEvent(session.id, "❓ ${targetConn.labelIn(connections)} 확인 대기 중", finalText.take(140), true, replies.take(2))
+                        else -> onNotifyEvent(session.id, "✅ ${targetConn.labelIn(connections)} 응답 완료", finalText.take(140), false, emptyList())
                     }
                 },
                 onError = { errMsg ->
@@ -812,7 +822,7 @@ fun MainScreen(
                     }
                     store.saveSessions(sessions)
                     sendingMap[session.id] = false
-                    onNotifyEvent(session.id, "❌ ${targetConn.name} 작업 오류", errMsg.take(140), true, emptyList())
+                    onNotifyEvent(session.id, "❌ ${targetConn.labelIn(connections)} 작업 오류", errMsg.take(140), true, emptyList())
                 }
             )
             return
@@ -867,7 +877,7 @@ fun MainScreen(
                         stuckNotified = true
                         onNotifyEvent(
                             session.id,
-                            "⏱️ ${targetConn.name} 응답 지연",
+                            "⏱️ ${targetConn.labelIn(connections)} 응답 지연",
                             "2분 동안 새 진행 업데이트가 없습니다.",
                             true,
                             listOf("Keep going")
@@ -929,12 +939,12 @@ fun MainScreen(
                 autoRetryCountMap[session.id] = 0
                 val replies = detectQuickReplies(assistantMsg.content, targetConn.endpointUrl.lowercase().let { it.contains("/claude") || it.contains("claude.ai") })
                 when {
-                    replies.firstOrNull() == "허용" -> onNotifyEvent(session.id, "⚠️ ${targetConn.name} 권한 승인 필요", assistantMsg.content.take(140), true, listOf("허용", "거부"))
-                    replies.isNotEmpty() -> onNotifyEvent(session.id, "❓ ${targetConn.name} 확인 대기 중", assistantMsg.content.take(140), true, replies.take(2))
-                    else -> onNotifyEvent(session.id, "✅ ${targetConn.name} 응답 완료", assistantMsg.content.take(140), false, emptyList())
+                    replies.firstOrNull() == "허용" -> onNotifyEvent(session.id, "⚠️ ${targetConn.labelIn(connections)} 권한 승인 필요", assistantMsg.content.take(140), true, listOf("허용", "거부"))
+                    replies.isNotEmpty() -> onNotifyEvent(session.id, "❓ ${targetConn.labelIn(connections)} 확인 대기 중", assistantMsg.content.take(140), true, replies.take(2))
+                    else -> onNotifyEvent(session.id, "✅ ${targetConn.labelIn(connections)} 응답 완료", assistantMsg.content.take(140), false, emptyList())
                 }
             } else {
-                onNotifyEvent(session.id, "❌ ${targetConn.name} 작업 오류", reply.error.take(140), true, listOf("Keep going"))
+                onNotifyEvent(session.id, "❌ ${targetConn.labelIn(connections)} 작업 오류", reply.error.take(140), true, listOf("Keep going"))
                 val autoResumeOn = context.getSharedPreferences("mbta_ui_prefs", android.content.Context.MODE_PRIVATE)
                     .getBoolean("auto_resume_enabled", true)
                 val isTransient = Regex("(timeout|timed out|rate.?limit|429|502|503|overloaded|connection|reset|broken pipe|eof)", RegexOption.IGNORE_CASE)
@@ -1076,9 +1086,9 @@ fun MainScreen(
                 id = "msg_${UUID.randomUUID()}",
                 role = MessageRole.SYSTEM,
                 content = if (isSameAi) {
-                    "🔄 ${targetConn.name} 새 세션으로 리프레시 이관 ($modeLabel)${if (!autoSend) "\n\n$contextBody" else ""}"
+                    "🔄 ${targetConn.labelIn(connections)} 새 세션으로 리프레시 이관 ($modeLabel)${if (!autoSend) "\n\n$contextBody" else ""}"
                 } else {
-                    "🔄 ${prevConn?.name ?: "이전 AI"} → ${targetConn.name} 세션 이관 ($modeLabel)${if (!autoSend) "\n\n$contextBody" else ""}"
+                    "🔄 ${prevConn?.labelIn(connections) ?: "이전 AI"} → ${targetConn.labelIn(connections)} 세션 이관 ($modeLabel)${if (!autoSend) "\n\n$contextBody" else ""}"
                 }
             )
             val replaced = fromSession.copy(
@@ -1266,7 +1276,7 @@ fun MainScreen(
                     key = com.mbta.app.model.webSessionKey(conn.id, sess.id),
                     kind = conn.kind,
                     url = targetUrl,
-                    agentName = conn.name,
+                    agentName = conn.labelIn(connections),
                     forceReload = true,
                     onResult = mergeFetched
                 )
@@ -2060,7 +2070,7 @@ fun MainScreen(
                 modifier = Modifier.navigationBarsPadding().imePadding(),
                 topBar = {
                     TopAppBar(
-                        title = { Text("${activeLoginConn.name} 로그인", fontWeight = FontWeight.Bold) },
+                        title = { Text("${activeLoginConn.labelIn(connections)} 로그인", fontWeight = FontWeight.Bold) },
                         actions = {
                             IconButton(onClick = { headlessWebBridge.goBack(loginKey) }) {
                                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "뒤로")
@@ -2273,7 +2283,7 @@ fun MainScreen(
                 val newSess = AgentSession(
                     id = "sess_${UUID.randomUUID()}",
                     projectId = activeProject.id,
-                    title = "${winner.connection.name} 채택",
+                    title = "${winner.connection.labelIn(connections)} 채택",
                     connectionId = winner.connection.id,
                     messages = listOf(
                         ChatMessage(id = "msg_${UUID.randomUUID()}", role = MessageRole.USER, content = prompt),
@@ -2283,7 +2293,7 @@ fun MainScreen(
                             content = winner.text,
                             inputTokens = winner.inTok,
                             outputTokens = winner.outTok,
-                            agentName = winner.connection.name
+                            agentName = winner.connection.labelIn(connections)
                         )
                     )
                 )
@@ -2566,7 +2576,7 @@ private fun ExistingSessionPickerDialog(
                             FilterChip(
                                 selected = c.id == selectedConn?.id,
                                 onClick = { selectedConn = c },
-                                label = { Text(c.name, fontSize = 11.sp) }
+                                label = { Text(c.labelIn(enabledConnections), fontSize = 11.sp) }
                             )
                         }
                     }
@@ -2595,6 +2605,18 @@ private fun ExistingSessionPickerDialog(
                             fontSize = 12.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                        val diagCtx = androidx.compose.ui.platform.LocalContext.current
+                        if (selectedConn?.usesHiddenWebBridge() == true) {
+                            TextButton(onClick = {
+                                val c = selectedConn ?: return@TextButton
+                                headlessWebBridge.dumpSidebarDiagnostics(c.id) { dump ->
+                                    val cm = diagCtx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                                    cm.setPrimaryClip(android.content.ClipData.newPlainText("MbtA Sidebar", dump))
+                                    android.widget.Toast.makeText(diagCtx, "목록 진단 정보가 복사되었습니다. 채팅에 붙여 넣어 주세요.", android.widget.Toast.LENGTH_LONG).show()
+                                }
+                            }) { Text("진단 정보 복사", fontSize = 12.sp) }
+                        }
+                        TextButton(onClick = { reloadNonce++ }) { Text("다시 불러오기", fontSize = 12.sp) }
                     } else {
                         LazyColumn(
                             modifier = Modifier.heightIn(max = 300.dp),
@@ -2857,7 +2879,7 @@ private fun NewSessionDialog(
                                 FilterChip(
                                     selected = conn.id == selectedConnId,
                                     onClick = { selectedConnId = conn.id },
-                                    label = { Text(conn.name, fontSize = 11.sp) }
+                                    label = { Text(conn.labelIn(enabledConnections), fontSize = 11.sp) }
                                 )
                             }
                         }
@@ -2910,7 +2932,7 @@ private fun NewSessionDialog(
                                 FilterChip(
                                     selected = conn.id == subConnId,
                                     onClick = { subConnId = conn.id },
-                                    label = { Text(conn.name, fontSize = 11.sp) }
+                                    label = { Text(conn.labelIn(enabledConnections), fontSize = 11.sp) }
                                 )
                             }
                         }

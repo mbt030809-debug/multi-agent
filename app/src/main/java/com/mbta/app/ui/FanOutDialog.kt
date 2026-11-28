@@ -35,6 +35,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.mbta.app.model.AiConnection
+import com.mbta.app.model.labelIn
 import com.mbta.app.model.isHiddenWebBridge
 import com.mbta.app.network.AiApiClient
 import com.mbta.app.webview.HeadlessWebBridge
@@ -92,7 +93,7 @@ fun FanOutDialog(
                             onClick = {
                                 if (selected) selectedIds.remove(conn.id) else selectedIds.add(conn.id)
                             },
-                            label = { Text(conn.name, fontSize = 11.sp) }
+                            label = { Text(conn.labelIn(enabledConnections), fontSize = 11.sp) }
                         )
                     }
                 }
@@ -119,7 +120,7 @@ fun FanOutDialog(
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
                                         Text(
-                                            res.connection.name,
+                                            res.connection.labelIn(enabledConnections),
                                             fontWeight = FontWeight.Bold,
                                             fontSize = 13.sp,
                                             color = if (res.isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
