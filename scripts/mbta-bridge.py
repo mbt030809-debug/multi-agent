@@ -858,6 +858,7 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                             "response": res.get("response", ""),
                             "input_tokens": res.get("input_tokens", 0),
                             "output_tokens": res.get("output_tokens", 0),
+                            "model": res.get("model", ""),
                         }
                 except Exception as e:
                     err_msg = str(e)
@@ -885,8 +886,10 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
             key = f"claude:{mbta_session_id}" if mbta_session_id else ""
             cwd = (data.get("cwd") or "").strip()
             permission_mode = (data.get("permission_mode") or "").strip()
+            extra_sys = (data.get("system_prompt") or "").strip()
+            sys_prompt = ASK_SYSTEM_PROMPT + (("\n\n" + extra_sys) if extra_sys else "")
             cmd = ["claude", "-p", prompt, "--output-format", "stream-json", "--verbose",
-                   "--append-system-prompt", ASK_SYSTEM_PROMPT]
+                   "--append-system-prompt", sys_prompt]
             if data.get("model"):
                 cmd.extend(["--model", data["model"]])
             effort = (data.get("effort") or "").strip().lower()
@@ -921,11 +924,14 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
                         sessions = load_sessions()
                         sessions[key] = new_sid
                         save_sessions(sessions)
+                mu = parsed.get("modelUsage")
+                served = next(iter(mu.keys()), "") if isinstance(mu, dict) and mu else ""
                 self._send_json(200, {
                     "response": parsed.get("result", proc.stdout),
                     "input_tokens": usage.get("input_tokens", 0),
                     "output_tokens": usage.get("output_tokens", 0),
-                    "session_id": new_sid
+                    "session_id": new_sid,
+                    "model": served
                 })
             else:
                 self._send_json(200, {"response": proc.stdout.strip()})
@@ -936,6 +942,9 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
             cwd = (data.get("cwd") or "").strip()
             model = normalize_agy_model(data.get("model") or "")
             permission_mode = (data.get("permission_mode") or "").strip()
+            agy_sys = (data.get("system_prompt") or "").strip()
+            if agy_sys:
+                prompt = agy_sys + "\n\n" + prompt
             cmd = ["agy", "-p", prompt, "--output-format", "stream-json"]
             if data.get("skip_permissions") or permission_mode == "auto":
                 cmd.extend(["--mode", "auto", "--dangerously-skip-permissions"])

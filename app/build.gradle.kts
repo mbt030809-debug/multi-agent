@@ -13,8 +13,8 @@ android {
         applicationId = "com.mbta.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 64
-        versionName = "0.8.54"
+        versionCode = 65
+        versionName = "0.8.55"
     }
 
     signingConfigs {
@@ -68,4 +68,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
 }
