@@ -40,7 +40,8 @@ data class AiConnection(
     val desktopMode: Boolean = false,
     val remoteMode: RemoteMode = RemoteMode.BRIDGE_API,
     val permissionMode: String = "acceptEdits",
-    val enabled: Boolean = true
+    val enabled: Boolean = true,
+    val accountName: String = ""
 )
 
 fun ConnectionKind.isHiddenWebBridge(): Boolean =
@@ -72,6 +73,21 @@ fun ConnectionKind.displayLabel(): String = when (this) {
     ConnectionKind.TERMUX_CLI -> "Termux CLI"
     ConnectionKind.REMOTE_CONTROL -> "로컬 브릿지"
 }
+
+/** 같은 AI 계정이 여러 개일 때 구분용 이름: 계정명이 있으면 "이름 · 계정명", 없고 이름/종류가 중복이면 순번 */
+fun AiConnection.labelIn(all: List<AiConnection>): String {
+    if (accountName.isNotBlank()) return "$name · ${accountName.trim()}"
+    val same = all.filter { it.name == name && it.kind == kind }
+    if (same.size > 1) {
+        val idx = same.indexOfFirst { it.id == id } + 1
+        return "$name #$idx"
+    }
+    return name
+}
+
+/** 그룹(웹/브릿지/API/Remote)으로 설명되는 "(계정)", "(웹)" 접미사를 뗀 짧은 이름 */
+fun ConnectionKind.shortLabel(): String =
+    displayLabel().replace(Regex("\\s*\\((?:계정|웹)\\)"), "").trim()
 
 fun defaultModelFor(kind: ConnectionKind): String = when (kind) {
     ConnectionKind.CLAUDE_API -> "claude-sonnet-4-20250514"
