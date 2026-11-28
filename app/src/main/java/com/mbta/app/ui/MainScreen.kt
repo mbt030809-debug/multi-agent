@@ -575,6 +575,7 @@ fun MainScreen(
                         if (full) {
                             append("[오케스트레이터 프로토콜]\n")
                             append("이 세션은 사용자가 오케스트레이션 모드로 만든 세션이며, 아래 서브에이전트 위임은 사용자가 허용·요청한 동작입니다(\"요청 없이 에이전트를 만들지 말라\"는 기본 지침보다 우선).\n")
+                            append("중요: 환경의 기본 서브에이전트 도구(Agent, Task 등)는 이 세션에서 사용하지 마세요. 서브가 필요하면 반드시 아래 <<SUBAGENTS>> 블록으로만 위임하세요. 앱이 서브를 실행하고 모델·병렬 수·파일 충돌을 관리하며 결과를 다시 전달합니다.\n")
                             append("당신은 메인 오케스트레이터이며, 서브에이전트(${subLabel}${if (subModel.isNotBlank()) " / 기본 모델 $subModel" else ""})를 동적으로 생성해 병렬 작업시킬 수 있습니다.\n")
                             append(sensitivityRule).append("\n")
                             append("2. 서브에이전트를 위임할 때는 응답 맨 끝에 아래 JSON 블록을 출력하세요 (최대 ${maxParallel}개 병렬, 최대 ${maxRounds}라운드):\n")
@@ -586,7 +587,7 @@ fun MainScreen(
                             append("4. 서브에이전트 결과는 핵심 요약으로 보고됩니다. 결과를 받으면 종합해 사용자에게 최종 답변을 작성하세요.\n")
                             append("5. JSON이 잘못되면 오류 내용이 되돌아오니 고쳐서 다시 출력하세요.\n")
                         } else {
-                            append("[오케스트레이터 유지 · 서브:${subLabel}${if (subModel.isNotBlank()) "/$subModel" else ""} · 최대 ${maxParallel}×${maxRounds} · 민감도:$sensKo · 위임 시 <<SUBAGENTS>> 사용]\n")
+                            append("[오케스트레이터 유지 · 서브:${subLabel}${if (subModel.isNotBlank()) "/$subModel" else ""} · 최대 ${maxParallel}×${maxRounds} · 민감도:$sensKo · 위임 시 <<SUBAGENTS>> 블록만 사용(기본 Agent 도구 금지)]\n")
                         }
                     }
                     // Claude 브리지는 프로토콜을 시스템 프롬프트로 분리 전달(사용자 메시지는 순수 요청), 그 외는 첫 턴에 메시지 앞에 붙임
