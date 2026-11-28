@@ -531,12 +531,48 @@ fun MainScreen(
 
                     for (round in 1..(maxRounds + 1)) {
                         val (mainText, mainErr) = if (effectiveMainConn.usesHiddenWebBridge()) {
-                            val (triple, err) = headlessWebBridge.sendPromptSuspend(
-                                key = com.mbta.app.model.webSessionKey(effectiveMainConn.id, session.id),
-                                kind = effectiveMainConn.kind,
-                                url = effectiveMainConn.endpointUrl,
-                                prompt = currentPrompt
-                            )
+                            val orchWebKey = com.mbta.app.model.webSessionKey(effectiveMainConn.id, session.id)
+                            // 메인이 웹 질문 카드를 띄우고 답을 기다리는 동안 앱에도 같은 질문창을 보여줌
+                            val orchAskPoll = if (effectiveMainConn.kind == ConnectionKind.REMOTE_WEB) {
+                                scope.launch {
+                                    kotlinx.coroutines.delay(4000L)
+                                    while (sendingMap[session.id] == true) {
+                                        headlessWebBridge.readWebQuestion(orchWebKey) { json ->
+                                            if (json != webQuestionMap[session.id]) {
+                                                if (json == null) webQuestionMap.remove(session.id) else webQuestionMap[session.id] = json
+                                                val suffix = json?.let { "\n\n<<ASK>>$it<</ASK>>" } ?: ""
+                                                sessions = sessions.map { sx ->
+                                                    if (sx.id == session.id) {
+                                                        sx.copy(messages = sx.messages.map { m ->
+                                                            if (m.id == placeholderId) m.copy(content = stripAskMarker(m.content) + suffix) else m
+                                                        })
+                                                    } else sx
+                                                }
+                                            }
+                                        }
+                                        kotlinx.coroutines.delay(2500L)
+                                    }
+                                }
+                            } else null
+                            val (triple, err) = try {
+                                headlessWebBridge.sendPromptSuspend(
+                                    key = orchWebKey,
+                                    kind = effectiveMainConn.kind,
+                                    url = effectiveMainConn.endpointUrl,
+                                    prompt = currentPrompt
+                                )
+                            } finally {
+                                orchAskPoll?.cancel()
+                                if (webQuestionMap.remove(session.id) != null) {
+                                    sessions = sessions.map { sx ->
+                                        if (sx.id == session.id) {
+                                            sx.copy(messages = sx.messages.map { m ->
+                                                if (m.id == placeholderId) m.copy(content = stripAskMarker(m.content)) else m
+                                            })
+                                        } else sx
+                                    }
+                                }
+                            }
                             totalInTok += triple.second
                             totalOutTok += triple.third
                             if (triple.second > 0L || triple.third > 0L) {
