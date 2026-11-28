@@ -726,10 +726,10 @@ class HeadlessWebBridge(
         }
     }
 
-    fun fetchClaudeWebUsagePercent(key: String, onResult: (Int?, String) -> Unit) {
+    fun fetchClaudeWebUsagePercent(key: String, onResult: (Int?, String, Long, Long) -> Unit) {
         val wv = pool[key]
         if (wv == null) {
-            onResult(null, "")
+            onResult(null, "", 0L, 0L)
             return
         }
         val js = """
@@ -753,7 +753,9 @@ class HeadlessWebBridge(
                             var parts = [];
                             if (h5 !== null) parts.push('5시간 ' + h5 + '%');
                             if (d7 !== null) parts.push('주간 ' + d7 + '%');
-                            var payload = primary + '|' + parts.join(' · ');
+                            var r5 = data.five_hour && data.five_hour.resets_at ? (new Date(data.five_hour.resets_at).getTime() || 0) : 0;
+                            var r7 = data.seven_day && data.seven_day.resets_at ? (new Date(data.seven_day.resets_at).getTime() || 0) : 0;
+                            var payload = primary + '|' + parts.join(' · ') + '|' + r5 + '|' + r7;
                             window.MbtABridge && window.MbtABridge.onChunk('__usage_' + '$key', payload);
                         })
                         .catch(function(){});
@@ -765,10 +767,12 @@ class HeadlessWebBridge(
             inputTokens = 0L,
             onChunk = { payload ->
                 pending.remove(usageReqId)
-                val parts = payload.split("|", limit = 2)
+                val parts = payload.split("|")
                 val remPct = parts.getOrNull(0)?.toIntOrNull()?.coerceIn(0, 100)
                 val lbl = parts.getOrNull(1).orEmpty().ifBlank { "Claude 계정" }
-                onResult(remPct, lbl)
+                val r5 = parts.getOrNull(2)?.toLongOrNull() ?: 0L
+                val r7 = parts.getOrNull(3)?.toLongOrNull() ?: 0L
+                onResult(remPct, lbl, r5, r7)
             },
             onDone = { _, _, _ -> },
             onError = { _ -> }

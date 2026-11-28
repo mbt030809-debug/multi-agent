@@ -216,17 +216,26 @@ object GitBridgeClient {
         }
     }
 
-    suspend fun fetchQuota(kind: String, force: Boolean = false): Pair<Int?, String> = withContext(Dispatchers.IO) {
+    data class QuotaInfo(
+        val pct: Int?,
+        val label: String,
+        val fiveHourResetMs: Long = 0L,
+        val weekResetMs: Long = 0L
+    )
+
+    suspend fun fetchQuota(kind: String, force: Boolean = false): QuotaInfo = withContext(Dispatchers.IO) {
         runCatching {
             val f = if (force) "1" else "0"
             val req = Request.Builder().url("$BASE/quota?kind=$kind&force=$f").get().build()
             client.newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful) return@runCatching null to ""
+                if (!resp.isSuccessful) return@runCatching QuotaInfo(null, "")
                 val obj = json.parseToJsonElement(resp.body?.string().orEmpty()).jsonObject
                 val pct = obj["quotaPercent"]?.jsonPrimitive?.contentOrNull?.toIntOrNull()
                 val lbl = obj["quotaLabel"]?.jsonPrimitive?.contentOrNull.orEmpty()
-                pct to lbl
+                val r5 = obj["fiveHourResetsAt"]?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: 0L
+                val r7 = obj["weekResetsAt"]?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: 0L
+                QuotaInfo(pct, lbl, r5, r7)
             }
-        }.getOrDefault(null to "")
+        }.getOrDefault(QuotaInfo(null, ""))
     }
 }

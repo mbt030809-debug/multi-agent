@@ -320,11 +320,13 @@ fun MainScreen(
             Regex("/code/(?:session_)?[a-z0-9_-]{8,}").containsMatchIn(lower)
     }
 
-    fun applyQuotaUpdate(connId: String, pct: Int, lbl: String) {
+    fun applyQuotaUpdate(connId: String, pct: Int, lbl: String, reset5: Long = 0L, reset7: Long = 0L) {
         val cur = tokenUsageMap[connId] ?: AgentTokenUsage(panelId = connId)
         tokenUsageMap[connId] = cur.copy(
             quotaPercent = pct,
             quotaLabel = lbl,
+            quotaResetFiveHourMs = if (reset5 > 0L) reset5 else cur.quotaResetFiveHourMs,
+            quotaResetWeekMs = if (reset7 > 0L) reset7 else cur.quotaResetWeekMs,
             updatedAt = System.currentTimeMillis()
         )
         store.saveTokenUsage(tokenUsageMap)
@@ -335,20 +337,20 @@ fun MainScreen(
             ConnectionKind.REMOTE_CONTROL -> {
                 val bridgeKind = if (conn.endpointUrl.lowercase().contains("/agy")) "agy" else "claude"
                 scope.launch {
-                    val (pct, lbl) = GitBridgeClient.fetchQuota(bridgeKind, force)
-                    if (pct != null) applyQuotaUpdate(conn.id, pct, lbl)
+                    val q = GitBridgeClient.fetchQuota(bridgeKind, force)
+                    if (q.pct != null) applyQuotaUpdate(conn.id, q.pct, q.label, q.fiveHourResetMs, q.weekResetMs)
                 }
             }
             ConnectionKind.CLAUDE_WEB, ConnectionKind.REMOTE_WEB -> {
-                headlessWebBridge.fetchClaudeWebUsagePercent(conn.id) { pct, lbl ->
-                    if (pct != null) applyQuotaUpdate(conn.id, pct, lbl)
+                headlessWebBridge.fetchClaudeWebUsagePercent(conn.id) { pct, lbl, r5, r7 ->
+                    if (pct != null) applyQuotaUpdate(conn.id, pct, lbl, r5, r7)
                 }
                 // 웹 조회가 응답 없으면(로그인 전/엔드포인트 차이) 로컬 브리지의 실제 한도 조회로 대체
                 scope.launch {
                     kotlinx.coroutines.delay(8000L)
                     if (tokenUsageMap[conn.id]?.quotaPercent == null) {
-                        val (pct, lbl) = GitBridgeClient.fetchQuota("claude", force)
-                        if (pct != null) applyQuotaUpdate(conn.id, pct, lbl)
+                        val q = GitBridgeClient.fetchQuota("claude", force)
+                        if (q.pct != null) applyQuotaUpdate(conn.id, q.pct, q.label, q.fiveHourResetMs, q.weekResetMs)
                     }
                 }
             }

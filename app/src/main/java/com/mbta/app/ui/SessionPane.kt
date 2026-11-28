@@ -120,6 +120,7 @@ import com.mbta.app.model.defaultContextLimitForKind
 import com.mbta.app.model.defaultModelFor
 import com.mbta.app.model.displayLabel
 import com.mbta.app.model.extractParenEffort
+import com.mbta.app.model.formatResetSummary
 import com.mbta.app.model.formatTokens
 import com.mbta.app.model.isHiddenWebBridge
 import com.mbta.app.model.stripParenEffort
@@ -625,6 +626,7 @@ fun SessionPane(
     var inspectingSubagentId by remember(session.id) { mutableStateOf<String?>(null) }
     var dismissedQuestionMsgId by remember(session.id) { mutableStateOf("") }
     var skippedQuestionMsgId by remember(session.id) { mutableStateOf("") }
+    var showQuotaDetail by remember { mutableStateOf(false) }
     var expandedQuestionMsgId by remember(session.id) { mutableStateOf<String?>(null) }
     var autoOpenedQuestionMsgId by remember(session.id) { mutableStateOf("") }
     var autoApprovedMsgId by remember(session.id) { mutableStateOf("") }
@@ -850,7 +852,7 @@ fun SessionPane(
                 } else null
                 val effectiveRemPct = remPct?.toDouble() ?: customRemPct
                 val badgeText = when {
-                    remPct != null -> "5h $remPct%"
+                    remPct != null -> "$remPct%"
                     customRemPct != null -> "남음 ${customRemPct.roundToInt()}%"
                     else -> formatTokens(totalTok)
                 }
@@ -864,7 +866,8 @@ fun SessionPane(
                     color = MaterialTheme.colorScheme.surface.copy(alpha = 0.75f),
                     modifier = Modifier
                         .padding(end = 4.dp)
-                        .clickable { onOpenTokenDashboard() }
+                        // 실제 한도 정보가 있으면 상세(5시간·주간 남은 양과 초기화 시각)를, 없으면 토큰 대시보드를 염
+                        .clickable { if (remPct != null) showQuotaDetail = true else onOpenTokenDashboard() }
                 ) {
                     Text(
                         text = badgeText,
@@ -876,19 +879,22 @@ fun SessionPane(
             }
 
             if (connection != null && connection.kind.isHiddenWebBridge()) {
-                Surface(
-                    shape = RoundedCornerShape(6.dp),
-                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.75f),
-                    modifier = Modifier
-                        .padding(end = 4.dp)
-                        .clickable { onLoginConnection(connection) }
-                ) {
-                    Text(
-                        text = if (isLoggedIn) "● 로그인됨" else "○ 로그인 필요",
-                        fontSize = 9.5.sp,
-                        color = if (isLoggedIn) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
-                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
-                    )
+                // 로그인된 상태 표시는 생략하고, 로그인이 필요할 때만 알림 표시
+                if (!isLoggedIn) {
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.75f),
+                        modifier = Modifier
+                            .padding(end = 4.dp)
+                            .clickable { onLoginConnection(connection) }
+                    ) {
+                        Text(
+                            text = "○ 로그인 필요",
+                            fontSize = 9.5.sp,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+                        )
+                    }
                 }
                 IconButton(
                     onClick = { onLoginConnection(connection) },
@@ -1811,6 +1817,45 @@ fun SessionPane(
                 }
             }
         }
+    }
+
+    if (showQuotaDetail && tokenUsage != null) {
+        val weeklyRem = remember(tokenUsage.quotaLabel) {
+            Regex("주간\\s*(\\d{1,3})%").find(tokenUsage.quotaLabel)?.groupValues?.getOrNull(1)?.toIntOrNull()?.coerceIn(0, 100)
+        }
+        val nowMs = System.currentTimeMillis()
+        AlertDialog(
+            onDismissRequest = { showQuotaDetail = false },
+            title = { Text(connection?.labelIn(enabledConnections) ?: "사용 한도", fontSize = 16.sp, fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text("5시간 한도", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        Text("남음 ${tokenUsage.quotaPercent ?: "?"}%", fontSize = 13.sp)
+                        val r5 = formatResetSummary(tokenUsage.quotaResetFiveHourMs, nowMs)
+                        Text(
+                            if (r5.isNotBlank()) "초기화: $r5" else "초기화 시각 정보 없음",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    if (weeklyRem != null) {
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text("주간 한도", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                            Text("남음 ${weeklyRem}%", fontSize = 13.sp)
+                            val r7 = formatResetSummary(tokenUsage.quotaResetWeekMs, nowMs)
+                            Text(
+                                if (r7.isNotBlank()) "초기화: $r7" else "초기화 시각 정보 없음",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { showQuotaDetail = false }) { Text("닫기") } },
+            dismissButton = { TextButton(onClick = { showQuotaDetail = false; onOpenTokenDashboard() }) { Text("전체 보기") } }
+        )
     }
 
     val inspectedRun = session.subagentRuns.find { it.id == inspectingSubagentId }
