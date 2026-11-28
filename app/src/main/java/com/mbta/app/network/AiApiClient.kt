@@ -31,7 +31,9 @@ data class AiReply(
     val outputTokens: Long = 0L,
     val quotaPercent: Int? = null,
     val quotaLabel: String = "",
-    val error: String? = null
+    val error: String? = null,
+    /** 브리지가 알려준 실제 사용 모델 (선택 모델과 다른지 비교용) */
+    val servedModel: String = ""
 )
 
 object AiApiClient {
@@ -130,7 +132,8 @@ object AiApiClient {
         cwd: String = "",
         cliSessionId: String = "",
         effort: String = "",
-        skipPermissions: Boolean = false
+        skipPermissions: Boolean = false,
+        systemPrompt: String = ""
     ): AiReply = withContext(Dispatchers.IO) {
         if (connection.kind != ConnectionKind.TERMUX_CLI &&
             connection.kind != ConnectionKind.REMOTE_CONTROL &&
@@ -148,7 +151,7 @@ object AiApiClient {
                 ConnectionKind.OPENAI_API -> sendOpenAi(connection, history, userMessage, effort)
                 ConnectionKind.GEMINI_API -> sendGemini(connection, history, userMessage)
                 ConnectionKind.TERMUX_CLI -> sendTermuxCli(connection, userMessage)
-                ConnectionKind.REMOTE_CONTROL -> sendRemoteControl(connection, history, userMessage, sessionId, cwd, cliSessionId, effort, skipPermissions)
+                ConnectionKind.REMOTE_CONTROL -> sendRemoteControl(connection, history, userMessage, sessionId, cwd, cliSessionId, effort, skipPermissions, systemPrompt)
                 else -> AiReply(text = "", error = "지원하지 않는 연결 형식입니다.")
             }
         } catch (e: Exception) {
@@ -410,7 +413,8 @@ object AiApiClient {
         cwd: String = "",
         cliSessionId: String = "",
         effort: String = "",
-        skipPermissions: Boolean = false
+        skipPermissions: Boolean = false,
+        systemPrompt: String = ""
     ): AiReply {
         val url = connection.endpointUrl.ifBlank { defaultEndpointFor(ConnectionKind.REMOTE_CONTROL) }
         val isLocalBridge = (url.contains("127.0.0.1:8765/agy") || url.contains("127.0.0.1:8765/claude") ||
@@ -435,6 +439,9 @@ object AiApiClient {
             }
             if (cwd.isNotBlank()) {
                 put("cwd", JsonPrimitive(cwd))
+            }
+            if (systemPrompt.isNotBlank()) {
+                put("system_prompt", JsonPrimitive(systemPrompt))
             }
             if (skipPermissions) {
                 put("skip_permissions", JsonPrimitive(true))
@@ -488,7 +495,8 @@ object AiApiClient {
                         val text = pollResult["response"]?.jsonPrimitive?.contentOrNull.orEmpty()
                         val inTok = pollResult["input_tokens"]?.jsonPrimitive?.longOrNull ?: 0L
                         val outTok = pollResult["output_tokens"]?.jsonPrimitive?.longOrNull ?: 0L
-                        return AiReply(text = text, inputTokens = inTok, outputTokens = outTok)
+                        val served = pollResult["model"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                        return AiReply(text = text, inputTokens = inTok, outputTokens = outTok, servedModel = served)
                     } else if (status == "error") {
                         val err = pollResult["error"]?.jsonPrimitive?.contentOrNull ?: "로컬 브릿지 실행 오류"
                         return AiReply(text = "", error = err)
@@ -526,7 +534,7 @@ object AiApiClient {
                         ?: bodyStr
                     val inTok = obj["input_tokens"]?.jsonPrimitive?.longOrNull ?: 0L
                     val outTok = obj["output_tokens"]?.jsonPrimitive?.longOrNull ?: 0L
-                    AiReply(text = text, inputTokens = inTok, outputTokens = outTok)
+                    AiReply(text = text, inputTokens = inTok, outputTokens = outTok, servedModel = obj["model"]?.jsonPrimitive?.contentOrNull.orEmpty())
                 }.getOrElse { AiReply(text = bodyStr) }
                 parsed
             }

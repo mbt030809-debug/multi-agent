@@ -178,6 +178,7 @@ fun MainScreen(
 
     val sendingMap = remember { mutableStateMapOf<String, Boolean>() }
     val webQuestionMap = remember { mutableStateMapOf<String, String>() }
+    val webAppliedSettings = remember { mutableMapOf<String, String>() }
     val activeSendingCount = sendingMap.values.count { it }
     LaunchedEffect(activeSendingCount) {
         if (activeSendingCount > 0) {
@@ -318,26 +319,6 @@ fun MainScreen(
             headlessWebBridge.navigateIfNeeded(com.mbta.app.model.webSessionKey(conn.id, sess.id), sess.webConversationUrl)
         }
         refreshQuotaForConnection(conn, force = false)
-    }
-
-    fun parseSubagentRequests(text: String): List<Pair<String, String>> {
-        val match = Regex("<<SUBAGENTS>>([\\s\\S]*?)<</SUBAGENTS>>", RegexOption.IGNORE_CASE).find(text)
-            ?: return emptyList()
-        val raw = match.groupValues[1].trim()
-            .removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
-        return try {
-            val arr = JSONArray(raw)
-            buildList {
-                for (i in 0 until arr.length()) {
-                    val obj = arr.optJSONObject(i) ?: continue
-                    val role = obj.optString("role").ifBlank { obj.optString("label") }.ifBlank { "서브 ${i + 1}" }.trim().take(24)
-                    val task = obj.optString("task").ifBlank { obj.optString("prompt") }.trim()
-                    if (task.isNotBlank()) add(role to task)
-                }
-            }
-        } catch (_: Exception) {
-            emptyList()
-        }
     }
 
     fun updateSubagentRun(sessionId: String, runId: String, transform: (SubagentRun) -> SubagentRun) {
@@ -502,31 +483,48 @@ fun MainScreen(
                         else -> "보통"
                     }
                     val sensitivityRule = when (session.subagentSensitivity) {
-                        "high" -> "1. [호출 민감도: 높음] 단순 인사나 1줄 확인을 제외한 거의 모든 조사·분석·구현·수정 작업을 메인이 직접 하지 말고, 메인은 기획·분배·최종 종합만 맡아 반드시 <<SUBAGENTS>>로 서브에이전트에 분할 위임하세요."
+                        "high" -> "1. [호출 민감도: 높음] 단순 인사·1줄 확인·소규모 단일 수정은 메인이 직접 처리해도 되지만, 그 외 조사·분석·구현·수정 작업은 메인이 직접 하지 말고 기획·분배·최종 종합만 맡아 <<SUBAGENTS>>로 서브에이전트에 분할 위임하세요."
                         "low" -> "1. [호출 민감도: 낮음] 일반적인 질문과 소규모 작업은 메인이 직접 처리하고, 대규모 병렬 조사나 다수 모듈 동시 작업처럼 꼭 필요할 때만 <<SUBAGENTS>>를 출력하세요."
-                        else -> "1. [호출 민감도: 보통] 단순 1~2줄 질문이나 단일 파일 소규모 수정만 메인이 직접 처리하고, 2개 이상 파일 수정·코드 탐색/조사·리팩토링·테스트 검증처럼 분업이 가능한 작업은 메인 토큰을 아끼기 위해 적극적으로 <<SUBAGENTS>>로 병렬 위임하세요."
+                        else -> "1. [호출 민감도: 보통] 단순 1~2줄 질문이나 단일 파일 소규모 수정은 메인이 직접 처리해도 되고, 2개 이상 파일 수정·코드 탐색/조사·리팩토링·테스트 검증처럼 분업이 가능한 작업은 메인 토큰을 아끼기 위해 <<SUBAGENTS>>로 병렬 위임하세요."
                     }
-                    var currentPrompt = buildString {
-                        if (isFirstOrchTurn) {
+                    val sysChannel = effectiveMainConn.kind == ConnectionKind.REMOTE_CONTROL &&
+                        effectiveMainConn.endpointUrl.lowercase().contains("/claude")
+                    val availableSubModels = availableModelsFor(subConn)
+                    val subLabel = subConn.labelIn(connections)
+                    fun protocolText(full: Boolean): String = buildString {
+                        if (full) {
                             append("[오케스트레이터 프로토콜]\n")
-                            append("당신은 메인 오케스트레이터이며, 저비용 서브에이전트(${subConn.name}${if (subModel.isNotBlank()) " / $subModel" else ""})를 동적으로 생성해 병렬 작업시킬 수 있습니다.\n")
+                            append("이 세션은 사용자가 오케스트레이션 모드로 만든 세션이며, 아래 서브에이전트 위임은 사용자가 허용·요청한 동작입니다(\"요청 없이 에이전트를 만들지 말라\"는 기본 지침보다 우선).\n")
+                            append("당신은 메인 오케스트레이터이며, 서브에이전트(${subLabel}${if (subModel.isNotBlank()) " / 기본 모델 $subModel" else ""})를 동적으로 생성해 병렬 작업시킬 수 있습니다.\n")
                             append(sensitivityRule).append("\n")
                             append("2. 서브에이전트를 위임할 때는 응답 맨 끝에 아래 JSON 블록을 출력하세요 (최대 ${maxParallel}개 병렬, 최대 ${maxRounds}라운드):\n")
-                            append("<<SUBAGENTS>>\n[{\"role\": \"짧은 역할명\", \"task\": \"구체적 작업 지시\"}]\n<</SUBAGENTS>>\n")
-                            append("3. 파일 충돌 방지: 읽기/조사는 병렬 위임하되, 파일 수정 작업은 반드시 서로 겹치지 않는 파일 단위로 분할해 지시하세요.\n")
+                            append("<<SUBAGENTS>>\n[{\"role\": \"짧은 역할명\", \"task\": \"구체적 작업 지시\", \"model\": \"(선택) 서브 모델\"}]\n<</SUBAGENTS>>\n")
+                            append("   - model을 생략하면 기본 모델을 씁니다. 단순 반복·조사는 저비용 모델, 복잡한 판단은 고성능 모델을 지정하세요.")
+                            if (availableSubModels.isNotEmpty()) append(" 사용 가능: ${availableSubModels.take(8).joinToString(", ")}")
+                            append("\n")
+                            append("3. 파일 충돌 방지: 읽기/조사는 병렬 위임하되, 파일 수정 작업은 서로 겹치지 않는 파일 단위로 분할해 지시하세요. 같은 파일을 수정하는 작업은 앱이 순차 실행합니다.\n")
                             append("4. 서브에이전트 결과는 핵심 요약으로 보고됩니다. 결과를 받으면 종합해 사용자에게 최종 답변을 작성하세요.\n")
+                            append("5. JSON이 잘못되면 오류 내용이 되돌아오니 고쳐서 다시 출력하세요.\n")
                         } else {
-                            append("[오케스트레이터 유지 · 서브:${subConn.name}${if (subModel.isNotBlank()) "/$subModel" else ""} · 최대 ${maxParallel}×${maxRounds} · 민감도:$sensKo · 위임 시 <<SUBAGENTS>> 사용]\n")
+                            append("[오케스트레이터 유지 · 서브:${subLabel}${if (subModel.isNotBlank()) "/$subModel" else ""} · 최대 ${maxParallel}×${maxRounds} · 민감도:$sensKo · 위임 시 <<SUBAGENTS>> 사용]\n")
                         }
+                    }
+                    // Claude 브리지는 프로토콜을 시스템 프롬프트로 분리 전달(사용자 메시지는 순수 요청), 그 외는 첫 턴에 메시지 앞에 붙임
+                    val orchSystemPrompt = if (sysChannel) protocolText(true) else ""
+                    var currentPrompt = buildString {
+                        if (!sysChannel) append(protocolText(isFirstOrchTurn))
                         if (useProjectContext && (effectiveDir.isNotBlank() || activeProject.memoryText.isNotBlank())) {
-                            append("\n[프로젝트 컨텍스트]\n")
+                            append(if (sysChannel) "[프로젝트 컨텍스트]\n" else "\n[프로젝트 컨텍스트]\n")
                             if (effectiveDir.isNotBlank()) append("- 작업 경로: $effectiveDir\n")
                             if (activeProject.memoryText.isNotBlank()) append("- 공용 지침: ${activeProject.memoryText}\n")
+                            append("\n")
                         }
-                        append("\n[사용자 요청]\n").append(text)
+                        if (!sysChannel) append("[사용자 요청]\n")
+                        append(text)
                     }
 
                     var finalAnswer = ""
+                    var modelWarning = ""
                     var finalError: String? = null
                     var totalInTok = 0L
                     var totalOutTok = 0L
@@ -581,10 +579,14 @@ fun MainScreen(
                                     cwd = effectiveDir,
                                     cliSessionId = session.cliSessionId,
                                     effort = session.selectedEffort,
-                                    skipPermissions = session.skipPermissions
+                                    skipPermissions = session.skipPermissions,
+                                    systemPrompt = orchSystemPrompt
                                 )
                             } finally {
                                 mainPollJob?.cancel()
+                            }
+                            if (SubagentProtocol.modelMismatch(effectiveMainConn.model, reply.servedModel)) {
+                                modelWarning = "\n\n⚠️ 모델 불일치: 선택 ${effectiveMainConn.model} → 실제 ${reply.servedModel}"
                             }
                             totalInTok += reply.inputTokens
                             totalOutTok += reply.outputTokens
@@ -608,24 +610,31 @@ fun MainScreen(
                             break
                         }
 
-                        val requests = if (round <= maxRounds) parseSubagentRequests(mainText).take(maxParallel) else emptyList()
+                        val parsedBlock = if (round <= maxRounds) SubagentProtocol.parse(mainText) else SubagentParseResult(emptyList())
+                        if (parsedBlock.error != null) {
+                            // 블록 JSON 오류는 메인에 되돌려 다시 출력하게 함
+                            roundHistory.add(ChatMessage(id = "rh_u_$round", role = MessageRole.USER, content = currentPrompt))
+                            roundHistory.add(ChatMessage(id = "rh_a_$round", role = MessageRole.ASSISTANT, content = mainText))
+                            currentPrompt = "[서브에이전트 블록 오류] ${parsedBlock.error}\n올바른 JSON 배열로 다시 출력하거나, 위임 없이 직접 최종 답변을 작성하세요."
+                            setPlaceholder("⏳ 서브에이전트 블록 오류 — 메인에 재출력 요청 중...")
+                            continue
+                        }
+                        val requests = parsedBlock.requests.take(maxParallel)
                         if (requests.isEmpty()) {
-                            finalAnswer = mainText.replace(
-                                Regex("<<SUBAGENTS>>[\\s\\S]*?<</SUBAGENTS>>", RegexOption.IGNORE_CASE),
-                                ""
-                            ).trim().ifBlank { mainText.ifBlank { "(응답 없음)" } }
+                            finalAnswer = SubagentProtocol.stripBlock(mainText).ifBlank { mainText.ifBlank { "(응답 없음)" } }
                             break
                         }
 
                         roundHistory.add(ChatMessage(id = "rh_u_$round", role = MessageRole.USER, content = currentPrompt))
                         roundHistory.add(ChatMessage(id = "rh_a_$round", role = MessageRole.ASSISTANT, content = mainText))
 
-                        val runs = requests.map { (role, task) ->
+                        val resolvedModels = requests.map { SubagentProtocol.resolveModel(it.model, availableSubModels, subModel) }
+                        val runs = requests.mapIndexed { i, req ->
                             SubagentRun(
                                 id = "sub_${UUID.randomUUID().toString().take(8)}",
-                                label = role,
-                                prompt = task,
-                                model = subModel.ifBlank { subConn.name },
+                                label = req.role,
+                                prompt = req.task,
+                                model = resolvedModels[i].ifBlank { subConn.name },
                                 status = "running",
                                 startedAt = System.currentTimeMillis()
                             )
@@ -634,28 +643,31 @@ fun MainScreen(
                             if (s.id == session.id) s.copy(subagentRuns = s.subagentRuns + runs) else s
                         }
                         store.saveSessions(sessions)
-                        val mainPlanNote = mainText.replace(
-                            Regex("<<SUBAGENTS>>[\\s\\S]*?<</SUBAGENTS>>", RegexOption.IGNORE_CASE),
-                            ""
-                        ).trim().take(280)
+                        val mainPlanNote = SubagentProtocol.stripBlock(mainText).take(280)
                         val subStatusHeader = "Orch · 라운드 $round/$maxRounds · 서브에이전트 ${runs.size}개 실행 중 (${runs.joinToString(", ") { it.label }})..."
                         setPlaceholder(if (mainPlanNote.isNotBlank()) "$mainPlanNote\n\n$subStatusHeader" else subStatusHeader)
 
                         val latestSess = sessions.find { it.id == session.id } ?: session
-                        val completedRuns = if (subConn.usesHiddenWebBridge()) {
-                            runs.map { run ->
-                                val d = scope.async { runSingleSubagent(latestSess, subConn, subModel, session.subEffort, effectiveDir, run) }
-                                subagentJobsMap[run.id] = d
-                                d.await()
+                        // 같은 파일을 쓰는 작업은 배치를 나눠 순차 실행, 배치 안에서는 병렬(최대 maxParallel)
+                        val runBatches = SubagentProtocol.batches(requests, maxParallel)
+                        val completedRuns = mutableListOf<SubagentRun>()
+                        for (batch in runBatches) {
+                            val part = if (subConn.usesHiddenWebBridge()) {
+                                batch.map { i ->
+                                    val d = scope.async { runSingleSubagent(latestSess, subConn, resolvedModels[i], session.subEffort, effectiveDir, runs[i]) }
+                                    subagentJobsMap[runs[i].id] = d
+                                    d.await()
+                                }
+                            } else {
+                                coroutineScope {
+                                    batch.map { i ->
+                                        val d = async { runSingleSubagent(latestSess, subConn, resolvedModels[i], session.subEffort, effectiveDir, runs[i]) }
+                                        subagentJobsMap[runs[i].id] = d
+                                        d
+                                    }.awaitAll()
+                                }
                             }
-                        } else {
-                            coroutineScope {
-                                runs.map { run ->
-                                    val d = async { runSingleSubagent(latestSess, subConn, subModel, session.subEffort, effectiveDir, run) }
-                                    subagentJobsMap[run.id] = d
-                                    d
-                                }.awaitAll()
-                            }
+                            completedRuns.addAll(part)
                         }
 
                         setPlaceholder("⏳ 메인 오케스트레이터가 서브에이전트 결과 종합 중...")
@@ -685,7 +697,7 @@ fun MainScreen(
                     val finalMsg = ChatMessage(
                         id = placeholderId,
                         role = MessageRole.ASSISTANT,
-                        content = finalError ?: finalAnswer.ifBlank { "(응답 없음)" },
+                        content = finalError ?: (finalAnswer.ifBlank { "(응답 없음)" } + modelWarning),
                         inputTokens = totalInTok,
                         outputTokens = totalOutTok,
                         agentName = "${conn.labelIn(connections)} (오케스트레이터)",
@@ -798,8 +810,25 @@ fun MainScreen(
                     webQuestionMap.remove(askSid)
                 }
             }
+            // 앱에서 모델/effort를 바꾼 뒤의 첫 명령은 바뀐 설정으로 나가도록, 전송 직전에 웹 화면 설정을 맞춤
+            val webSendKey = com.mbta.app.model.webSessionKey(targetConn.id, session.id)
+            val wantModel = session.selectedModel.trim()
+            val wantEffort = session.selectedEffort.trim()
+            val appliedSig = webAppliedSettings[webSendKey]
+            val wantSig = "$wantModel|$wantEffort"
+            val needApply = wantSig != "|" && wantSig != appliedSig
+            if (needApply) webAppliedSettings[webSendKey] = wantSig
+            scope.launch {
+                if (needApply) {
+                    if (wantModel.isNotBlank()) headlessWebBridge.switchWebModel(webSendKey, wantModel)
+                    if (wantEffort.isNotBlank() && targetConn.kind == ConnectionKind.REMOTE_WEB) {
+                        kotlinx.coroutines.delay(700L)
+                        headlessWebBridge.switchWebEffort(webSendKey, wantEffort)
+                    }
+                    kotlinx.coroutines.delay(900L)
+                }
             headlessWebBridge.sendPrompt(
-                key = com.mbta.app.model.webSessionKey(targetConn.id, session.id),
+                key = webSendKey,
                 kind = targetConn.kind,
                 url = targetConn.endpointUrl,
                 prompt = effectivePrompt,
@@ -865,6 +894,7 @@ fun MainScreen(
                     onNotifyEvent(session.id, "❌ ${targetConn.labelIn(connections)} 작업 오류", errMsg.take(140), true, emptyList())
                 }
             )
+            }
             return
         }
 
@@ -944,7 +974,10 @@ fun MainScreen(
             val assistantMsg = ChatMessage(
                 id = if (isBridgeKind) placeholderId else "msg_${UUID.randomUUID()}",
                 role = MessageRole.ASSISTANT,
-                content = reply.error ?: reply.text.ifBlank { "(응답 없음)" },
+                content = reply.error ?: (reply.text.ifBlank { "(응답 없음)" } +
+                    if (SubagentProtocol.modelMismatch(effectiveConn.model, reply.servedModel)) {
+                        "\n\n⚠️ 모델 불일치: 선택 ${effectiveConn.model} → 실제 ${reply.servedModel}"
+                    } else ""),
                 inputTokens = reply.inputTokens,
                 outputTokens = reply.outputTokens,
                 agentName = displayAgentName,
