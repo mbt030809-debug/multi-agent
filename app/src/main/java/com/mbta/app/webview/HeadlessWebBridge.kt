@@ -110,14 +110,11 @@ class HeadlessWebBridge(
         val js = """
             (function() {
                 try {
-                    if (window.__mbtaTimers) {
-                        Object.keys(window.__mbtaTimers).forEach(function(k) {
-                            var t = window.__mbtaTimers[k];
-                            if (t && t.wait) clearInterval(t.wait);
-                            if (t && t.poll) clearInterval(t.poll);
-                        });
-                        window.__mbtaTimers = {};
+                    if (Array.isArray(window.__mbtaTimers)) {
+                        window.__mbtaTimers.forEach(function(t) { clearTimeout(t); clearInterval(t); });
                     }
+                    window.__mbtaTimers = [];
+                    window.__mbtaReqId = null;
                     var stopBtn = document.querySelector('button[aria-label*="Stop" i], button[aria-label*="중지"], button[data-testid="stop-button"]');
                     if (stopBtn) stopBtn.click();
                 } catch(e) {}
@@ -1782,6 +1779,11 @@ class HeadlessWebBridge(
                 var reqId = $quotedReqId;
                 var kind = $quotedKind;
                 var promptText = $quotedPrompt;
+                // 이전 요청의 타이머를 모두 정리하고, 이 요청의 타이머만 유효하도록 등록
+                var prevTimers = Array.isArray(window.__mbtaTimers) ? window.__mbtaTimers : [];
+                prevTimers.forEach(function(t) { clearTimeout(t); clearInterval(t); });
+                window.__mbtaTimers = [];
+                window.__mbtaReqId = reqId;
 
                 $DEEP_QUERY_JS
 
@@ -1970,7 +1972,9 @@ class HeadlessWebBridge(
                         }
                     }
 
-                    setTimeout(function() {
+                    var proceedDelay = promptText.length > 1000 ? 1200 : 300;
+                    window.__mbtaTimers.push(setTimeout(function() {
+                        if (window.__mbtaReqId !== reqId) return;
                         function findSendBtn() {
                             var sendSelectors = [
                                 'button[aria-label="메시지 보내기"]',
@@ -1984,17 +1988,21 @@ class HeadlessWebBridge(
                                 'button[aria-label*="보내기"]',
                                 'button[type="submit"]'
                             ];
-                            var excludeRe = /내보내기|공유|export|share/i;
+                            var excludeRe = /내보내기|공유|export|share|stop|중지|취소|cancel|opus|sonnet|haiku|fable|flash|pro|모델/i;
+                            var exactSendSelectors = ['button[aria-label="메시지 보내기"]', 'button[aria-label="Send message"]'];
                             var sb = null;
                             for (var si = 0; si < sendSelectors.length && !sb; si++) {
+                                var isExact = exactSendSelectors.indexOf(sendSelectors[si]) >= 0;
                                 var sEls = [];
                                 try { sEls = queryAllDeep(sendSelectors[si]); } catch(e) { sEls = []; }
                                 for (var se = 0; se < sEls.length; se++) {
                                     var cand = sEls[se];
                                     if (!cand || !isVisible(cand)) continue;
                                     var candLabel = (cand.getAttribute('aria-label') || '') + ' ' + (cand.innerText || '');
-                                    if (/mic|voice|마이크|음성/i.test(candLabel)) continue;
-                                    if (excludeRe.test(candLabel)) continue;
+                                    if (!isExact) {
+                                        if (/mic|voice|마이크|음성/i.test(candLabel)) continue;
+                                        if (excludeRe.test(candLabel)) continue;
+                                    }
                                     var cr = cand.getBoundingClientRect();
                                     if (!(cr.bottom > 0 && cr.top < innerHeight)) continue;
                                     sb = cand;
@@ -2009,7 +2017,7 @@ class HeadlessWebBridge(
                                         var btn = btns[b];
                                         if (!btn || btn.disabled || !isVisible(btn)) continue;
                                         var bLabel = ((btn.getAttribute('aria-label') || '') + ' ' + (btn.innerText || '')).toLowerCase();
-                                        if (/attach|upload|mic|voice|record|plus|add|menu|model|gemini|claude|마이크|음성|첨부|업로드|추가|도구|모델|내보내기|공유|export|share/.test(bLabel)) continue;
+                                        if (/attach|upload|mic|voice|record|plus|add|menu|model|gemini|claude|마이크|음성|첨부|업로드|추가|도구|모델|내보내기|공유|export|share|stop|중지|취소|cancel|opus|sonnet|haiku|fable|flash|pro/.test(bLabel)) continue;
                                         sb = btn;
                                         break;
                                     }
@@ -2029,6 +2037,7 @@ class HeadlessWebBridge(
                         // 프레임워크가 전송 버튼을 활성화할 때까지 기다리며 여러 번 시도 (Gemini 등은 입력 반영이 늦음)
                         var sendAttempts = 0;
                         var lastSendAction = 'none';
+                        var lastClickAt = 0;
                         function describeBtn(b) {
                             try {
                                 return '[' + (b.getAttribute('aria-label') || '').slice(0, 20) + '|' + (b.innerText || '').trim().slice(0, 12) + '|dis=' + (b.disabled ? 1 : 0) + '|ariaDis=' + (b.getAttribute('aria-disabled') || '-') + '|vis=' + (isVisible(b) ? 1 : 0) + ']';
@@ -2051,20 +2060,50 @@ class HeadlessWebBridge(
                         function trySend() {
                             sendAttempts++;
                             var sb = findSendBtn();
-                            if (sb && !sb.disabled && sb.getAttribute('aria-disabled') !== 'true') {
+                            var enabled = !!sb && !sb.disabled && sb.getAttribute('aria-disabled') !== 'true';
+                            if (enabled && (lastClickAt === 0 || Date.now() - lastClickAt >= 1500)) {
+                                // 클릭 후 1.5초 안에는 다시 누르지 않음. 그래도 입력이 남아 있으면 다음 시도에서 다시 클릭
+                                lastClickAt = Date.now();
                                 lastSendAction = 'click#' + sendAttempts + ':' + describeBtn(sb);
                                 try { sb.click(); } catch(e) {}
-                            } else if (sendAttempts >= 3) {
+                            } else if (!enabled && sendAttempts >= 7 && (sendAttempts - 7) % 4 === 0) {
+                                // 버튼이 없거나 비활성인 상태가 이어지면 7회차부터 Enter를 보내되, 과다 입력을 막기 위해 4회마다 한 번만
                                 lastSendAction = 'enter#' + sendAttempts + (sb ? ' (btn disabled:' + describeBtn(sb) + ')' : ' (no btn)');
                                 fireEnter(inputEl);
                             } else {
-                                lastSendAction = 'wait#' + sendAttempts + (sb ? ' (btn disabled:' + describeBtn(sb) + ')' : ' (no btn)');
+                                lastSendAction = 'wait#' + sendAttempts + (sb ? ' (btn ' + (enabled ? 'cooldown' : 'disabled') + ':' + describeBtn(sb) + ')' : ' (no btn)');
                             }
-                            setTimeout(function() {
-                                if (sendAttempts < 8 && inputRemaining()) trySend();
+                            var retryTimer = setTimeout(function() {
+                                if (window.__mbtaReqId !== reqId) return;
+                                if (sendAttempts < 60 && inputRemaining()) trySend();
                             }, 500);
+                            window.__mbtaTimers.push(retryTimer);
                         }
                         trySend();
+
+                        // 화면 안에 떠 있고 마지막 사용자 메시지 이후에 있는 '건너뛰기' 버튼만 질문 카드로 인정 (옛 대화 내용 오탐 방지)
+                        function liveSkipOnScreen() {
+                            var anchor = null;
+                            var uSels = isCodeWeb ? ['[data-testid="user-message"]'] : ['user-query', '[data-message-author-role="user"]', '[data-testid="user-message"]'];
+                            for (var ui = 0; ui < uSels.length; ui++) {
+                                var uEls = [];
+                                try { uEls = queryAllDeep(uSels[ui]); } catch(e) { uEls = []; }
+                                for (var uj = 0; uj < uEls.length; uj++) {
+                                    var uc = uEls[uj];
+                                    if (uc && (!anchor || (anchor.compareDocumentPosition(uc) & Node.DOCUMENT_POSITION_FOLLOWING))) anchor = uc;
+                                }
+                            }
+                            var sbs = document.querySelectorAll('button, [role="button"]');
+                            for (var si2 = 0; si2 < sbs.length; si2++) {
+                                var sk = sbs[si2];
+                                if (!/^(건너뛰기|skip)$/i.test((sk.innerText || '').trim())) continue;
+                                if (!isVisible(sk)) continue;
+                                var skr = sk.getBoundingClientRect();
+                                if (!(skr.bottom > 0 && skr.top < innerHeight)) continue;
+                                if (!anchor || (anchor.compareDocumentPosition(sk) & Node.DOCUMENT_POSITION_FOLLOWING)) return true;
+                            }
+                            return false;
+                        }
 
                         var lastText = '';
                         var stableTicks = 0;
@@ -2075,31 +2114,28 @@ class HeadlessWebBridge(
                         var useBodyFallback = (!isCodeWeb && kind !== 'CHATGPT_WEB' && kind !== 'CLAUDE_WEB' && kind !== 'GEMINI_WEB');
                         var silentWorking = 0;
                         var timer = setInterval(function() {
+                            if (window.__mbtaReqId !== reqId) { clearInterval(timer); return; }
                             totalTicks++;
                             var bodyNow = (document.body && document.body.innerText) ? document.body.innerText.length : 0;
                             var activity = bodyNow !== lastBodyLen;
                             lastBodyLen = bodyNow;
                             var streamingNow = !!document.querySelector('button[aria-label*="Stop"], button[aria-label*="중지"], button[data-testid="stop-button"], [data-is-streaming="true"]');
                             // 질문 카드(건너뛰기 버튼)가 떠 있으면 사용자 답을 기다리는 중이므로 시간 초과/완료로 보지 않음
-                            if (!streamingNow) {
-                                var qbtns = document.querySelectorAll('button, [role="button"]');
-                                for (var qi = 0; qi < qbtns.length; qi++) {
-                                    if (/^(건너뛰기|skip)$/i.test((qbtns[qi].innerText || '').trim())) { streamingNow = true; break; }
-                                }
-                            }
+                            if (!streamingNow && liveSkipOnScreen()) streamingNow = true;
                             if (!streamingNow && isCodeWeb) {
-                                // Claude Code 웹의 '작업 중' 줄에 글자가 있으면 생성 중 (화면 변화 없이 2분이 지나면 무시)
+                                // Claude Code 웹의 '작업 중' 줄에 글자가 있으면 생성 중 (화면 변화 없이 10분(500ms 틱 1200회)이 지나면 무시)
                                 var wl = document.querySelector('[data-testid="code-working-line"]');
                                 var working = !!(wl && (wl.innerText || '').trim());
                                 if (working && !activity) silentWorking++; else silentWorking = 0;
-                                streamingNow = working && silentWorking < 240;
+                                streamingNow = working && silentWorking < 1200;
                             }
                             if (activity || streamingNow) idleTicks = 0; else idleTicks++;
                             // 화면이 계속 변하거나 생성 중이면 오래 걸려도 계속 기다림. 3분간 변화가 없거나 90분이 넘으면 종료
                             if (totalTicks > 10800 || idleTicks > 360) {
                                 clearInterval(timer);
                                 if (lastText) {
-                                    window.MbtABridge.onDone(reqId, lastText);
+                                    var doneText = isCodeWeb ? lastText + '\n\n(⚠️ 응답 대기 시간 초과 — 일부만 수신되었을 수 있음)' : lastText;
+                                    window.MbtABridge.onDone(reqId, doneText);
                                 } else {
                                     window.MbtABridge.onError(reqId, 'TIMEOUT', '응답 시간이 초과되었습니다. [전송 진단 ' + sendDiag() + ']');
                                 }
@@ -2137,11 +2173,13 @@ class HeadlessWebBridge(
                                 }
                             }
                         }, 500);
-                    }, 300);
+                        window.__mbtaTimers.push(timer);
+                    }, proceedDelay));
                 }
 
                 var waitTries = 0;
                 var waitTimer = setInterval(function() {
+                    if (window.__mbtaReqId !== reqId) { clearInterval(waitTimer); return; }
                     var found = findAnyEditable();
                     if (found) {
                         clearInterval(waitTimer);
@@ -2168,6 +2206,7 @@ class HeadlessWebBridge(
                         }
                     }
                 }, 400);
+                window.__mbtaTimers.push(waitTimer);
             })();
         """.trimIndent()
     }
