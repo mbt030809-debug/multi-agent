@@ -265,6 +265,8 @@ class HeadlessWebBridge(
                     super.onReceivedHttpError(view, request, errorResponse)
                     if (request?.isForMainFrame != true) return
                     val status = errorResponse?.statusCode ?: 0
+                    // 401/403/429 등은 로그인·보안 확인 페이지가 뒤이어 정상 로드되는 경우가 많아 서버 오류(5xx)만 실패로 처리
+                    if (status < 500) { log("onReceivedHttpError key=$key status=$status (무시)"); return }
                     log("onReceivedHttpError key=$key status=$status")
                     markLoadFailed(key, "페이지 로드 실패: HTTP $status")
                 }
