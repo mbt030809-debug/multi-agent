@@ -531,12 +531,14 @@ class HeadlessWebBridge(
                 var picker = findPicker();
                 if (!picker) { res.error = 'nopicker'; send(); return; }
                 res.picker = pickerLabel(picker).replace(/\s+/g, ' ').slice(0, 40);
+                var visBefore = snapshotVisible();
                 var done = false;
                 function pick() {
                     if (done) return;
                     var items = queryAllDeep('[role="menuitem"], [role="option"], [role="menuitemradio"], li, button, div');
                     for (var j = 0; j < items.length; j++) {
                         var el = items[j];
+                        if (visBefore.has(el) || !isShown(el)) continue;
                         if (el === picker || picker.contains(el) || el.contains(picker)) continue;
                         if (el.children && el.children.length > 4) continue;
                         var txt = (el.innerText || '').toLowerCase().trim();
@@ -557,6 +559,7 @@ class HeadlessWebBridge(
                         var items = queryAllDeep('[role="menuitem"], [role="option"], [role="menuitemradio"], li, button, div');
                         for (var q = 0; q < items.length && res.sample.length < 14; q++) {
                             var e2 = items[q];
+                            if (visBefore.has(e2) || !isShown(e2)) continue;
                             if (e2.children && e2.children.length > 4) continue;
                             var t2 = (e2.innerText || '').trim().replace(/\s+/g, ' ');
                             if (t2 && t2.length <= 40) res.sample.push(t2);
@@ -611,10 +614,12 @@ class HeadlessWebBridge(
                 var res = { picker: null, clicked: null, after: '', sample: [] };
                 function send() { try { window.MbtABridge.onChunk($quotedReq, JSON.stringify(res)); } catch(e) {} }
                 var picker = findPicker();
+                var visBefore = snapshotVisible();
                 function clickEffort() {
                     var items = queryAllDeep('[role="menuitem"], [role="option"], [role="menuitemradio"], li, button, div');
                     for (var j = 0; j < items.length; j++) {
                         var el = items[j];
+                        if (visBefore.has(el) || !isShown(el)) continue;
                         if (el.children && el.children.length > 4) continue;
                         if (picker && (el === picker || picker.contains(el) || el.contains(picker))) continue;
                         var txt = (el.innerText || '').trim().split('\n')[0].trim().toLowerCase();
@@ -641,6 +646,7 @@ class HeadlessWebBridge(
                         var items = queryAllDeep('[role="menuitem"], [role="option"], [role="menuitemradio"], li, button, div');
                         for (var q = 0; q < items.length && res.sample.length < 14; q++) {
                             var e2 = items[q];
+                            if (visBefore.has(e2) || !isShown(e2)) continue;
                             if (e2.children && e2.children.length > 4) continue;
                             var t2 = (e2.innerText || '').trim().replace(/\s+/g, ' ');
                             if (t2 && t2.length <= 40) res.sample.push(t2);
@@ -1967,6 +1973,17 @@ class HeadlessWebBridge(
             "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
         /** React/Radix 메뉴는 click만으로는 안 열리는 경우가 있어 포인터/마우스 이벤트 전체를 발생시킴 */
         private const val FULL_CLICK_JS = """
+            // 메뉴를 열기 전에 화면에 보이던 요소를 기억해 두었다가, 열린 뒤 새로 보이는 요소만 메뉴 항목 후보로 사용
+            // (대화 내용에 "opus", "높음" 같은 글자가 있어도 그걸 누르지 않도록)
+            function isShown(el) {
+                try { return !!(el.offsetParent || (el.getClientRects && el.getClientRects().length)); } catch (e) { return true; }
+            }
+            function snapshotVisible() {
+                var set = new Set();
+                var all = queryAllDeep('*');
+                for (var i = 0; i < all.length; i++) { if (isShown(all[i])) set.add(all[i]); }
+                return set;
+            }
             function fullClick(el) {
                 try {
                     el.scrollIntoView({ block: 'center' });

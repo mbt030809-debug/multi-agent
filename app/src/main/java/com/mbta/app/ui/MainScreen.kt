@@ -183,15 +183,20 @@ fun MainScreen(
     val webAppliedModel = remember { mutableMapOf<String, String>() }
     val webAppliedEffort = remember { mutableMapOf<String, String>() }
 
-    fun summarizeWebSwitch(label: String, json: String): Pair<Boolean, String> {
+    fun summarizeWebSwitch(label: String, json: String, target: String? = null): Pair<Boolean, String> {
         return runCatching {
             val o = org.json.JSONObject(json)
             val clicked = o.optString("clicked")
             val after = o.optString("after")
             val picker = o.optString("picker")
             val err = o.optString("error")
-            if (clicked.isNotBlank()) {
+            // 모델은 눌렀는데 버튼 표시가 안 바뀌고 목표 모델 이름도 없으면 실제로는 적용되지 않은 것으로 봄
+            val verified = target == null || after.isBlank() || after != picker ||
+                after.lowercase().contains(target.lowercase())
+            if (clicked.isNotBlank() && verified) {
                 true to "웹 $label 전환: $clicked → 현재 표시: ${after.ifBlank { "?" }}"
+            } else if (clicked.isNotBlank()) {
+                false to "웹 $label 전환 확인 실패 — 눌렀지만 표시가 그대로입니다 (현재: ${after.ifBlank { "?" }})"
             } else {
                 val why = when (err) {
                     "nopicker" -> "모델 버튼을 못 찾음"
@@ -222,7 +227,7 @@ fun MainScreen(
         if (isModel) headlessWebBridge.switchWebModel(key, value) { d.complete(it) }
         else headlessWebBridge.switchWebEffort(key, value) { d.complete(it) }
         val json = kotlinx.coroutines.withTimeoutOrNull(4500L) { d.await() } ?: "{\"error\":\"timeout\"}"
-        val (ok, msg) = summarizeWebSwitch(if (isModel) "모델" else "effort", json)
+        val (ok, msg) = summarizeWebSwitch(if (isModel) "모델" else "effort", json, if (isModel) value else null)
         android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_LONG).show()
         if (ok) {
             if (isModel) webAppliedModel[key] = value else webAppliedEffort[key] = value
