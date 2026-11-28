@@ -73,6 +73,10 @@ fun ConnectionKind.displayLabel(): String = when (this) {
     ConnectionKind.REMOTE_CONTROL -> "로컬 브릿지"
 }
 
+/** 그룹(웹/브릿지/API/Remote)으로 설명되는 "(계정)", "(웹)" 접미사를 뗀 짧은 이름 */
+fun ConnectionKind.shortLabel(): String =
+    displayLabel().replace(Regex("\\s*\\((?:계정|웹)\\)"), "").trim()
+
 fun defaultModelFor(kind: ConnectionKind): String = when (kind) {
     ConnectionKind.CLAUDE_API -> "claude-sonnet-4-20250514"
     ConnectionKind.OPENAI_API -> "gpt-4o"
