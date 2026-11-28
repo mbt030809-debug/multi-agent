@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -2309,8 +2310,60 @@ fun MainScreen(
         )
     }
 
+    val handlePickExisting: (AiConnection, com.mbta.app.webview.ExternalSessionItem) -> Unit = { conn, item ->
+        showNewSessionDialog = false
+        showExistingSessionDialog = false
+        existingPickerConnId = null
+        val sessId = "sess_${UUID.randomUUID()}"
+        val loadingMsg = ChatMessage(
+            id = "msg_${UUID.randomUUID()}",
+            role = MessageRole.SYSTEM,
+            content = "이전 대화 기록 불러오는 중..."
+        )
+        val newSess = AgentSession(
+            id = sessId,
+            projectId = activeProject.id,
+            title = item.title.take(30),
+            connectionId = conn.id,
+            webConversationUrl = item.url,
+            cliSessionId = if (item.url.isBlank()) item.id else "",
+            messages = listOf(loadingMsg)
+        )
+        sessions = sessions + newSess
+        store.saveSessions(sessions)
+        activeSessionId = newSess.id
+        store.saveActiveSessionId(newSess.id)
+
+        val applyMessages: (List<ChatMessage>) -> Unit = { fetched ->
+            val finalMsgs = if (fetched.isNotEmpty()) {
+                fetched
+            } else {
+                listOf(
+                    ChatMessage(
+                        id = "msg_${UUID.randomUUID()}",
+                        role = MessageRole.SYSTEM,
+                        content = "연결됨 — 새 메시지를 보내면 기존 대화에 이어집니다."
+                    )
+                )
+            }
+            sessions = sessions.map { if (it.id == sessId) it.copy(messages = finalMsgs) else it }
+            store.saveSessions(sessions)
+        }
+
+        if (conn.usesHiddenWebBridge() && item.url.isNotBlank()) {
+            headlessWebBridge.fetchWebSessionMessages(conn.id, conn.kind, item.url, conn.name, onResult = applyMessages)
+        } else {
+            val bridgeKind = if (conn.endpointUrl.lowercase().contains("/agy")) "agy" else "claude"
+            scope.launch {
+                applyMessages(GitBridgeClient.fetchSessionMessages(bridgeKind, item.id, conn.name))
+            }
+        }
+    }
+
     if (showNewSessionDialog) {
         NewSessionDialog(
+            headlessWebBridge = headlessWebBridge,
+            onPickExisting = handlePickExisting,
             enabledConnections = enabledConnections,
             hasWorkDir = activeProject.workDir.isNotBlank(),
             defaultIndex = validProjectSessions.size + 1,
@@ -2413,54 +2466,7 @@ fun MainScreen(
             enabledConnections = enabledConnections.filter { existingPickerConnId == null || it.id == existingPickerConnId },
             headlessWebBridge = headlessWebBridge,
             onDismiss = { showExistingSessionDialog = false; existingPickerConnId = null },
-            onPick = { conn, item ->
-                showExistingSessionDialog = false
-                existingPickerConnId = null
-                val sessId = "sess_${UUID.randomUUID()}"
-                val loadingMsg = ChatMessage(
-                    id = "msg_${UUID.randomUUID()}",
-                    role = MessageRole.SYSTEM,
-                    content = "이전 대화 기록 불러오는 중..."
-                )
-                val newSess = AgentSession(
-                    id = sessId,
-                    projectId = activeProject.id,
-                    title = item.title.take(30),
-                    connectionId = conn.id,
-                    webConversationUrl = item.url,
-                    cliSessionId = if (item.url.isBlank()) item.id else "",
-                    messages = listOf(loadingMsg)
-                )
-                sessions = sessions + newSess
-                store.saveSessions(sessions)
-                activeSessionId = newSess.id
-                store.saveActiveSessionId(newSess.id)
-
-                val applyMessages: (List<ChatMessage>) -> Unit = { fetched ->
-                    val finalMsgs = if (fetched.isNotEmpty()) {
-                        fetched
-                    } else {
-                        listOf(
-                            ChatMessage(
-                                id = "msg_${UUID.randomUUID()}",
-                                role = MessageRole.SYSTEM,
-                                content = "연결됨 — 새 메시지를 보내면 기존 대화에 이어집니다."
-                            )
-                        )
-                    }
-                    sessions = sessions.map { if (it.id == sessId) it.copy(messages = finalMsgs) else it }
-                    store.saveSessions(sessions)
-                }
-
-                if (conn.usesHiddenWebBridge() && item.url.isNotBlank()) {
-                    headlessWebBridge.fetchWebSessionMessages(conn.id, conn.kind, item.url, conn.name, onResult = applyMessages)
-                } else {
-                    val bridgeKind = if (conn.endpointUrl.lowercase().contains("/agy")) "agy" else "claude"
-                    scope.launch {
-                        applyMessages(GitBridgeClient.fetchSessionMessages(bridgeKind, item.id, conn.name))
-                    }
-                }
-            }
+            onPick = handlePickExisting
         )
     }
 }
@@ -2535,7 +2541,8 @@ private fun ExistingSessionPickerDialog(
     enabledConnections: List<AiConnection>,
     headlessWebBridge: HeadlessWebBridge,
     onDismiss: () -> Unit,
-    onPick: (AiConnection, com.mbta.app.webview.ExternalSessionItem) -> Unit
+    onPick: (AiConnection, com.mbta.app.webview.ExternalSessionItem) -> Unit,
+    asPanel: Boolean = false
 ) {
     val selectable = enabledConnections.filter {
         it.usesHiddenWebBridge() || it.kind == ConnectionKind.REMOTE_CONTROL
@@ -2561,10 +2568,8 @@ private fun ExistingSessionPickerDialog(
         }
     }
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("기존 세션 불러오기") },
-        text = {
+    val titleC: @Composable () -> Unit = { Text("기존 세션 불러오기") }
+    val textC: @Composable () -> Unit = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (selectable.isEmpty()) {
                     Text("불러올 수 있는 웹/로컬 브릿지 연결이 없습니다.", fontSize = 13.sp)
@@ -2661,16 +2666,44 @@ private fun ExistingSessionPickerDialog(
                     }
                 }
             }
-        },
-        confirmButton = {
+    }
+    val confirmC: @Composable () -> Unit = {
             if (selectable.isNotEmpty() && !loading) {
                 TextButton(onClick = { reloadNonce++ }) { Text("새로고침") }
             }
-        },
-        dismissButton = {
+    }
+    val dismissC: @Composable () -> Unit = {
             TextButton(onClick = onDismiss) { Text("닫기") }
+    }
+    if (asPanel) {
+        androidx.compose.material3.Surface(
+            shape = RoundedCornerShape(28.dp),
+            color = androidx.compose.material3.AlertDialogDefaults.containerColor,
+            tonalElevation = androidx.compose.material3.AlertDialogDefaults.TonalElevation,
+            modifier = Modifier.width(380.dp)
+        ) {
+            Column(modifier = Modifier.padding(24.dp)) {
+                androidx.compose.runtime.CompositionLocalProvider(
+                    androidx.compose.material3.LocalTextStyle provides MaterialTheme.typography.headlineSmall
+                ) { titleC() }
+                Spacer(modifier = Modifier.height(16.dp))
+                textC()
+                Spacer(modifier = Modifier.height(16.dp))
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    dismissC()
+                    confirmC()
+                }
+            }
         }
-    )
+    } else {
+        AlertDialog(
+            onDismissRequest = onDismiss,
+            title = titleC,
+            text = textC,
+            confirmButton = confirmC,
+            dismissButton = dismissC
+        )
+    }
 }
 
 private fun formatExternalSessionTime(updatedAt: Long, updatedLabel: String): String {
@@ -2704,6 +2737,8 @@ private fun NewSessionDialog(
     onDismiss: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenExisting: (AiConnection) -> Unit = {},
+    headlessWebBridge: HeadlessWebBridge? = null,
+    onPickExisting: (AiConnection, com.mbta.app.webview.ExternalSessionItem) -> Unit = { _, _ -> },
     onCreate: (title: String, connectionId: String, useWorktree: Boolean) -> Unit,
     onCreateOrchestration: (
         title: String,
@@ -2753,11 +2788,11 @@ private fun NewSessionDialog(
     var maxRounds by remember { mutableIntStateOf(3) }
     var sensitivity by remember { mutableStateOf("medium") }
     var useWorktree by remember { mutableStateOf(false) }
+    val isWide = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp >= 800
+    var pickerConn by remember { mutableStateOf<AiConnection?>(null) }
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(if (isOrchMode) "⚡ 새 오케스트레이션 세션" else "새 하위 세션", fontSize = 16.sp, fontWeight = FontWeight.Bold) },
-        text = {
+    val titleC: @Composable () -> Unit = { Text(if (isOrchMode) "⚡ 새 오케스트레이션 세션" else "새 하위 세션", fontSize = 16.sp, fontWeight = FontWeight.Bold) }
+    val textC: @Composable () -> Unit = {
             Column(
                 modifier = Modifier
                     .heightIn(max = 460.dp)
@@ -2847,7 +2882,7 @@ private fun NewSessionDialog(
                                     }
                                     if (conn.usesHiddenWebBridge() || conn.kind == ConnectionKind.REMOTE_CONTROL) {
                                         IconButton(
-                                            onClick = { onOpenExisting(conn) },
+                                            onClick = { if (isWide && headlessWebBridge != null) pickerConn = conn else onOpenExisting(conn) },
                                             modifier = Modifier.size(28.dp)
                                         ) {
                                             Icon(
@@ -3055,8 +3090,8 @@ private fun NewSessionDialog(
                     }
                 }
             }
-        },
-        confirmButton = {
+    }
+    val confirmC: @Composable () -> Unit = {
             if (enabledConnections.isEmpty()) {
                 Button(onClick = onOpenSettings) {
                     Text("설정으로 이동")
@@ -3089,13 +3124,52 @@ private fun NewSessionDialog(
                     Text(if (isOrchMode) "오케스트레이션 시작" else "생성")
                 }
             }
-        },
-        dismissButton = {
+    }
+    val dismissC: @Composable () -> Unit = {
             TextButton(onClick = onDismiss) {
                 Text("취소")
             }
+    }
+
+    androidx.compose.ui.window.Dialog(
+        onDismissRequest = onDismiss,
+        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Row(
+            modifier = Modifier.padding(16.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.Top
+        ) {
+            androidx.compose.material3.Surface(
+                shape = RoundedCornerShape(28.dp),
+                color = androidx.compose.material3.AlertDialogDefaults.containerColor,
+                tonalElevation = androidx.compose.material3.AlertDialogDefaults.TonalElevation,
+                modifier = Modifier.widthIn(min = 280.dp, max = 420.dp)
+            ) {
+                Column(modifier = Modifier.padding(24.dp)) {
+                    titleC()
+                    Spacer(modifier = Modifier.height(16.dp))
+                    textC()
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        dismissC()
+                        Spacer(modifier = Modifier.size(8.dp))
+                        confirmC()
+                    }
+                }
+            }
+            val pc = pickerConn
+            if (isWide && pc != null && headlessWebBridge != null) {
+                ExistingSessionPickerDialog(
+                    enabledConnections = listOf(pc),
+                    headlessWebBridge = headlessWebBridge,
+                    onDismiss = { pickerConn = null },
+                    onPick = onPickExisting,
+                    asPanel = true
+                )
+            }
         }
-    )
+    }
 }
 
 private fun shareSessionAsMarkdown(context: Context, project: Project, session: AgentSession) {
