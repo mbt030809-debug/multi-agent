@@ -32,6 +32,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -265,6 +266,26 @@ private fun formatBytes(n: Long): String = when {
     n >= 1_048_576L -> String.format(java.util.Locale.US, "%.1fMB", n / 1_048_576.0)
     n >= 1024L -> "${n / 1024}KB"
     else -> "${n}B"
+}
+
+/** 웹 화면에서 긁은 응답 텍스트에서 질문 카드(질문/선택지/기타/건너뛰기/제출) 줄을 제거 */
+internal fun removeCardLines(text: String, cardJson: String?): String {
+    if (cardJson.isNullOrBlank()) return text
+    return runCatching {
+        val obj = org.json.JSONObject(cardJson)
+        val drop = mutableSetOf("기타", "건너뛰기", "제출", "skip", "submit", "other")
+        obj.optString("question").trim().takeIf { it.isNotEmpty() }?.let { drop.add(it) }
+        val arr = obj.optJSONArray("options")
+        if (arr != null) {
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                o.optString("label").trim().takeIf { it.isNotEmpty() }?.let { drop.add(it) }
+                o.optString("description").trim().takeIf { it.isNotEmpty() }?.let { drop.add(it) }
+            }
+        }
+        text.lines().filter { it.trim() !in drop && !it.trim().matches(Regex("^\\d+$")) }
+            .joinToString("\n").replace(Regex("\\n{3,}"), "\n\n").trim()
+    }.getOrDefault(text)
 }
 
 private val askMarkerRegex = Regex("<<ASK>>([\\s\\S]*?)<</ASK>>")
@@ -2218,10 +2239,16 @@ private fun ChatBubble(
         }
         MessageRole.USER -> {
             val clipboard = LocalClipboardManager.current
+            // 다크 테마에서는 내 명령(파랑 톤)과 AI 대답(회색 톤)을 확실히 구분
+            val userBubbleColor = if (MaterialTheme.colorScheme.background.luminance() < 0.5f) {
+                androidx.compose.ui.graphics.Color(0xFF2F4170)
+            } else {
+                MaterialTheme.colorScheme.primaryContainer
+            }
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                 Surface(
                     shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.primaryContainer,
+                    color = userBubbleColor,
                     modifier = Modifier.widthIn(max = 300.dp)
                 ) {
                     Column(modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp)) {
@@ -2267,7 +2294,7 @@ private fun ChatBubble(
                 Surface(
                     shape = RoundedCornerShape(12.dp),
                     color = bubbleColor,
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth().padding(end = 20.dp)
                 ) {
                     Column(modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp)) {
                         Row(

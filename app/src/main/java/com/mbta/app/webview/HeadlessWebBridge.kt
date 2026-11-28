@@ -121,11 +121,23 @@ class HeadlessWebBridge(
         wv.evaluateJavascript(js, null)
     }
 
+    /** 웹 화면에서 긁어온 텍스트의 아이콘 폰트 글리프(사설 영역 문자)와 낱자 한자 줄을 제거 */
+    private fun cleanWebText(raw: String): String {
+        if (raw.startsWith("__")) return raw
+        return raw
+            .replace(Regex("[\\uE000-\\uF8FF]"), "")
+            .lines()
+            .filter { line -> !Regex("^\\s*[\\u4E00-\\u9FFF]\\s*$").matches(line) }
+            .joinToString("\n")
+            .replace(Regex("\\n{3,}"), "\n\n")
+            .trim()
+    }
+
     private inner class JsBridge {
         @JavascriptInterface
         fun onChunk(requestId: String, text: String) {
             mainHandler.post {
-                pending[requestId]?.onChunk?.invoke(text)
+                pending[requestId]?.onChunk?.invoke(cleanWebText(text))
             }
         }
 
@@ -134,8 +146,9 @@ class HeadlessWebBridge(
             mainHandler.post {
                 log("onDone req=$requestId len=${finalText.length}")
                 val req = pending.remove(requestId) ?: return@post
-                val outTokens = ceil(finalText.length / 3.0).toLong().coerceAtLeast(1L)
-                req.onDone(finalText, req.inputTokens, outTokens)
+                val cleaned = cleanWebText(finalText)
+                val outTokens = ceil(cleaned.length / 3.0).toLong().coerceAtLeast(1L)
+                req.onDone(cleaned, req.inputTokens, outTokens)
             }
         }
 
@@ -467,14 +480,15 @@ class HeadlessWebBridge(
         key: String,
         kind: ConnectionKind,
         url: String,
-        prompt: String
+        prompt: String,
+        onChunk: (String) -> Unit = {}
     ): Pair<Triple<String, Long, Long>, String?> = suspendCancellableCoroutine { cont ->
         sendPrompt(
             key = key,
             kind = kind,
             url = url,
             prompt = prompt,
-            onChunk = {},
+            onChunk = onChunk,
             onDone = { finalText, inTok, outTok ->
                 if (cont.isActive) cont.resume(Triple(finalText, inTok, outTok) to null)
             },
@@ -515,11 +529,15 @@ class HeadlessWebBridge(
                 if (!picker) return;
                 picker.click();
                 setTimeout(function() {
-                    var items = queryAllDeep('[role="menuitem"], [role="option"], li, button');
+                    var items = queryAllDeep('[role="menuitem"], [role="option"], [role="menuitemradio"], li, button, div');
                     for (var j = 0; j < items.length; j++) {
-                        var txt = (items[j].innerText || '').toLowerCase();
-                        if (txt && (txt.indexOf(target) !== -1 || target.indexOf(txt.trim()) !== -1)) {
-                            items[j].click();
+                        var el = items[j];
+                        if (el === picker || picker.contains(el)) continue;
+                        if (el.children && el.children.length > 4) continue;
+                        var txt = (el.innerText || '').toLowerCase().trim();
+                        if (!txt || txt.length > 60) continue;
+                        if (txt.indexOf(target) !== -1 || target.indexOf(txt) !== -1) {
+                            el.click();
                             return;
                         }
                     }
@@ -561,7 +579,7 @@ class HeadlessWebBridge(
                         var txt = (el.innerText || '').trim().split('\n')[0].trim().toLowerCase();
                         if (!txt) continue;
                         for (var k = 0; k < cands.length; k++) {
-                            if (txt === cands[k]) { el.click(); return true; }
+                            if (txt === cands[k] || txt.indexOf(cands[k] + ' ') === 0) { el.click(); return true; }
                         }
                     }
                     return false;
@@ -762,7 +780,11 @@ class HeadlessWebBridge(
         val selector = when (kind) {
             ConnectionKind.CHATGPT_WEB -> "[data-message-author-role=\"user\"], [data-message-author-role=\"assistant\"]"
             ConnectionKind.CLAUDE_WEB -> "[data-testid=\"user-message\"], .font-user-message, .font-claude-response, .font-claude-message"
-            ConnectionKind.REMOTE_WEB -> "[data-testid=\"user-message\"], .font-user-message, .font-claude-response, .font-claude-message, [data-message-author-role], article"
+            ConnectionKind.REMOTE_WEB -> if (url.contains("claude.ai", ignoreCase = true)) {
+                "[data-testid=\"user-message\"], [data-testid=\"assistant-message\"]"
+            } else {
+                "[data-testid=\"user-message\"], .font-user-message, .font-claude-response, .font-claude-message, [data-message-author-role], article"
+            }
             ConnectionKind.GEMINI_WEB -> "user-query, model-response"
             else -> "[data-message-author-role], user-query, model-response, article"
         }
@@ -794,6 +816,14 @@ class HeadlessWebBridge(
                         lastTxt = txt;
                         out.push({ role: isUser ? 'user' : 'assistant', content: txt });
                     }
+                    // 연속된 assistant 블록(도구 실행 사이로 나뉜 한 응답)은 하나로 합침
+                    var merged = [];
+                    for (var q = 0; q < out.length; q++) {
+                        var prev = merged.length ? merged[merged.length - 1] : null;
+                        if (prev && prev.role === 'assistant' && out[q].role === 'assistant') prev.content += '\n\n' + out[q].content;
+                        else merged.push(out[q]);
+                    }
+                    out = merged;
                     return JSON.stringify(out.slice(-40));
                 } catch(e) { return '[]'; }
             })();
@@ -1084,10 +1114,70 @@ class HeadlessWebBridge(
                 try {
 
                 $DEEP_QUERY_JS
-                function parseOpt(e) {
-                    var lines = (e.innerText || '').split('\n').map(function(l) { return l.trim(); }).filter(function(l) { return l; });
-                    if (lines.length < 2 || !/^\d+$/.test(lines[0])) return null;
-                    return { label: lines[1], description: lines.slice(2).join(' '), el: e };
+                function lns(e) { return (e.innerText || '').split('\n').map(function(l) { return l.trim(); }).filter(function(l) { return l; }); }
+                var CTRL = /^(건너뛰기|skip|제출|submit|기타|other)$/i;
+                var CLICKABLE = 'button, [role="button"], [role="radio"], [role="option"], [role="checkbox"], label, input';
+                function mkOpt(row) {
+                    var ls = lns(row);
+                    if (ls.length && /^\d+$/.test(ls[0])) ls = ls.slice(1);
+                    if (!ls.length || CTRL.test(ls[0])) return null;
+                    return { label: ls[0], description: ls.slice(1).join(' '), el: row };
+                }
+                function questionOf(card, firstOpt) {
+                    var all = lns(card);
+                    var q = [];
+                    for (var k = 0; k < all.length; k++) {
+                        if (all[k] === firstOpt.label || /^\d+$/.test(all[k])) break;
+                        q.push(all[k]);
+                    }
+                    return q.join(' ');
+                }
+                // 전략 A: '기타' 행의 형제 행들을 선택지로 사용 (번호가 글자가 아니어도 동작)
+                function strategyA(card) {
+                    var els = Array.prototype.slice.call(card.querySelectorAll('*'));
+                    var other = null;
+                    for (var i = 0; i < els.length; i++) {
+                        var l = lns(els[i]);
+                        if (l.length >= 1 && l.length <= 2 && /^(기타|other)$/i.test(l[0])) other = els[i];
+                    }
+                    if (!other) return null;
+                    var row = other;
+                    while (row.parentElement && row.parentElement !== card && row.parentElement.children.length < 3) row = row.parentElement;
+                    var parent = row.parentElement;
+                    if (!parent) return null;
+                    var sibs = Array.prototype.slice.call(parent.children);
+                    var idx = sibs.indexOf(row);
+                    var before = sibs.slice(0, idx);
+                    var cand = before.filter(function(r) {
+                        var ls = lns(r);
+                        if (!ls.length || /^h[1-6]$/i.test(r.tagName)) return false;
+                        var ptr = false;
+                        try { ptr = window.getComputedStyle(r).cursor === 'pointer'; } catch(e) {}
+                        return ptr || !!r.querySelector(CLICKABLE) || r.matches(CLICKABLE);
+                    });
+                    var opts = cand.map(mkOpt).filter(function(o) { return o; });
+                    if (opts.length >= 2) return { card: card, opts: opts, question: questionOf(card, opts[0]) };
+                    return null;
+                }
+                // 전략 B: 클릭 가능한 요소(버튼/라디오 등) 중 안쪽 것만
+                function strategyB(card) {
+                    var els = Array.prototype.slice.call(card.querySelectorAll(CLICKABLE));
+                    var opts = els.map(mkOpt).filter(function(o) { return o; });
+                    var inner = opts.filter(function(a) { return !opts.some(function(b) { return b !== a && a.el.contains(b.el); }); });
+                    if (inner.length >= 2) return { card: card, opts: inner, question: questionOf(card, inner[0]) };
+                    return null;
+                }
+                // 전략 C: 줄 맨 앞이 숫자인 요소
+                function strategyC(card) {
+                    var els = Array.prototype.slice.call(card.querySelectorAll('div, li, button, label'));
+                    var opts = [];
+                    for (var j = 0; j < els.length; j++) {
+                        var ls = lns(els[j]);
+                        if (ls.length >= 2 && /^\d+$/.test(ls[0])) opts.push({ label: ls[1], description: ls.slice(2).join(' '), el: els[j] });
+                    }
+                    var inner = opts.filter(function(a) { return !opts.some(function(b) { return b !== a && a.el.contains(b.el); }); });
+                    if (inner.length >= 2) return { card: card, opts: inner, question: questionOf(card, inner[0]) };
+                    return null;
                 }
                 function findCard() {
                     var btns = queryAllDeep('button, [role="button"]');
@@ -1101,22 +1191,8 @@ class HeadlessWebBridge(
                     for (var up = 0; up < 8 && el; up++) {
                         el = el.parentElement;
                         if (!el) break;
-                        var cands = Array.prototype.slice.call(el.querySelectorAll('button, [role="button"], [role="option"], [role="radio"], label, li, div'));
-                        var parsed = [];
-                        for (var j = 0; j < cands.length; j++) {
-                            var p = parseOpt(cands[j]);
-                            if (p) parsed.push(p);
-                        }
-                        // 가장 안쪽 요소만 유지 (중첩 중복 제거)
-                        var inner = parsed.filter(function(a) {
-                            return !parsed.some(function(b) { return b !== a && a.el.contains(b.el); });
-                        });
-                        if (inner.length >= 2) {
-                            var all = (el.innerText || '').split('\n').map(function(l) { return l.trim(); }).filter(function(l) { return l; });
-                            var q = [];
-                            for (var k = 0; k < all.length; k++) { if (/^\d+$/.test(all[k])) break; q.push(all[k]); }
-                            return { card: el, opts: inner, question: q.join(' ') };
-                        }
+                        var r = strategyA(el) || strategyC(el) || strategyB(el);
+                        if (r && r.question) return r;
                     }
                     return null;
                 }
@@ -1152,10 +1228,70 @@ class HeadlessWebBridge(
                 try {
 
                 $DEEP_QUERY_JS
-                function parseOpt(e) {
-                    var lines = (e.innerText || '').split('\n').map(function(l) { return l.trim(); }).filter(function(l) { return l; });
-                    if (lines.length < 2 || !/^\d+$/.test(lines[0])) return null;
-                    return { label: lines[1], description: lines.slice(2).join(' '), el: e };
+                function lns(e) { return (e.innerText || '').split('\n').map(function(l) { return l.trim(); }).filter(function(l) { return l; }); }
+                var CTRL = /^(건너뛰기|skip|제출|submit|기타|other)$/i;
+                var CLICKABLE = 'button, [role="button"], [role="radio"], [role="option"], [role="checkbox"], label, input';
+                function mkOpt(row) {
+                    var ls = lns(row);
+                    if (ls.length && /^\d+$/.test(ls[0])) ls = ls.slice(1);
+                    if (!ls.length || CTRL.test(ls[0])) return null;
+                    return { label: ls[0], description: ls.slice(1).join(' '), el: row };
+                }
+                function questionOf(card, firstOpt) {
+                    var all = lns(card);
+                    var q = [];
+                    for (var k = 0; k < all.length; k++) {
+                        if (all[k] === firstOpt.label || /^\d+$/.test(all[k])) break;
+                        q.push(all[k]);
+                    }
+                    return q.join(' ');
+                }
+                // 전략 A: '기타' 행의 형제 행들을 선택지로 사용 (번호가 글자가 아니어도 동작)
+                function strategyA(card) {
+                    var els = Array.prototype.slice.call(card.querySelectorAll('*'));
+                    var other = null;
+                    for (var i = 0; i < els.length; i++) {
+                        var l = lns(els[i]);
+                        if (l.length >= 1 && l.length <= 2 && /^(기타|other)$/i.test(l[0])) other = els[i];
+                    }
+                    if (!other) return null;
+                    var row = other;
+                    while (row.parentElement && row.parentElement !== card && row.parentElement.children.length < 3) row = row.parentElement;
+                    var parent = row.parentElement;
+                    if (!parent) return null;
+                    var sibs = Array.prototype.slice.call(parent.children);
+                    var idx = sibs.indexOf(row);
+                    var before = sibs.slice(0, idx);
+                    var cand = before.filter(function(r) {
+                        var ls = lns(r);
+                        if (!ls.length || /^h[1-6]$/i.test(r.tagName)) return false;
+                        var ptr = false;
+                        try { ptr = window.getComputedStyle(r).cursor === 'pointer'; } catch(e) {}
+                        return ptr || !!r.querySelector(CLICKABLE) || r.matches(CLICKABLE);
+                    });
+                    var opts = cand.map(mkOpt).filter(function(o) { return o; });
+                    if (opts.length >= 2) return { card: card, opts: opts, question: questionOf(card, opts[0]) };
+                    return null;
+                }
+                // 전략 B: 클릭 가능한 요소(버튼/라디오 등) 중 안쪽 것만
+                function strategyB(card) {
+                    var els = Array.prototype.slice.call(card.querySelectorAll(CLICKABLE));
+                    var opts = els.map(mkOpt).filter(function(o) { return o; });
+                    var inner = opts.filter(function(a) { return !opts.some(function(b) { return b !== a && a.el.contains(b.el); }); });
+                    if (inner.length >= 2) return { card: card, opts: inner, question: questionOf(card, inner[0]) };
+                    return null;
+                }
+                // 전략 C: 줄 맨 앞이 숫자인 요소
+                function strategyC(card) {
+                    var els = Array.prototype.slice.call(card.querySelectorAll('div, li, button, label'));
+                    var opts = [];
+                    for (var j = 0; j < els.length; j++) {
+                        var ls = lns(els[j]);
+                        if (ls.length >= 2 && /^\d+$/.test(ls[0])) opts.push({ label: ls[1], description: ls.slice(2).join(' '), el: els[j] });
+                    }
+                    var inner = opts.filter(function(a) { return !opts.some(function(b) { return b !== a && a.el.contains(b.el); }); });
+                    if (inner.length >= 2) return { card: card, opts: inner, question: questionOf(card, inner[0]) };
+                    return null;
                 }
                 function findCard() {
                     var btns = queryAllDeep('button, [role="button"]');
@@ -1169,22 +1305,8 @@ class HeadlessWebBridge(
                     for (var up = 0; up < 8 && el; up++) {
                         el = el.parentElement;
                         if (!el) break;
-                        var cands = Array.prototype.slice.call(el.querySelectorAll('button, [role="button"], [role="option"], [role="radio"], label, li, div'));
-                        var parsed = [];
-                        for (var j = 0; j < cands.length; j++) {
-                            var p = parseOpt(cands[j]);
-                            if (p) parsed.push(p);
-                        }
-                        // 가장 안쪽 요소만 유지 (중첩 중복 제거)
-                        var inner = parsed.filter(function(a) {
-                            return !parsed.some(function(b) { return b !== a && a.el.contains(b.el); });
-                        });
-                        if (inner.length >= 2) {
-                            var all = (el.innerText || '').split('\n').map(function(l) { return l.trim(); }).filter(function(l) { return l; });
-                            var q = [];
-                            for (var k = 0; k < all.length; k++) { if (/^\d+$/.test(all[k])) break; q.push(all[k]); }
-                            return { card: el, opts: inner, question: q.join(' ') };
-                        }
+                        var r = strategyA(el) || strategyC(el) || strategyB(el);
+                        if (r && r.question) return r;
                     }
                     return null;
                 }
@@ -1194,7 +1316,9 @@ class HeadlessWebBridge(
                     var idx = $optionIndex;
                     var text = $quotedText;
                     if (idx >= 0 && idx < c.opts.length && !text) {
-                        c.opts[idx].el.click();
+                        var target = c.opts[idx].el;
+                        var clickEl = target.matches(CLICKABLE) ? target : (target.querySelector(CLICKABLE) || target);
+                        clickEl.click();
                         return 'clicked';
                     }
                     if (text) {
@@ -1468,6 +1592,22 @@ class HeadlessWebBridge(
                     }
                 }
 
+                // claude.ai/code: 실제 화면 구조(진단 로그 기준) - 마지막 사용자 메시지 이후의 assistant-message 블록들을 이어 붙여 응답으로 사용
+                var isCodeWeb = (kind === 'REMOTE_WEB' && (location.hostname || '').indexOf('claude.ai') >= 0);
+                function getCodeReply() {
+                    var users = queryAllDeep('[data-testid="user-message"]');
+                    var assts = queryAllDeep('[data-testid="assistant-message"]');
+                    var lastUser = users.length ? users[users.length - 1] : null;
+                    var parts = [];
+                    for (var ai = 0; ai < assts.length; ai++) {
+                        var a = assts[ai];
+                        if (lastUser && !(lastUser.compareDocumentPosition(a) & Node.DOCUMENT_POSITION_FOLLOWING)) continue;
+                        var t = (a.innerText || '').trim();
+                        if (t) parts.push(t);
+                    }
+                    return { count: assts.length, text: parts.join('\n\n') };
+                }
+
                 function findAnyEditable() {
                     var el = findFirst(inputSelectors);
                     if (el) return el;
@@ -1508,6 +1648,7 @@ class HeadlessWebBridge(
 
                 function proceedWithInput(inputEl) {
                     function getLatestMsgText() {
+                        if (isCodeWeb) return getCodeReply();
                         for (var i = 0; i < msgSelectors.length; i++) {
                             try {
                                 var nodes = queryAllDeep(msgSelectors[i]);
@@ -1591,13 +1732,21 @@ class HeadlessWebBridge(
                         var idleTicks = 0;
                         var lastBodyLen = beforeBodyLen;
                         // 일반 채팅(ChatGPT/Claude/Gemini)은 셀렉터만 사용, 그 외(Claude Code 웹 등)는 화면 텍스트 증가분도 보조로 사용
-                        var useBodyFallback = (kind !== 'CHATGPT_WEB' && kind !== 'CLAUDE_WEB' && kind !== 'GEMINI_WEB');
+                        var useBodyFallback = (!isCodeWeb && kind !== 'CHATGPT_WEB' && kind !== 'CLAUDE_WEB' && kind !== 'GEMINI_WEB');
+                        var silentWorking = 0;
                         var timer = setInterval(function() {
                             totalTicks++;
                             var bodyNow = (document.body && document.body.innerText) ? document.body.innerText.length : 0;
                             var activity = bodyNow !== lastBodyLen;
                             lastBodyLen = bodyNow;
                             var streamingNow = !!document.querySelector('button[aria-label*="Stop"], button[aria-label*="중지"], button[data-testid="stop-button"], [data-is-streaming="true"]');
+                            if (!streamingNow && isCodeWeb) {
+                                // Claude Code 웹의 '작업 중' 줄에 글자가 있으면 생성 중 (화면 변화 없이 2분이 지나면 무시)
+                                var wl = document.querySelector('[data-testid="code-working-line"]');
+                                var working = !!(wl && (wl.innerText || '').trim());
+                                if (working && !activity) silentWorking++; else silentWorking = 0;
+                                streamingNow = working && silentWorking < 240;
+                            }
                             if (activity || streamingNow) idleTicks = 0; else idleTicks++;
                             // 화면이 계속 변하거나 생성 중이면 오래 걸려도 계속 기다림. 3분간 변화가 없거나 90분이 넘으면 종료
                             if (totalTicks > 10800 || idleTicks > 360) {

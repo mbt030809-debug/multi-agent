@@ -179,6 +179,8 @@ fun MainScreen(
     val sendingMap = remember { mutableStateMapOf<String, Boolean>() }
     val webQuestionMap = remember { mutableStateMapOf<String, String>() }
     val webAppliedSettings = remember { mutableMapOf<String, String>() }
+    // 웹 질문 카드가 떠 있었을 때의 카드 정보 (응답 텍스트에서 카드 글자를 걸러내기 위함)
+    val webCardMemory = remember { mutableMapOf<String, String>() }
     val activeSendingCount = sendingMap.values.count { it }
     LaunchedEffect(activeSendingCount) {
         if (activeSendingCount > 0) {
@@ -524,6 +526,9 @@ fun MainScreen(
                     }
 
                     var finalAnswer = ""
+                    // 메인 에이전트가 각 라운드에서 한 말(계획/위임 안내)을 대답창에 계속 보여주기 위한 누적 기록
+                    val mainParts = mutableListOf<String>()
+                    fun liveText(extra: String): String = (mainParts + extra).filter { it.isNotBlank() }.joinToString("\n\n")
                     var modelWarning = ""
                     var finalError: String? = null
                     var totalInTok = 0L
@@ -531,18 +536,61 @@ fun MainScreen(
 
                     for (round in 1..(maxRounds + 1)) {
                         val (mainText, mainErr) = if (effectiveMainConn.usesHiddenWebBridge()) {
-                            val (triple, err) = headlessWebBridge.sendPromptSuspend(
-                                key = com.mbta.app.model.webSessionKey(effectiveMainConn.id, session.id),
-                                kind = effectiveMainConn.kind,
-                                url = effectiveMainConn.endpointUrl,
-                                prompt = currentPrompt
-                            )
+                            val orchWebKey = com.mbta.app.model.webSessionKey(effectiveMainConn.id, session.id)
+                            // 메인이 웹 질문 카드를 띄우고 답을 기다리는 동안 앱에도 같은 질문창을 보여줌
+                            val orchAskPoll = if (effectiveMainConn.kind == ConnectionKind.REMOTE_WEB) {
+                                scope.launch {
+                                    kotlinx.coroutines.delay(4000L)
+                                    while (sendingMap[session.id] == true) {
+                                        headlessWebBridge.readWebQuestion(orchWebKey) { json ->
+                                            if (json != null) webCardMemory[session.id] = json
+                                            if (json != webQuestionMap[session.id]) {
+                                                if (json == null) webQuestionMap.remove(session.id) else webQuestionMap[session.id] = json
+                                                val suffix = json?.let { "\n\n<<ASK>>$it<</ASK>>" } ?: ""
+                                                sessions = sessions.map { sx ->
+                                                    if (sx.id == session.id) {
+                                                        sx.copy(messages = sx.messages.map { m ->
+                                                            if (m.id == placeholderId) m.copy(content = stripAskMarker(m.content) + suffix) else m
+                                                        })
+                                                    } else sx
+                                                }
+                                            }
+                                        }
+                                        kotlinx.coroutines.delay(2500L)
+                                    }
+                                }
+                            } else null
+                            val (triple, err) = try {
+                                headlessWebBridge.sendPromptSuspend(
+                                    key = orchWebKey,
+                                    kind = effectiveMainConn.kind,
+                                    url = effectiveMainConn.endpointUrl,
+                                    prompt = currentPrompt,
+                                    onChunk = { partial ->
+                                        // 메인이 쓰는 중인 답변을 실시간으로 대답창에 표시
+                                        val askSuffix = webQuestionMap[session.id]?.let { "\n\n<<ASK>>$it<</ASK>>" } ?: ""
+                                        val shown = liveText(SubagentProtocol.stripBlock(removeCardLines(partial, webCardMemory[session.id]))).ifBlank { "⏳ 메인 오케스트레이터 분석 중..." }
+                                        setPlaceholder(shown + askSuffix)
+                                    }
+                                )
+                            } finally {
+                                orchAskPoll?.cancel()
+                                if (webQuestionMap.remove(session.id) != null) {
+                                    sessions = sessions.map { sx ->
+                                        if (sx.id == session.id) {
+                                            sx.copy(messages = sx.messages.map { m ->
+                                                if (m.id == placeholderId) m.copy(content = stripAskMarker(m.content)) else m
+                                            })
+                                        } else sx
+                                    }
+                                }
+                            }
                             totalInTok += triple.second
                             totalOutTok += triple.third
                             if (triple.second > 0L || triple.third > 0L) {
                                 onRecordTokens(effectiveMainConn.id, effectiveMainConn.kind, triple.second, triple.third)
                             }
-                            triple.first to err
+                            removeCardLines(triple.first, webCardMemory.remove(session.id)) to err
                         } else {
                             val isMainBridge = effectiveMainConn.kind == ConnectionKind.REMOTE_CONTROL || effectiveMainConn.kind == ConnectionKind.TERMUX_CLI
                             val mainPollJob = if (isMainBridge) {
@@ -643,9 +691,12 @@ fun MainScreen(
                             if (s.id == session.id) s.copy(subagentRuns = s.subagentRuns + runs) else s
                         }
                         store.saveSessions(sessions)
-                        val mainPlanNote = SubagentProtocol.stripBlock(mainText).take(280)
+                        // 메인이 한 말(계획)과 위임 내용을 대답창 기록에 남김
+                        val mainPlanText = SubagentProtocol.stripBlock(mainText)
+                        if (mainPlanText.isNotBlank()) mainParts.add(mainPlanText)
+                        mainParts.add("▶ 서브에이전트 ${requests.size}개 위임: " + requests.indices.joinToString(", ") { i -> "${requests[i].role}(${resolvedModels[i].ifBlank { subConn.name }})" })
                         val subStatusHeader = "Orch · 라운드 $round/$maxRounds · 서브에이전트 ${runs.size}개 실행 중 (${runs.joinToString(", ") { it.label }})..."
-                        setPlaceholder(if (mainPlanNote.isNotBlank()) "$mainPlanNote\n\n$subStatusHeader" else subStatusHeader)
+                        setPlaceholder(liveText("").let { if (it.isBlank()) subStatusHeader else "$it\n\n$subStatusHeader" })
 
                         val latestSess = sessions.find { it.id == session.id } ?: session
                         // 같은 파일을 쓰는 작업은 배치를 나눠 순차 실행, 배치 안에서는 병렬(최대 maxParallel)
@@ -697,7 +748,7 @@ fun MainScreen(
                     val finalMsg = ChatMessage(
                         id = placeholderId,
                         role = MessageRole.ASSISTANT,
-                        content = finalError ?: (finalAnswer.ifBlank { "(응답 없음)" } + modelWarning),
+                        content = finalError ?: ((mainParts + finalAnswer.ifBlank { "(응답 없음)" }).filter { it.isNotBlank() }.joinToString("\n\n") + modelWarning),
                         inputTokens = totalInTok,
                         outputTokens = totalOutTok,
                         agentName = "${conn.labelIn(connections)} (오케스트레이터)",
@@ -793,6 +844,7 @@ fun MainScreen(
                     kotlinx.coroutines.delay(4000L)
                     while (sendingMap[askSid] == true) {
                         headlessWebBridge.readWebQuestion(askKey) { json ->
+                            if (json != null) webCardMemory[askSid] = json
                             if (json != webQuestionMap[askSid]) {
                                 if (json == null) webQuestionMap.remove(askSid) else webQuestionMap[askSid] = json
                                 val suffix = json?.let { "\n\n<<ASK>>$it<</ASK>>" } ?: ""
@@ -812,6 +864,7 @@ fun MainScreen(
             }
             // 앱에서 모델/effort를 바꾼 뒤의 첫 명령은 바뀐 설정으로 나가도록, 전송 직전에 웹 화면 설정을 맞춤
             val webSendKey = com.mbta.app.model.webSessionKey(targetConn.id, session.id)
+            webCardMemory.remove(session.id)
             val wantModel = session.selectedModel.trim()
             val wantEffort = session.selectedEffort.trim()
             val appliedSig = webAppliedSettings[webSendKey]
@@ -835,15 +888,17 @@ fun MainScreen(
                 conversationUrl = session.webConversationUrl,
                 onChunk = { partial ->
                     val askSuffix = webQuestionMap[session.id]?.let { "\n\n<<ASK>>$it<</ASK>>" } ?: ""
+                    val partialClean = removeCardLines(partial, webCardMemory[session.id])
                     sessions = sessions.map { s ->
                         if (s.id == session.id) {
                             s.copy(messages = s.messages.map { m ->
-                                if (m.id == placeholderId) m.copy(content = partial + askSuffix) else m
+                                if (m.id == placeholderId) m.copy(content = partialClean + askSuffix) else m
                             })
                         } else s
                     }
                 },
-                onDone = { finalText, inTok, outTok ->
+                onDone = { finalTextRaw, inTok, outTok ->
+                    val finalText = removeCardLines(finalTextRaw, webCardMemory.remove(session.id))
                     val curUrl = headlessWebBridge.currentUrl(com.mbta.app.model.webSessionKey(targetConn.id, session.id)).orEmpty()
                     val newConvUrl = if (isSavableConversationUrl(curUrl, targetConn.endpointUrl) && curUrl != session.webConversationUrl) {
                         curUrl
@@ -1326,11 +1381,11 @@ fun MainScreen(
             if (fetched.isNotEmpty() && sendingMap[sess.id] != true) {
                 val latestSess = sessions.find { it.id == sess.id }
                 val curNonSys = latestSess?.messages?.filter { it.role != MessageRole.SYSTEM }.orEmpty()
-                val hasNew = fetched.size > curNonSys.size ||
-                    fetched.last().content != curNonSys.lastOrNull()?.content ||
-                    fetched.last().role != curNonSys.lastOrNull()?.role
-                if (hasNew) {
-                    sessions = sessions.map { if (it.id == sess.id) it.copy(messages = fetched) else it }
+                // 웹에서 긁어온 목록이 앱에 저장된 대화보다 "더 많을 때만" 뒤쪽 새 메시지를 덧붙임.
+                // (기존에는 통째로 덮어써서, 긁기가 일부만 가져오면 앱의 최신 대답이 사라질 수 있었음)
+                if (latestSess != null && fetched.size > curNonSys.size) {
+                    val toAppend = fetched.drop(curNonSys.size)
+                    sessions = sessions.map { if (it.id == sess.id) it.copy(messages = it.messages + toAppend) else it }
                     store.saveSessions(sessions)
                 }
             }
