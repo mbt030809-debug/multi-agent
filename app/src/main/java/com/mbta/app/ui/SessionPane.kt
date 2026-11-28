@@ -210,7 +210,7 @@ private fun makeAttachmentThumb(context: android.content.Context, bytes: ByteArr
 private fun MessageAttachmentStrip(atts: List<MsgAttachment>) {
     var zoomPath by remember { mutableStateOf<String?>(null) }
     Column(
-        modifier = Modifier.padding(top = 4.dp),
+        modifier = Modifier.padding(bottom = 6.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
         atts.forEach { a ->
@@ -2254,6 +2254,8 @@ private fun ChatBubble(
                     Column(modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp)) {
                         val msgAtts = remember(message.content) { parseAttMarker(message.content) }
                         val shownText = remember(message.content) { stripAttMarker(message.content) }
+                        // 첨부 파일/이미지는 위에, 내 명령은 아래에 배치
+                        if (msgAtts.isNotEmpty()) MessageAttachmentStrip(msgAtts)
                         SelectionContainer {
                             Text(
                                 text = if (isCli) "$ $shownText" else shownText,
@@ -2262,7 +2264,6 @@ private fun ChatBubble(
                                 color = MaterialTheme.colorScheme.onPrimaryContainer
                             )
                         }
-                        if (msgAtts.isNotEmpty()) MessageAttachmentStrip(msgAtts)
                         Row(
                             modifier = Modifier.padding(top = 4.dp),
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
