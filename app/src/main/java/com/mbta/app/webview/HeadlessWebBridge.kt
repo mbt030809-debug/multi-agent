@@ -122,16 +122,16 @@ class HeadlessWebBridge(
     }
 
     /** 웹 화면에서 긁어온 텍스트의 아이콘 폰트 글리프(사설 영역 문자)와 낱자 한자 줄을 제거 */
-    private fun cleanWebText(raw: String): String {
+    private fun cleanWebText(raw: String, final: Boolean = true): String {
         if (raw.startsWith("__")) return raw
-        return WebTextCleaner.clean(raw)
+        return WebTextCleaner.clean(raw, final)
     }
 
     private inner class JsBridge {
         @JavascriptInterface
         fun onChunk(requestId: String, text: String) {
             mainHandler.post {
-                pending[requestId]?.onChunk?.invoke(cleanWebText(text))
+                pending[requestId]?.onChunk?.invoke(cleanWebText(text, final = false))
             }
         }
 
@@ -1754,7 +1754,7 @@ class HeadlessWebBridge(
                             }
                         }
                     }
-                    return { count: rows.length, text: parts.join('\n\n') };
+                    return { count: rows.length, text: parts.join('\n') };
                 }
                 function getCodeReply() {
                     var viaRows = getCodeRowsReply();
@@ -1862,29 +1862,33 @@ class HeadlessWebBridge(
                     }
 
                     setTimeout(function() {
-                        var sendBtn = findFirst([
-                            'button[data-testid="send-button"]',
-                            'button[aria-label*="send" i]',
-                            'button[aria-label*="submit" i]',
-                            'button[aria-label*="run" i]',
-                            'button[aria-label*="전송"]',
-                            'button[aria-label*="보내기"]',
-                            'button.send-button',
-                            'button[type="submit"]'
-                        ]);
-                        if (!sendBtn) {
-                            var scopeEl = (inputEl.closest && inputEl.closest('form')) || (inputEl.parentElement && inputEl.parentElement.parentElement && inputEl.parentElement.parentElement.parentElement);
-                            if (scopeEl && scopeEl.querySelectorAll) {
-                                var btns = scopeEl.querySelectorAll('button');
-                                for (var b = btns.length - 1; b >= 0; b--) {
-                                    var btn = btns[b];
-                                    if (!btn || btn.disabled || !isVisible(btn)) continue;
-                                    var bLabel = ((btn.getAttribute('aria-label') || '') + ' ' + (btn.innerText || '')).toLowerCase();
-                                    if (/attach|upload|mic|voice|record|plus|add|menu|model|gemini|claude/.test(bLabel)) continue;
-                                    sendBtn = btn;
-                                    break;
+                        function findSendBtn() {
+                            var sb = findFirst([
+                                'button[data-testid="send-button"]',
+                                'button.send-button',
+                                'button[aria-label*="send" i]',
+                                'button[aria-label*="submit" i]',
+                                'button[aria-label*="run" i]',
+                                'button[aria-label*="전송"]',
+                                'button[aria-label*="보내기"]',
+                                'button[type="submit"]'
+                            ]);
+                            if (sb && /mic|voice|마이크|음성/i.test((sb.getAttribute('aria-label') || '') + ' ' + (sb.innerText || ''))) sb = null;
+                            if (!sb) {
+                                var scopeEl = (inputEl.closest && inputEl.closest('form')) || (inputEl.parentElement && inputEl.parentElement.parentElement && inputEl.parentElement.parentElement.parentElement);
+                                if (scopeEl && scopeEl.querySelectorAll) {
+                                    var btns = scopeEl.querySelectorAll('button');
+                                    for (var b = btns.length - 1; b >= 0; b--) {
+                                        var btn = btns[b];
+                                        if (!btn || btn.disabled || !isVisible(btn)) continue;
+                                        var bLabel = ((btn.getAttribute('aria-label') || '') + ' ' + (btn.innerText || '')).toLowerCase();
+                                        if (/attach|upload|mic|voice|record|plus|add|menu|model|gemini|claude|마이크|음성|첨부|업로드|추가|도구|모델/.test(bLabel)) continue;
+                                        sb = btn;
+                                        break;
+                                    }
                                 }
                             }
+                            return sb;
                         }
                         function fireEnter(el) {
                             var opts = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true };
@@ -1892,17 +1896,24 @@ class HeadlessWebBridge(
                             el.dispatchEvent(new KeyboardEvent('keypress', opts));
                             el.dispatchEvent(new KeyboardEvent('keyup', opts));
                         }
-                        if (sendBtn && !sendBtn.disabled) {
-                            sendBtn.click();
-                            setTimeout(function() {
-                                var rem = (inputEl.value !== undefined ? inputEl.value : inputEl.innerText) || '';
-                                if (rem.trim().length > 0) {
-                                    fireEnter(inputEl);
-                                }
-                            }, 350);
-                        } else {
-                            fireEnter(inputEl);
+                        function inputRemaining() {
+                            return ((inputEl.value !== undefined ? inputEl.value : inputEl.innerText) || '').trim().length > 0;
                         }
+                        // 프레임워크가 전송 버튼을 활성화할 때까지 기다리며 여러 번 시도 (Gemini 등은 입력 반영이 늦음)
+                        var sendAttempts = 0;
+                        function trySend() {
+                            sendAttempts++;
+                            var sb = findSendBtn();
+                            if (sb && !sb.disabled && sb.getAttribute('aria-disabled') !== 'true') {
+                                try { sb.click(); } catch(e) {}
+                            } else if (sendAttempts >= 3) {
+                                fireEnter(inputEl);
+                            }
+                            setTimeout(function() {
+                                if (sendAttempts < 8 && inputRemaining()) trySend();
+                            }, 500);
+                        }
+                        trySend();
 
                         var lastText = '';
                         var stableTicks = 0;
@@ -2064,15 +2075,21 @@ class HeadlessWebBridge(
                 var isPre = (tag === 'pre');
                 var block = st ? (st.display !== 'inline' && st.display !== 'inline-block' && st.display !== 'contents')
                                : /^(div|p|pre|li|ul|ol|h[1-6]|table|tr|blockquote)$/.test(tag);
-                if (isPre) out.push('\n```\n'); else if (block) out.push('\n');
+                var hardBlock = /^(p|h[1-6]|ul|ol|blockquote|table)$/.test(tag);
+                var BRK = hardBlock ? '\u0002' : '\u0001';
+                if (isPre) out.push('\n```\n'); else if (block) out.push(BRK);
                 var kids = node.shadowRoot ? node.shadowRoot.childNodes : node.childNodes;
                 for (var i = 0; i < kids.length; i++) rowWalk(kids[i], out, inPre || isPre);
-                if (isPre) out.push('\n```\n'); else if (block) out.push('\n');
+                if (isPre) out.push('\n```\n'); else if (block) out.push(BRK);
             }
             function rowText(row) {
                 var out = [];
                 rowWalk(row, out, false);
+                // 블록 경계: 중첩 div가 빈 줄을 만들지 않도록 연속 경계는 하나로 합침 (문단/제목/목록만 빈 줄 유지)
                 var t = out.join('')
+                    .replace(/([\u0001\u0002])[ \t]+/g, '$1').replace(/[ \t]+([\u0001\u0002])/g, '$1')
+                    .replace(/[\u0001\u0002]*\u0002[\u0001\u0002]*/g, '\n\n')
+                    .replace(/\u0001+/g, '\n')
                     .replace(/[ \t]+\n/g, '\n')
                     .replace(/\n[ \t]+/g, '\n')
                     .replace(/\n{3,}/g, '\n\n')
