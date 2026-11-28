@@ -203,6 +203,16 @@ fun MainScreen(
                 if (ok) {
                     loginStatusMap[conn.id] = true
                     persistConfirmedLogins()
+                    if (conn.accountName.isBlank()) {
+                        headlessWebBridge.fetchWebAccountName(conn.id, conn.kind, conn.endpointUrl) { acct ->
+                            if (acct.isNotBlank()) {
+                                connections = connections.map {
+                                    if (it.id == conn.id && it.accountName.isBlank()) it.copy(accountName = acct) else it
+                                }
+                                store.saveConnections(connections)
+                            }
+                        }
+                    }
                 }
             }
         }
