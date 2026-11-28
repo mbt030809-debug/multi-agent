@@ -776,7 +776,11 @@ class HeadlessWebBridge(
         val selector = when (kind) {
             ConnectionKind.CHATGPT_WEB -> "[data-message-author-role=\"user\"], [data-message-author-role=\"assistant\"]"
             ConnectionKind.CLAUDE_WEB -> "[data-testid=\"user-message\"], .font-user-message, .font-claude-response, .font-claude-message"
-            ConnectionKind.REMOTE_WEB -> "[data-testid=\"user-message\"], .font-user-message, .font-claude-response, .font-claude-message, [data-message-author-role], article"
+            ConnectionKind.REMOTE_WEB -> if (url.contains("claude.ai", ignoreCase = true)) {
+                "[data-testid=\"user-message\"], [data-testid=\"assistant-message\"]"
+            } else {
+                "[data-testid=\"user-message\"], .font-user-message, .font-claude-response, .font-claude-message, [data-message-author-role], article"
+            }
             ConnectionKind.GEMINI_WEB -> "user-query, model-response"
             else -> "[data-message-author-role], user-query, model-response, article"
         }
@@ -808,6 +812,14 @@ class HeadlessWebBridge(
                         lastTxt = txt;
                         out.push({ role: isUser ? 'user' : 'assistant', content: txt });
                     }
+                    // 연속된 assistant 블록(도구 실행 사이로 나뉜 한 응답)은 하나로 합침
+                    var merged = [];
+                    for (var q = 0; q < out.length; q++) {
+                        var prev = merged.length ? merged[merged.length - 1] : null;
+                        if (prev && prev.role === 'assistant' && out[q].role === 'assistant') prev.content += '\n\n' + out[q].content;
+                        else merged.push(out[q]);
+                    }
+                    out = merged;
                     return JSON.stringify(out.slice(-40));
                 } catch(e) { return '[]'; }
             })();
@@ -1576,6 +1588,22 @@ class HeadlessWebBridge(
                     }
                 }
 
+                // claude.ai/code: 실제 화면 구조(진단 로그 기준) - 마지막 사용자 메시지 이후의 assistant-message 블록들을 이어 붙여 응답으로 사용
+                var isCodeWeb = (kind === 'REMOTE_WEB' && (location.hostname || '').indexOf('claude.ai') >= 0);
+                function getCodeReply() {
+                    var users = queryAllDeep('[data-testid="user-message"]');
+                    var assts = queryAllDeep('[data-testid="assistant-message"]');
+                    var lastUser = users.length ? users[users.length - 1] : null;
+                    var parts = [];
+                    for (var ai = 0; ai < assts.length; ai++) {
+                        var a = assts[ai];
+                        if (lastUser && !(lastUser.compareDocumentPosition(a) & Node.DOCUMENT_POSITION_FOLLOWING)) continue;
+                        var t = (a.innerText || '').trim();
+                        if (t) parts.push(t);
+                    }
+                    return { count: assts.length, text: parts.join('\n\n') };
+                }
+
                 function findAnyEditable() {
                     var el = findFirst(inputSelectors);
                     if (el) return el;
@@ -1616,6 +1644,7 @@ class HeadlessWebBridge(
 
                 function proceedWithInput(inputEl) {
                     function getLatestMsgText() {
+                        if (isCodeWeb) return getCodeReply();
                         for (var i = 0; i < msgSelectors.length; i++) {
                             try {
                                 var nodes = queryAllDeep(msgSelectors[i]);
@@ -1699,13 +1728,21 @@ class HeadlessWebBridge(
                         var idleTicks = 0;
                         var lastBodyLen = beforeBodyLen;
                         // 일반 채팅(ChatGPT/Claude/Gemini)은 셀렉터만 사용, 그 외(Claude Code 웹 등)는 화면 텍스트 증가분도 보조로 사용
-                        var useBodyFallback = (kind !== 'CHATGPT_WEB' && kind !== 'CLAUDE_WEB' && kind !== 'GEMINI_WEB');
+                        var useBodyFallback = (!isCodeWeb && kind !== 'CHATGPT_WEB' && kind !== 'CLAUDE_WEB' && kind !== 'GEMINI_WEB');
+                        var silentWorking = 0;
                         var timer = setInterval(function() {
                             totalTicks++;
                             var bodyNow = (document.body && document.body.innerText) ? document.body.innerText.length : 0;
                             var activity = bodyNow !== lastBodyLen;
                             lastBodyLen = bodyNow;
                             var streamingNow = !!document.querySelector('button[aria-label*="Stop"], button[aria-label*="중지"], button[data-testid="stop-button"], [data-is-streaming="true"]');
+                            if (!streamingNow && isCodeWeb) {
+                                // Claude Code 웹의 '작업 중' 줄에 글자가 있으면 생성 중 (화면 변화 없이 2분이 지나면 무시)
+                                var wl = document.querySelector('[data-testid="code-working-line"]');
+                                var working = !!(wl && (wl.innerText || '').trim());
+                                if (working && !activity) silentWorking++; else silentWorking = 0;
+                                streamingNow = working && silentWorking < 240;
+                            }
                             if (activity || streamingNow) idleTicks = 0; else idleTicks++;
                             // 화면이 계속 변하거나 생성 중이면 오래 걸려도 계속 기다림. 3분간 변화가 없거나 90분이 넘으면 종료
                             if (totalTicks > 10800 || idleTicks > 360) {
