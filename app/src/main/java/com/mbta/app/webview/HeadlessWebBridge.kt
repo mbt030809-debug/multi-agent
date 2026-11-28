@@ -1972,7 +1972,9 @@ class HeadlessWebBridge(
 
                     setTimeout(function() {
                         function findSendBtn() {
-                            var sb = findFirst([
+                            var sendSelectors = [
+                                'button[aria-label="메시지 보내기"]',
+                                'button[aria-label="Send message"]',
                                 'button[data-testid="send-button"]',
                                 'button.send-button',
                                 'button[aria-label*="send" i]',
@@ -1981,8 +1983,24 @@ class HeadlessWebBridge(
                                 'button[aria-label*="전송"]',
                                 'button[aria-label*="보내기"]',
                                 'button[type="submit"]'
-                            ]);
-                            if (sb && /mic|voice|마이크|음성/i.test((sb.getAttribute('aria-label') || '') + ' ' + (sb.innerText || ''))) sb = null;
+                            ];
+                            var excludeRe = /내보내기|공유|export|share/i;
+                            var sb = null;
+                            for (var si = 0; si < sendSelectors.length && !sb; si++) {
+                                var sEls = [];
+                                try { sEls = queryAllDeep(sendSelectors[si]); } catch(e) { sEls = []; }
+                                for (var se = 0; se < sEls.length; se++) {
+                                    var cand = sEls[se];
+                                    if (!cand || !isVisible(cand)) continue;
+                                    var candLabel = (cand.getAttribute('aria-label') || '') + ' ' + (cand.innerText || '');
+                                    if (/mic|voice|마이크|음성/i.test(candLabel)) continue;
+                                    if (excludeRe.test(candLabel)) continue;
+                                    var cr = cand.getBoundingClientRect();
+                                    if (!(cr.bottom > 0 && cr.top < innerHeight)) continue;
+                                    sb = cand;
+                                    break;
+                                }
+                            }
                             if (!sb) {
                                 var scopeEl = (inputEl.closest && inputEl.closest('form')) || (inputEl.parentElement && inputEl.parentElement.parentElement && inputEl.parentElement.parentElement.parentElement);
                                 if (scopeEl && scopeEl.querySelectorAll) {
@@ -1991,7 +2009,7 @@ class HeadlessWebBridge(
                                         var btn = btns[b];
                                         if (!btn || btn.disabled || !isVisible(btn)) continue;
                                         var bLabel = ((btn.getAttribute('aria-label') || '') + ' ' + (btn.innerText || '')).toLowerCase();
-                                        if (/attach|upload|mic|voice|record|plus|add|menu|model|gemini|claude|마이크|음성|첨부|업로드|추가|도구|모델/.test(bLabel)) continue;
+                                        if (/attach|upload|mic|voice|record|plus|add|menu|model|gemini|claude|마이크|음성|첨부|업로드|추가|도구|모델|내보내기|공유|export|share/.test(bLabel)) continue;
                                         sb = btn;
                                         break;
                                     }
