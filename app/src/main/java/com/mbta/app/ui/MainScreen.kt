@@ -14,6 +14,8 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.displayCutoutPadding
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -33,6 +35,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
@@ -1298,6 +1301,8 @@ fun MainScreen(
         if (next == SplitMode.SINGLE) focusedPane = 0
     }
 
+    val isLandscape = LocalConfiguration.current.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
+
     val activeWebSessions = listOfNotNull(primarySession, secondarySession).distinctBy { it.id }.mapNotNull { sess ->
         val conn = enabledConnections.find { it.id == sess.connectionId }
         if (conn != null && conn.usesHiddenWebBridge()) {
@@ -1420,7 +1425,7 @@ fun MainScreen(
             } else {
                 Scaffold(
         topBar = {
-            Column(modifier = Modifier.background(MaterialTheme.colorScheme.surface)) {
+            if (!isLandscape) Column(modifier = Modifier.background(MaterialTheme.colorScheme.surface)) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1632,10 +1637,63 @@ fun MainScreen(
             }
         }
     ) { innerPadding ->
-        Box(
+        Row(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
+                .then(if (isLandscape) Modifier.statusBarsPadding().displayCutoutPadding() else Modifier)
+        ) {
+        if (isLandscape) {
+            LandscapeSidebar(
+                projects = projects,
+                activeProject = activeProject,
+                sessions = validProjectSessions,
+                enabledConnections = enabledConnections,
+                primarySession = primarySession,
+                secondarySession = secondarySession,
+                splitMode = splitMode,
+                sendingMap = sendingMap,
+                unreadDoneSessions = unreadDoneSessions,
+                totalTokens = totalTokensAll,
+                onSelectProject = { proj ->
+                    activeProjectId = proj.id
+                    store.saveActiveProjectId(proj.id)
+                    val firstSess = sessions.firstOrNull { it.projectId == proj.id }
+                    if (firstSess != null) {
+                        activeSessionId = firstSess.id
+                        store.saveActiveSessionId(firstSess.id)
+                    }
+                },
+                onNewProject = { showNewProjectDialog = true },
+                onEditProject = { editingProject = activeProject },
+                onSearch = { showGlobalSearch = true },
+                onTokens = { showTokenDashboard = true },
+                onGit = { showGitDialog = true },
+                onFanOut = { showFanOutDialog = true },
+                onCycleSplit = { cycleSplitMode() },
+                onSettings = { showSettings = true },
+                onSelectSession = { sess ->
+                    unreadDoneSessions.remove(sess.id)
+                    if (splitMode == SplitMode.SINGLE || focusedPane == 0) {
+                        activeSessionId = sess.id
+                        store.saveActiveSessionId(sess.id)
+                    } else {
+                        secondarySessionId = sess.id
+                        store.saveSecondarySessionId(sess.id)
+                    }
+                    refreshSessionFromRemote(sess)
+                },
+                onDeleteSession = { sessionPendingDelete = it },
+                onNewSession = { showNewSessionDialog = true },
+                onSelectModel = { sess, conn, m -> selectModelForSession(sess, conn, m) },
+                onSelectEffort = { sess, conn, ef -> selectEffortForSession(sess, conn, ef) }
+            )
+            VerticalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f))
+        }
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxHeight()
         ) {
             if (primarySession == null) {
                 Box(
@@ -1689,6 +1747,7 @@ fun MainScreen(
             when (splitMode) {
                 SplitMode.SINGLE -> {
                     SessionPane(
+                        showModelControls = !isLandscape,
                         project = activeProject,
                         session = primarySession,
                         connection = primaryConn,
@@ -1745,6 +1804,7 @@ fun MainScreen(
                 SplitMode.SPLIT_VERTICAL -> {
                     Column(modifier = Modifier.fillMaxSize()) {
                         SessionPane(
+                        showModelControls = !isLandscape,
                             project = activeProject,
                             session = primarySession,
                             connection = primaryConn,
@@ -1801,6 +1861,7 @@ fun MainScreen(
                         )
                         HorizontalDivider(thickness = 2.dp, color = MaterialTheme.colorScheme.outline)
                         SessionPane(
+                        showModelControls = !isLandscape,
                             project = activeProject,
                             session = secondarySession ?: primarySession,
                             connection = secondaryConn,
@@ -1864,6 +1925,7 @@ fun MainScreen(
                 SplitMode.SPLIT_HORIZONTAL -> {
                     Row(modifier = Modifier.fillMaxSize()) {
                         SessionPane(
+                        showModelControls = !isLandscape,
                             project = activeProject,
                             session = primarySession,
                             connection = primaryConn,
@@ -1920,6 +1982,7 @@ fun MainScreen(
                         )
                         VerticalDivider(thickness = 2.dp, color = MaterialTheme.colorScheme.outline)
                         SessionPane(
+                        showModelControls = !isLandscape,
                             project = activeProject,
                             session = secondarySession ?: primarySession,
                             connection = secondaryConn,
@@ -1982,6 +2045,7 @@ fun MainScreen(
                 }
             }
             }
+        }
         }
             }
         }
