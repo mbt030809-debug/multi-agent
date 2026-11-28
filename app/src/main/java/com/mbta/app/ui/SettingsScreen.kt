@@ -264,49 +264,6 @@ fun SettingsScreen(
 
             item {
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
-                Spacer(modifier = Modifier.height(6.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("커스텀 / 스킬 (${customSkills.size}개)", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-                    OutlinedButton(onClick = { showAddSkill = true }) {
-                        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.size(4.dp))
-                        Text("스킬 추가", fontSize = 12.sp)
-                    }
-                }
-            }
-
-            items(customSkills, key = { it.id }) { skill ->
-                Surface(
-                    shape = RoundedCornerShape(10.dp),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text("${skill.command} · ${skill.title}", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                            if (skill.description.isNotBlank()) {
-                                Text(skill.description, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                        }
-                        IconButton(onClick = { editingSkill = skill }) {
-                            Icon(Icons.Default.Edit, contentDescription = "편집", modifier = Modifier.size(18.dp))
-                        }
-                        IconButton(onClick = { onDeleteSkill(skill.id) }) {
-                            Icon(Icons.Default.Delete, contentDescription = "삭제", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(18.dp))
-                        }
-                    }
-                }
-            }
-
-            item {
-                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
                 Spacer(modifier = Modifier.height(8.dp))
                 Text("AI · CLI · Remote 연결 추가", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
                 Spacer(modifier = Modifier.height(6.dp))
