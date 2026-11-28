@@ -692,7 +692,8 @@ fun SessionPane(
     drafts: SessionDraftStore? = null,
     onStopSubagent: (String) -> Unit = {},
     onRetrySubagent: (String) -> Unit = {},
-    onAttachOrchestration: (enabled: Boolean, subConnId: String?, subModel: String, subEffort: String, maxParallel: Int, maxRounds: Int, sensitivity: String) -> Unit = { _, _, _, _, _, _, _ -> },
+    onAttachOrchestration: (enabled: Boolean, subs: List<com.mbta.app.model.SubAgentConfig>, maxRounds: Int, sensitivity: String) -> Unit = { _, _, _, _ -> },
+    onResetSubagents: () -> Unit = {},
     onToggleSkipPermissions: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
@@ -1075,7 +1076,7 @@ fun SessionPane(
         }
 
         if (session.isOrchestration) {
-            val subConn = enabledConnections.find { it.id == (session.subConnectionId ?: session.connectionId) }
+            val subConn = enabledConnections.find { it.id == session.effectiveSubAgents().firstOrNull()?.connectionId }
             val sensLabel = when (session.subagentSensitivity) {
                 "high" -> "높음"
                 "low" -> "낮음"
@@ -1111,7 +1112,7 @@ fun SessionPane(
                         monochrome = true
                     )
                     Text(
-                        text = "${session.maxParallelSubagents}×${session.maxDelegationRounds} $sensLabel",
+                        text = "서브 ${session.effectiveSubAgents().size} · 실행 ${session.subagentRuns.size} · 최대 ${session.maxDelegationRounds}회 · $sensLabel",
                         fontSize = 9.5.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -2225,30 +2226,12 @@ fun SessionPane(
     }
 
     if (showAttachOrchDialog) {
-        var subConnId by remember(session.id) {
-            mutableStateOf(session.subConnectionId ?: session.connectionId ?: enabledConnections.firstOrNull()?.id)
-        }
-        val subConn = enabledConnections.find { it.id == subConnId } ?: connection ?: enabledConnections.firstOrNull()
-        val subModels = remember(subConn?.id) { subConn?.let { availableModelsFor(it) } ?: emptyList() }
-        var subModel by remember(subConn?.id) {
+        var subs by remember(session.id) {
             mutableStateOf(
-                if (session.isOrchestration && session.subConnectionId == subConn?.id && session.subModel.isNotBlank()) {
-                    session.subModel
-                } else {
-                    subModels.lastOrNull { m ->
-                        val l = m.lowercase()
-                        l.contains("mini") || l.contains("haiku") || l.contains("flash") || l.contains("fast") || l.contains("lite")
-                    } ?: subConn?.let { it.model.ifBlank { defaultModelFor(it) } } ?: ""
-                }
+                if (session.isOrchestration) session.effectiveSubAgents()
+                else (connection ?: enabledConnections.firstOrNull())?.let { listOf(newSubAgent(emptyList(), it)) }.orEmpty()
             )
         }
-        val subEfforts = remember(subConn?.id, subModel) {
-            if (subConn != null) availableEffortsFor(subConn, subModel) else emptyList()
-        }
-        var subEffort by remember(subConn?.id, subModel) {
-            mutableStateOf(if (session.isOrchestration && session.subConnectionId == subConn?.id) session.subEffort else "")
-        }
-        var maxParallel by remember(session.id) { mutableStateOf(session.maxParallelSubagents.coerceIn(1, 8)) }
         var maxRounds by remember(session.id) { mutableStateOf(session.maxDelegationRounds.coerceIn(1, 6)) }
         var sensitivity by remember(session.id) { mutableStateOf(session.subagentSensitivity.ifBlank { "medium" }) }
 
@@ -2256,185 +2239,41 @@ fun SessionPane(
             onDismissRequest = { showAttachOrchDialog = false },
             title = {
                 Text(
-                    text = if (session.isOrchestration) "서브 모델 설정" else "현재 세션에 서브 모델 연결",
+                    text = if (session.isOrchestration) "서브 에이전트 설정" else "현재 세션을 메인(지휘)으로",
                     fontSize = 15.sp,
                     fontWeight = FontWeight.Bold
                 )
             },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(
+                    modifier = Modifier.heightIn(max = 460.dp).verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                     Text(
-                        text = "현재 세션(${connection?.labelIn(enabledConnections) ?: "메인"})을 메인으로 유지하면서, 필요 시 병렬 호출할 하위 모델을 연결합니다.",
+                        text = "메인(${connection?.labelIn(enabledConnections) ?: "메인"})이 지휘하고, 앱이 아래 서브에게 작업과 결과를 전달합니다.",
                         fontSize = 11.5.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    Text("서브 AI 선택", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(5.dp)
-                    ) {
-                        enabledConnections.forEach { c ->
-                            val selected = c.id == subConnId
-                            Surface(
-                                onClick = { subConnId = c.id },
-                                shape = RoundedCornerShape(8.dp),
-                                color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
-                                border = BorderStroke(1.dp, if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
-                            ) {
-                                Text(
-                                    text = c.name,
-                                    fontSize = 11.sp,
-                                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                                    color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)
-                                )
-                            }
-                        }
-                    }
-                    if (subModels.isNotEmpty()) {
-                        Text("서브 모델 선택", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            subModels.forEach { m ->
-                                val selected = m == subModel
-                                Surface(
-                                    onClick = { subModel = m },
-                                    shape = RoundedCornerShape(8.dp),
-                                    color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
-                                    border = BorderStroke(1.dp, if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
-                                ) {
-                                    Text(
-                                        text = m,
-                                        fontSize = 10.sp,
-                                        color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp)
-                                    )
-                                }
-                            }
-                        }
-                    }
-                    if (subEfforts.isNotEmpty()) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(4.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text("Effort:", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            subEfforts.forEach { ef ->
-                                val selected = ef == subEffort
-                                Surface(
-                                    onClick = { subEffort = if (selected) "" else ef },
-                                    shape = RoundedCornerShape(8.dp),
-                                    color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
-                                    border = BorderStroke(1.dp, if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
-                                ) {
-                                    Text(
-                                        text = ef,
-                                        fontSize = 10.sp,
-                                        color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
-                                    )
-                                }
-                            }
-                        }
-                    }
+                    SubAgentEditor(subs, enabledConnections) { subs = it }
                     HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text("최대 동시 서브에이전트", fontSize = 12.sp)
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            OutlinedButton(
-                                onClick = { if (maxParallel > 1) maxParallel-- },
-                                contentPadding = PaddingValues(0.dp),
-                                modifier = Modifier.size(26.dp)
-                            ) { Text("-", fontSize = 13.sp) }
-                            Text("${maxParallel}개", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                            OutlinedButton(
-                                onClick = { if (maxParallel < 8) maxParallel++ },
-                                contentPadding = PaddingValues(0.dp),
-                                modifier = Modifier.size(26.dp)
-                            ) { Text("+", fontSize = 13.sp) }
-                        }
-                    }
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text("최대 위임 라운드", fontSize = 12.sp)
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            OutlinedButton(
-                                onClick = { if (maxRounds > 1) maxRounds-- },
-                                contentPadding = PaddingValues(0.dp),
-                                modifier = Modifier.size(26.dp)
-                            ) { Text("-", fontSize = 13.sp) }
-                            Text("${maxRounds}회", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                            OutlinedButton(
-                                onClick = { if (maxRounds < 6) maxRounds++ },
-                                contentPadding = PaddingValues(0.dp),
-                                modifier = Modifier.size(26.dp)
-                            ) { Text("+", fontSize = 13.sp) }
-                        }
-                    }
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text("호출 민감도", fontSize = 12.sp)
-                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            listOf("low" to "낮음", "medium" to "보통", "high" to "높음").forEach { (key, lbl) ->
-                                val sel = sensitivity == key
-                                Surface(
-                                    onClick = { sensitivity = key },
-                                    shape = RoundedCornerShape(8.dp),
-                                    color = if (sel) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
-                                    border = BorderStroke(1.dp, if (sel) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
-                                ) {
-                                    Text(
-                                        text = lbl,
-                                        fontSize = 10.5.sp,
-                                        fontWeight = if (sel) FontWeight.SemiBold else FontWeight.Normal,
-                                        color = if (sel) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                                    )
-                                }
+                    OrchLimits(maxRounds, { maxRounds = it }, sensitivity, { sensitivity = it })
+                    if (session.isOrchestration) {
+                        TextButton(
+                            enabled = !isSending,
+                            onClick = {
+                                showAttachOrchDialog = false
+                                onResetSubagents()
                             }
-                        }
+                        ) { Text("서브 대화 초기화") }
                     }
-                    Text(
-                        text = when (sensitivity) {
-                            "high" -> "단순 인사 외 대부분 작업을 서브에이전트에 분할 위임"
-                            "low" -> "대규모 병렬 작업에만 최소한으로 서브에이전트 호출"
-                            else -> "2개 이상 파일 수정·조사·검증 시 적극 위임 (추천)"
-                        },
-                        fontSize = 10.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
                 }
             },
             confirmButton = {
                 Button(
+                    enabled = !isSending && subs.isNotEmpty(),
                     onClick = {
                         showAttachOrchDialog = false
-                        onAttachOrchestration(true, subConn?.id, subModel, subEffort, maxParallel, maxRounds, sensitivity)
+                        onAttachOrchestration(true, subs, maxRounds, sensitivity)
                     }
                 ) {
                     Text(if (session.isOrchestration) "적용" else "서브 연결")
@@ -2444,9 +2283,10 @@ fun SessionPane(
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     if (session.isOrchestration) {
                         TextButton(
+                            enabled = !isSending,
                             onClick = {
                                 showAttachOrchDialog = false
-                                onAttachOrchestration(false, null, "", "", maxParallel, maxRounds, sensitivity)
+                                onAttachOrchestration(false, emptyList(), maxRounds, sensitivity)
                             }
                         ) { Text("연결 해제", color = MaterialTheme.colorScheme.error) }
                     }

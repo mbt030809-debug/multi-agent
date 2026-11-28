@@ -725,13 +725,20 @@ class HeadlessWebBridge(
         kind: ConnectionKind,
         url: String,
         prompt: String,
+        conversationUrl: String = "",
         onChunk: (String) -> Unit = {}
     ): Pair<Triple<String, Long, Long>, String?> = suspendCancellableCoroutine { cont ->
+        cont.invokeOnCancellation {
+            // 앱에서 중지하면 웹 AI의 생성도 멈춤
+            if (Looper.myLooper() == Looper.getMainLooper()) cancelActiveRequest(key)
+            else mainHandler.post { cancelActiveRequest(key) }
+        }
         sendPrompt(
             key = key,
             kind = kind,
             url = url,
             prompt = prompt,
+            conversationUrl = conversationUrl,
             onChunk = onChunk,
             onDone = { finalText, inTok, outTok ->
                 if (cont.isActive) cont.resume(Triple(finalText, inTok, outTok) to null)

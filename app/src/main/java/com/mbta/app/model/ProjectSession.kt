@@ -49,8 +49,27 @@ data class SubagentRun(
     val status: String = "running", // running, done, error, cancelled
     val output: String = "",
     val startedAt: Long = System.currentTimeMillis(),
-    val finishedAt: Long = 0L
+    val finishedAt: Long = 0L,
+    /** 어느 서브의 작업인지 (SubAgentConfig.id) */
+    val subId: String = ""
 )
+
+/** 사용자가 설정한 서브 하나와 그 서브의 이어지는 대화 */
+@Serializable
+data class SubAgentConfig(
+    val id: String, // 메인에게 알려주는 이름 (s1, s2 …)
+    val uid: String, // 대화 저장용 고유값. 초기화·AI 변경 시 새로 만듦
+    val connectionId: String,
+    val model: String = "",
+    val effort: String = "",
+    val role: String = "",
+    val started: Boolean = false,
+    val conversationUrl: String = "",
+    val history: List<ChatMessage> = emptyList()
+) {
+    fun resetConversation(newUid: String): SubAgentConfig =
+        copy(uid = newUid, started = false, conversationUrl = "", history = emptyList())
+}
 
 @Serializable
 data class AgentSession(
@@ -73,5 +92,13 @@ data class AgentSession(
     val maxDelegationRounds: Int = 3,
     val subagentSensitivity: String = "medium", // low, medium, high
     val skipPermissions: Boolean = false,
-    val subagentRuns: List<SubagentRun> = emptyList()
-)
+    val subagentRuns: List<SubagentRun> = emptyList(),
+    val subAgents: List<SubAgentConfig> = emptyList()
+) {
+    /** 서브 목록. 예전(서브 연결 하나) 세션은 서브 1개로 옮겨서 사용 */
+    fun effectiveSubAgents(): List<SubAgentConfig> {
+        if (subAgents.isNotEmpty()) return subAgents
+        val conn = subConnectionId ?: connectionId ?: return emptyList()
+        return listOf(SubAgentConfig(id = "s1", uid = "legacy-$id", connectionId = conn, model = subModel, effort = subEffort))
+    }
+}

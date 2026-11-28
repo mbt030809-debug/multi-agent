@@ -101,6 +101,7 @@ import com.mbta.app.model.ConnectionKind
 import com.mbta.app.model.MessageRole
 import com.mbta.app.model.Project
 import com.mbta.app.model.SplitMode
+import com.mbta.app.model.SubAgentConfig
 import com.mbta.app.model.SubagentRun
 import com.mbta.app.model.TokenSource
 import com.mbta.app.model.availableEffortsFor
@@ -123,6 +124,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import java.util.UUID
@@ -248,8 +250,6 @@ fun MainScreen(
         "⚠️ ${if (isModel) "모델" else "effort"} 전환 실패: $reason — 현재 웹 모델로 전송됨"
     // 웹 질문 카드가 떠 있었을 때의 카드 정보 (응답 텍스트에서 카드 글자를 걸러내기 위함)
     val webCardMemory = remember { mutableMapOf<String, String>() }
-    // 이번 앱 실행에서 오케스트레이터 전체 프로토콜을 이미 보낸 세션 (기존 대화에 나중에 오케스트레이션을 붙인 세션도 한 번은 전체 프로토콜을 받도록)
-    val orchProtocolSent = remember { mutableSetOf<String>() }
     val activeSendingCount = sendingMap.values.count { it }
     LaunchedEffect(activeSendingCount) {
         if (activeSendingCount > 0) {
@@ -415,54 +415,94 @@ fun MainScreen(
         store.saveSessions(sessions)
     }
 
+    fun updateSubConfig(sessionId: String, uid: String, transform: (SubAgentConfig) -> SubAgentConfig) {
+        sessions = sessions.map { s ->
+            if (s.id == sessionId) s.copy(subAgents = s.subAgents.map { c -> if (c.uid == uid) transform(c) else c }) else s
+        }
+        store.saveSessions(sessions)
+    }
+
+    fun subWebKey(sessionId: String, cfg: SubAgentConfig): String =
+        com.mbta.app.model.webSessionKey(cfg.connectionId, "$sessionId~${cfg.uid}")
+
+    fun releaseSubViews(session: AgentSession) {
+        session.effectiveSubAgents().forEach { cfg ->
+            val key = subWebKey(session.id, cfg)
+            headlessWebBridge.releaseWebView(key)
+            forgetWebApplied(key)
+        }
+    }
+
+    /** 서브 대화를 처음부터 다시 시작 */
+    fun resetSubConversations(sessionId: String) {
+        val sess = sessions.find { it.id == sessionId } ?: return
+        releaseSubViews(sess)
+        sessions = sessions.map { s ->
+            if (s.id == sessionId) {
+                s.copy(
+                    subAgents = s.effectiveSubAgents().map { it.resetConversation(UUID.randomUUID().toString().take(8)) },
+                    subagentRuns = s.subagentRuns.filter { it.status == "running" }
+                )
+            } else s
+        }
+        store.saveSessions(sessions)
+    }
+
+    /** 서브의 이어지는 대화에 작업 하나를 보냄 */
     suspend fun runSingleSubagent(
         session: AgentSession,
-        subConn: AiConnection,
-        subModel: String,
-        subEffort: String,
+        subId: String,
         effectiveDir: String,
         run: SubagentRun
     ): SubagentRun {
-        // effort가 모델 이름 변형으로 표현되는 연결(Antigravity 등)은 effort를 모델에 반영
-        val subModelFinal = com.mbta.app.model.modelWithEffort(subModel, subEffort, availableModelsFor(subConn))
-        val effectiveSubConn = if (subModelFinal.isNotBlank()) subConn.copy(model = subModelFinal) else subConn
-        val subPrompt = buildString {
-            append("[서브에이전트 작업 지시 — 역할: ${run.label}]\n")
-            if (useProjectContext && effectiveDir.isNotBlank()) append("- 작업 경로: $effectiveDir\n")
-            if (useProjectContext && activeProject.memoryText.isNotBlank()) append("- 프로젝트 지침: ${activeProject.memoryText}\n")
-            append("- 보고 규칙: 메인 오케스트레이터의 토큰을 아끼기 위해 핵심 결과·발견점·변경사항만 간결하고 정확하게 요약해 보고하세요.\n\n")
-            append(run.prompt)
+        fun finish(status: String, output: String): SubagentRun {
+            val finished = run.copy(status = status, output = output, finishedAt = System.currentTimeMillis())
+            updateSubagentRun(session.id, run.id) { finished }
+            return finished
         }
         return try {
+            val latest = sessions.find { it.id == session.id } ?: session
+            val cfg = latest.subAgents.find { it.id == subId } ?: return finish("error", "서브 설정을 찾을 수 없습니다: $subId")
+            val subConn = enabledConnections.find { it.id == cfg.connectionId }
+                ?: return finish("error", "서브 $subId 의 AI 연결이 없거나 꺼져 있습니다. 서브 설정을 확인해 주세요.")
+            // effort가 모델 이름 변형으로 표현되는 연결(Antigravity 등)은 effort를 모델에 반영
+            val modelFinal = com.mbta.app.model.modelWithEffort(cfg.model, cfg.effort, availableModelsFor(subConn))
+            val effectiveSubConn = if (modelFinal.isNotBlank()) subConn.copy(model = modelFinal) else subConn
+            var newUrl = cfg.conversationUrl
             val (outText, errText) = if (effectiveSubConn.usesHiddenWebBridge()) {
-                // 웹 서브: 지정된 모델/effort를 웹 화면에 맞춘 뒤 전송
-                headlessWebBridge.ensureLoaded(effectiveSubConn.id, effectiveSubConn.endpointUrl)
-                if (subModelFinal.isNotBlank() && webAppliedModel[effectiveSubConn.id] != subModelFinal) {
-                    awaitWebSwitch(true, effectiveSubConn.id, subModelFinal)
+                val key = subWebKey(session.id, cfg)
+                val startUrl = cfg.conversationUrl.ifBlank { effectiveSubConn.endpointUrl }
+                // 지정된 모델/effort를 웹 화면에 맞춘 뒤 전송
+                headlessWebBridge.ensureLoaded(key, startUrl)
+                if (modelFinal.isNotBlank() && webAppliedModel[key] != modelFinal) {
+                    awaitWebSwitch(true, key, modelFinal)
                     kotlinx.coroutines.delay(400L)
                 }
-                if (subEffort.isNotBlank() && effectiveSubConn.kind == ConnectionKind.REMOTE_WEB && webAppliedEffort[effectiveSubConn.id] != subEffort) {
-                    awaitWebSwitch(false, effectiveSubConn.id, subEffort)
+                if (cfg.effort.isNotBlank() && effectiveSubConn.kind == ConnectionKind.REMOTE_WEB && webAppliedEffort[key] != cfg.effort) {
+                    awaitWebSwitch(false, key, cfg.effort)
                     kotlinx.coroutines.delay(400L)
                 }
                 val (triple, err) = headlessWebBridge.sendPromptSuspend(
-                    key = effectiveSubConn.id,
+                    key = key,
                     kind = effectiveSubConn.kind,
                     url = effectiveSubConn.endpointUrl,
-                    prompt = subPrompt
+                    prompt = run.prompt,
+                    conversationUrl = cfg.conversationUrl
                 )
                 if (triple.second > 0L || triple.third > 0L) {
                     onRecordTokens(effectiveSubConn.id, effectiveSubConn.kind, triple.second, triple.third)
                 }
+                val curUrl = headlessWebBridge.currentUrl(key).orEmpty()
+                if (isSavableConversationUrl(curUrl, effectiveSubConn.endpointUrl)) newUrl = curUrl
                 triple.first to err
             } else {
                 val reply = AiApiClient.send(
                     connection = effectiveSubConn,
-                    history = emptyList(),
-                    userMessage = subPrompt,
-                    sessionId = "${session.id}_sub_${run.id}",
+                    history = cfg.history,
+                    userMessage = run.prompt,
+                    sessionId = "${session.id}_sub_${cfg.uid}",
                     cwd = effectiveDir,
-                    effort = subEffort,
+                    effort = cfg.effort,
                     skipPermissions = session.skipPermissions
                 )
                 if (reply.inputTokens > 0L || reply.outputTokens > 0L) {
@@ -470,29 +510,26 @@ fun MainScreen(
                 }
                 reply.text to reply.error
             }
-            val finished = run.copy(
-                status = if (errText != null) "error" else "done",
-                output = errText ?: outText.ifBlank { "(응답 없음)" },
-                finishedAt = System.currentTimeMillis()
-            )
-            updateSubagentRun(session.id, run.id) { finished }
-            finished
+            if (errText == null) {
+                val turn = listOf(
+                    ChatMessage(id = "sh_u_${run.id}", role = MessageRole.USER, content = run.prompt),
+                    ChatMessage(id = "sh_a_${run.id}", role = MessageRole.ASSISTANT, content = outText)
+                )
+                updateSubConfig(session.id, cfg.uid) { c ->
+                    c.copy(
+                        started = true,
+                        conversationUrl = newUrl,
+                        history = if (effectiveSubConn.usesHiddenWebBridge()) emptyList() else (c.history + turn).takeLast(12)
+                    )
+                }
+                finish("done", outText.ifBlank { "(응답 없음)" })
+            } else {
+                finish("error", errText)
+            }
         } catch (ce: CancellationException) {
-            val cancelled = run.copy(
-                status = "cancelled",
-                output = "사용자가 중단했습니다.",
-                finishedAt = System.currentTimeMillis()
-            )
-            updateSubagentRun(session.id, run.id) { cancelled }
-            cancelled
+            finish("cancelled", "사용자가 중단했습니다.")
         } catch (e: Exception) {
-            val errored = run.copy(
-                status = "error",
-                output = e.message ?: "서브에이전트 오류",
-                finishedAt = System.currentTimeMillis()
-            )
-            updateSubagentRun(session.id, run.id) { errored }
-            errored
+            finish("error", e.message ?: "서브에이전트 오류")
         } finally {
             subagentJobsMap.remove(run.id)
         }
@@ -510,14 +547,12 @@ fun MainScreen(
     fun retrySubagentRun(sessionId: String, runId: String) {
         val sess = sessions.find { it.id == sessionId } ?: return
         val run = sess.subagentRuns.find { it.id == runId } ?: return
-        val subConn = enabledConnections.find { it.id == (sess.subConnectionId ?: sess.connectionId) }
-            ?: enabledConnections.find { it.id == sess.connectionId } ?: return
-        val subModel = sess.subModel.ifBlank { defaultModelFor(subConn) }
+        if (sendingMap[sessionId] == true || run.subId.isBlank()) return
         val effectiveDir = sess.worktreePath.ifBlank { activeProject.workDir }
         val restarted = run.copy(status = "running", output = "", startedAt = System.currentTimeMillis(), finishedAt = 0L)
         updateSubagentRun(sessionId, runId) { restarted }
         val job = scope.launch {
-            runSingleSubagent(sess, subConn, subModel, sess.subEffort, effectiveDir, restarted)
+            runSingleSubagent(sess, run.subId, effectiveDir, restarted)
         }
         subagentJobsMap[runId] = job
     }
@@ -544,11 +579,9 @@ fun MainScreen(
         if (session.isOrchestration && !text.startsWith("@")) {
             val mainModelFinal = com.mbta.app.model.modelWithEffort(session.selectedModel, session.selectedEffort, availableModelsFor(conn))
             val effectiveMainConn = if (mainModelFinal.isNotBlank()) conn.copy(model = mainModelFinal) else conn
-            val subConn = enabledConnections.find { it.id == (session.subConnectionId ?: session.connectionId) } ?: conn
-            val subModel = session.subModel.ifBlank { defaultModelFor(subConn) }
             val effectiveDir = session.worktreePath.ifBlank { activeProject.workDir }
-            val maxParallel = session.maxParallelSubagents.coerceIn(1, 8)
             val maxRounds = session.maxDelegationRounds.coerceIn(1, 6)
+            val subConfigs = session.effectiveSubAgents()
 
             val userMsg = ChatMessage(
                 id = "msg_${UUID.randomUUID()}",
@@ -556,17 +589,19 @@ fun MainScreen(
                 content = textRaw
             )
             val placeholderId = "msg_${UUID.randomUUID()}"
+            val agentLabel = "${conn.labelIn(connections)} (지휘)"
             val placeholder = ChatMessage(
                 id = placeholderId,
                 role = MessageRole.ASSISTANT,
-                content = "⏳ 메인 오케스트레이터 분석 중...",
-                agentName = "${conn.labelIn(connections)} (오케스트레이터)"
+                content = "⏳ 메인이 작업을 판단하는 중...",
+                agentName = agentLabel
             )
             val baseHistory = session.messages
             sessions = sessions.map {
                 if (it.id == session.id) {
                     it.copy(
                         messages = it.messages + userMsg + placeholder,
+                        subAgents = subConfigs,
                         subagentRuns = it.subagentRuns.filter { r -> r.status == "running" }
                     )
                 } else it
@@ -583,75 +618,43 @@ fun MainScreen(
             }
 
             val orchJob = scope.launch {
+                var modelWarning = ""
+                var totalInTok = 0L
+                var totalOutTok = 0L
+                // 웹 메인의 모델/effort 전환 실패 경고 (첫 전송에서만 전환하므로 최종 응답 앞에 한 번 붙음)
+                val orchSwitchWarns = mutableListOf<String>()
                 try {
-                    val roundHistory = baseHistory.toMutableList()
-                    val isFirstOrchTurn = baseHistory.none { it.role == MessageRole.ASSISTANT }
-                    val sensKo = when (session.subagentSensitivity) {
-                        "high" -> "높음"
-                        "low" -> "낮음"
-                        else -> "보통"
+                    val subDefs = subConfigs.map { c ->
+                        val sc = enabledConnections.find { it.id == c.connectionId }
+                        val ai = sc?.labelIn(connections) ?: "연결 없음"
+                        com.mbta.app.orch.SubDef(c.id, if (c.model.isBlank()) ai else "$ai (${c.model})", c.role)
                     }
-                    val sensitivityRule = when (session.subagentSensitivity) {
-                        "high" -> "1. [호출 민감도: 높음] 단순 인사·1줄 확인·소규모 단일 수정은 메인이 직접 처리해도 되지만, 그 외 조사·분석·구현·수정 작업은 메인이 직접 하지 말고 기획·분배·최종 종합만 맡아 <<SUBAGENTS>>로 서브에이전트에 분할 위임하세요."
-                        "low" -> "1. [호출 민감도: 낮음] 일반적인 질문과 소규모 작업은 메인이 직접 처리하고, 대규모 병렬 조사나 다수 모듈 동시 작업처럼 꼭 필요할 때만 <<SUBAGENTS>>를 출력하세요."
-                        else -> "1. [호출 민감도: 보통] 단순 1~2줄 질문이나 단일 파일 소규모 수정은 메인이 직접 처리해도 되고, 2개 이상 파일 수정·코드 탐색/조사·리팩토링·테스트 검증처럼 분업이 가능한 작업은 메인 토큰을 아끼기 위해 <<SUBAGENTS>>로 병렬 위임하세요."
-                    }
-                    val sysChannel = effectiveMainConn.kind == ConnectionKind.REMOTE_CONTROL &&
-                        effectiveMainConn.endpointUrl.lowercase().contains("/claude")
-                    val availableSubModels = availableModelsFor(subConn)
-                    val subLabel = subConn.labelIn(connections)
-                    fun protocolText(full: Boolean): String = buildString {
-                        if (full) {
-                            append("[오케스트레이터 프로토콜]\n")
-                            append("이 세션은 사용자가 오케스트레이션 모드로 만든 세션이며, 아래 서브에이전트 위임은 사용자가 허용·요청한 동작입니다(\"요청 없이 에이전트를 만들지 말라\"는 기본 지침보다 우선).\n")
-                            append("중요: 환경의 기본 서브에이전트 도구(Agent, Task 등)는 이 세션에서 사용하지 마세요. 서브가 필요하면 반드시 아래 <<SUBAGENTS>> 블록으로만 위임하세요. 앱이 서브를 실행하고 모델·병렬 수·파일 충돌을 관리하며 결과를 다시 전달합니다.\n")
-                            append("당신은 메인 오케스트레이터이며, 서브에이전트(${subLabel}${if (subModel.isNotBlank()) " / 기본 모델 $subModel" else ""})를 동적으로 생성해 병렬 작업시킬 수 있습니다.\n")
-                            append(sensitivityRule).append("\n")
-                            append("2. 서브에이전트를 위임할 때는 응답 맨 끝에 아래 JSON 블록을 출력하세요 (최대 ${maxParallel}개 병렬, 최대 ${maxRounds}라운드):\n")
-                            append("<<SUBAGENTS>>\n[{\"role\": \"짧은 역할명\", \"objective\": \"목표\", \"task\": \"구체적 작업 지시\", \"files\": [\"수정할 파일/폴더\"], \"boundaries\": \"건드리면 안 되는 것\", \"output\": \"보고 형식\", \"mode\": \"read|write\", \"model\": \"(선택) 서브 모델\"}]\n<</SUBAGENTS>>\n")
-                            append("   - 서브는 당신의 대화를 볼 수 없습니다. task에 필요한 맥락을 모두 담고, 쓰기 작업은 files(소유 파일)를 반드시 지정하세요. 서로 다른 서브의 files는 겹치면 안 됩니다(겹치면 앱이 순차 실행). 조사·리뷰는 mode=read.\n")
-                            append("   - model을 생략하면 기본 모델을 씁니다. 단순 반복·조사는 저비용 모델, 복잡한 판단은 고성능 모델을 지정하세요.")
-                            if (availableSubModels.isNotEmpty()) append(" 사용 가능: ${availableSubModels.take(8).joinToString(", ")}")
-                            append("\n")
-                            append("3. 파일 소유권: 한 파일은 한 서브만 소유합니다. 읽기/조사는 병렬 위임하고, 수정 작업은 겹치지 않는 files로 분할하세요. 쓰기 라운드가 끝나면 앱이 읽기 전용 리뷰어를 자동 실행해 테스트·충돌을 검증하고 VERDICT를 보고합니다.\n")
-                            append("4. 서브에이전트 결과는 핵심 요약으로 보고됩니다. 결과를 받으면 종합해 사용자에게 최종 답변을 작성하세요.\n")
-                            append("5. JSON이 잘못되면 오류 내용이 되돌아오니 고쳐서 다시 출력하세요.\n")
-                        } else {
-                            append("[오케스트레이터 유지 · 서브:${subLabel}${if (subModel.isNotBlank()) "/$subModel" else ""} · 최대 ${maxParallel}×${maxRounds} · 민감도:$sensKo · 위임 시 <<SUBAGENTS>> 블록만 사용(기본 Agent 도구 금지)]\n")
-                        }
-                    }
-                    // Claude 브리지는 프로토콜을 시스템 프롬프트로 분리 전달(사용자 메시지는 순수 요청), 그 외는 첫 턴에 메시지 앞에 붙임
-                    val orchSystemPrompt = if (sysChannel) protocolText(true) else ""
-                    var currentPrompt = buildString {
-                        if (!sysChannel) append(protocolText(isFirstOrchTurn || session.id !in orchProtocolSent))
-                        if (useProjectContext && (effectiveDir.isNotBlank() || activeProject.memoryText.isNotBlank())) {
-                            append(if (sysChannel) "[프로젝트 컨텍스트]\n" else "\n[프로젝트 컨텍스트]\n")
+                    val instructions = com.mbta.app.orch.ConductorProtocol.conductorInstructions(subDefs, session.subagentSensitivity)
+                    val projectContext = if (useProjectContext && (effectiveDir.isNotBlank() || activeProject.memoryText.isNotBlank())) {
+                        buildString {
+                            append("[프로젝트 컨텍스트]\n")
                             if (effectiveDir.isNotBlank()) append("- 작업 경로: $effectiveDir\n")
                             if (activeProject.memoryText.isNotBlank()) append("- 공용 지침: ${activeProject.memoryText}\n")
-                            append("\n")
                         }
-                        if (!sysChannel) append("[사용자 요청]\n")
-                        append(text)
-                    }
+                    } else ""
+                    // Claude 브리지는 지휘 지시문을 시스템 프롬프트로 분리 전달, 그 외는 사용자 명령 앞에 붙임
+                    val sysChannel = effectiveMainConn.kind == ConnectionKind.REMOTE_CONTROL &&
+                        effectiveMainConn.endpointUrl.lowercase().contains("/claude")
+                    val firstPrompt = com.mbta.app.orch.ConductorProtocol.userPrompt(
+                        if (sysChannel) "" else instructions, projectContext, text
+                    )
+                    val mainHistory = baseHistory.toMutableList()
+                    var mainTurns = 0
 
-                    orchProtocolSent.add(session.id)
-                    var finalAnswer = ""
-                    // 메인 에이전트가 각 라운드에서 한 말(계획/위임 안내)을 대답창에 계속 보여주기 위한 누적 기록
-                    val mainParts = mutableListOf<String>()
-                    fun liveText(extra: String): String = (mainParts + extra).filter { it.isNotBlank() }.joinToString("\n\n")
-                    var modelWarning = ""
-                    var finalError: String? = null
-                    var totalInTok = 0L
-                    var totalOutTok = 0L
-                    // 웹 메인의 모델/effort 전환 실패 경고 (첫 라운드에서만 전환하므로 최종 응답 앞에 한 번 붙음)
-                    val orchSwitchWarns = mutableListOf<String>()
-
-                    for (round in 1..(maxRounds + 1)) {
-                        val (mainText, mainErr) = if (effectiveMainConn.usesHiddenWebBridge()) {
+                    suspend fun askMainConn(currentPrompt: String, shownSoFar: String): Pair<String, String?> {
+                        val turn = ++mainTurns
+                        fun live(extra: String): String = listOf(shownSoFar, extra).filter { it.isNotBlank() }.joinToString("\n\n")
+                        if (effectiveMainConn.usesHiddenWebBridge()) {
                             val orchWebKey = com.mbta.app.model.webSessionKey(effectiveMainConn.id, session.id)
-                            headlessWebBridge.ensureLoaded(orchWebKey, session.webConversationUrl.ifBlank { effectiveMainConn.endpointUrl })
+                            val mainUrl = sessions.find { it.id == session.id }?.webConversationUrl.orEmpty()
+                            headlessWebBridge.ensureLoaded(orchWebKey, mainUrl.ifBlank { effectiveMainConn.endpointUrl })
                             skipLeftoverWebCard(orchWebKey)
-                            if (round == 1) {
+                            if (turn == 1) {
                                 val wantModel = session.selectedModel.trim()
                                 val wantEffort = session.selectedEffort.trim()
                                 if (wantModel.isNotBlank() && webAppliedModel[orchWebKey] != wantModel) {
@@ -692,10 +695,11 @@ fun MainScreen(
                                     kind = effectiveMainConn.kind,
                                     url = effectiveMainConn.endpointUrl,
                                     prompt = currentPrompt,
+                                    conversationUrl = mainUrl,
                                     onChunk = { partial ->
                                         // 메인이 쓰는 중인 답변을 실시간으로 대답창에 표시
                                         val askSuffix = webQuestionMap[session.id]?.let { "\n\n<<ASK>>$it<</ASK>>" } ?: ""
-                                        val shown = liveText(SubagentProtocol.stripBlock(removeCardLines(partial, webCardMemory[session.id]))).ifBlank { "⏳ 메인 오케스트레이터 분석 중..." }
+                                        val shown = live(com.mbta.app.orch.ConductorProtocol.hideBlock(removeCardLines(partial, webCardMemory[session.id]))).ifBlank { "⏳ 메인이 작업을 판단하는 중..." }
                                         setPlaceholder(shown + askSuffix)
                                     }
                                 )
@@ -716,7 +720,13 @@ fun MainScreen(
                             if (triple.second > 0L || triple.third > 0L) {
                                 onRecordTokens(effectiveMainConn.id, effectiveMainConn.kind, triple.second, triple.third)
                             }
-                            removeCardLines(triple.first, webCardMemory.remove(session.id)) to err
+                            // 앱을 다시 켜도 메인 대화를 이어가도록 대화 주소 저장
+                            val curUrl = headlessWebBridge.currentUrl(orchWebKey).orEmpty()
+                            if (isSavableConversationUrl(curUrl, effectiveMainConn.endpointUrl)) {
+                                sessions = sessions.map { sx -> if (sx.id == session.id) sx.copy(webConversationUrl = curUrl) else sx }
+                                store.saveSessions(sessions)
+                            }
+                            return removeCardLines(triple.first, webCardMemory.remove(session.id)) to err
                         } else {
                             val isMainBridge = effectiveMainConn.kind == ConnectionKind.REMOTE_CONTROL || effectiveMainConn.kind == ConnectionKind.TERMUX_CLI
                             val mainPollJob = if (isMainBridge) {
@@ -739,7 +749,7 @@ fun MainScreen(
                                             acc
                                         }
                                         if (filtered.isNotEmpty()) {
-                                            setPlaceholder("⏳ 작업 진행 로그:\n" + filtered.joinToString("\n"))
+                                            setPlaceholder(live("⏳ 작업 진행 로그:\n" + filtered.joinToString("\n")))
                                         }
                                     }
                                 }
@@ -747,19 +757,19 @@ fun MainScreen(
                             val reply = try {
                                 AiApiClient.send(
                                     connection = effectiveMainConn,
-                                    history = roundHistory,
+                                    history = mainHistory,
                                     userMessage = currentPrompt,
                                     sessionId = session.id,
                                     cwd = effectiveDir,
                                     cliSessionId = session.cliSessionId,
                                     effort = session.selectedEffort,
                                     skipPermissions = session.skipPermissions,
-                                    systemPrompt = orchSystemPrompt
+                                    systemPrompt = if (sysChannel) instructions else ""
                                 )
                             } finally {
                                 mainPollJob?.cancel()
                             }
-                            if (SubagentProtocol.modelMismatch(effectiveMainConn.model, reply.servedModel)) {
+                            if (com.mbta.app.orch.ConductorProtocol.modelMismatch(effectiveMainConn.model, reply.servedModel)) {
                                 modelWarning = "\n\n⚠️ 모델 불일치: 선택 ${effectiveMainConn.model} → 실제 ${reply.servedModel}"
                             }
                             totalInTok += reply.inputTokens
@@ -776,136 +786,78 @@ fun MainScreen(
                                 )
                                 store.saveTokenUsage(tokenUsageMap)
                             }
-                            reply.text to reply.error
+                            mainHistory.add(ChatMessage(id = "rh_u_$turn", role = MessageRole.USER, content = currentPrompt))
+                            mainHistory.add(ChatMessage(id = "rh_a_$turn", role = MessageRole.ASSISTANT, content = reply.text))
+                            return reply.text to reply.error
                         }
-
-                        if (mainErr != null) {
-                            finalError = mainErr
-                            break
-                        }
-
-                        val parsedBlock = if (round <= maxRounds) SubagentProtocol.parse(mainText) else SubagentParseResult(emptyList())
-                        if (parsedBlock.error != null) {
-                            // 블록 JSON 오류는 메인에 되돌려 다시 출력하게 함
-                            roundHistory.add(ChatMessage(id = "rh_u_$round", role = MessageRole.USER, content = currentPrompt))
-                            roundHistory.add(ChatMessage(id = "rh_a_$round", role = MessageRole.ASSISTANT, content = mainText))
-                            currentPrompt = "[서브에이전트 블록 오류] ${parsedBlock.error}\n올바른 JSON 배열로 다시 출력하거나, 위임 없이 직접 최종 답변을 작성하세요."
-                            setPlaceholder("⏳ 서브에이전트 블록 오류 — 메인에 재출력 요청 중...")
-                            continue
-                        }
-                        val requests = parsedBlock.requests.take(maxParallel)
-                        if (requests.isEmpty()) {
-                            finalAnswer = SubagentProtocol.stripBlock(mainText).ifBlank { mainText.ifBlank { "(응답 없음)" } }
-                            break
-                        }
-
-                        roundHistory.add(ChatMessage(id = "rh_u_$round", role = MessageRole.USER, content = currentPrompt))
-                        roundHistory.add(ChatMessage(id = "rh_a_$round", role = MessageRole.ASSISTANT, content = mainText))
-
-                        val resolvedModels = requests.map { SubagentProtocol.resolveModel(it.model, availableSubModels, subModel) }
-                        val runs = requests.mapIndexed { i, req ->
-                            SubagentRun(
-                                id = "sub_${UUID.randomUUID().toString().take(8)}",
-                                label = req.role,
-                                prompt = SubagentProtocol.brief(req),
-                                model = resolvedModels[i].ifBlank { subConn.name },
-                                status = "running",
-                                startedAt = System.currentTimeMillis()
-                            )
-                        }
-                        sessions = sessions.map { s ->
-                            if (s.id == session.id) s.copy(subagentRuns = s.subagentRuns + runs) else s
-                        }
-                        store.saveSessions(sessions)
-                        // 메인이 한 말(계획)과 위임 내용을 대답창 기록에 남김
-                        val mainPlanText = SubagentProtocol.stripBlock(mainText)
-                        if (mainPlanText.isNotBlank()) mainParts.add(mainPlanText)
-                        mainParts.add("▶ 서브에이전트 ${requests.size}개 위임: " + requests.indices.joinToString(", ") { i -> "${requests[i].role}(${resolvedModels[i].ifBlank { subConn.name }})" })
-                        val subStatusHeader = "Orch · 라운드 $round/$maxRounds · 서브에이전트 ${runs.size}개 실행 중 (${runs.joinToString(", ") { it.label }})..."
-                        setPlaceholder(liveText("").let { if (it.isBlank()) subStatusHeader else "$it\n\n$subStatusHeader" })
-
-                        val latestSess = sessions.find { it.id == session.id } ?: session
-                        // 같은 파일을 쓰는 작업은 배치를 나눠 순차 실행, 배치 안에서는 병렬(최대 maxParallel)
-                        val runBatches = SubagentProtocol.batches(requests, maxParallel)
-                        val completedRuns = mutableListOf<SubagentRun>()
-                        for (batch in runBatches) {
-                            val part = if (subConn.usesHiddenWebBridge()) {
-                                batch.map { i ->
-                                    val d = scope.async { runSingleSubagent(latestSess, subConn, resolvedModels[i], session.subEffort, effectiveDir, runs[i]) }
-                                    subagentJobsMap[runs[i].id] = d
-                                    d.await()
-                                }
-                            } else {
-                                coroutineScope {
-                                    batch.map { i ->
-                                        val d = async { runSingleSubagent(latestSess, subConn, resolvedModels[i], session.subEffort, effectiveDir, runs[i]) }
-                                        subagentJobsMap[runs[i].id] = d
-                                        d
-                                    }.awaitAll()
-                                }
-                            }
-                            completedRuns.addAll(part)
-                        }
-
-                        // 쓰기 작업이 있었으면 읽기 전용 리뷰어가 변경·테스트를 검증
-                        if (SubagentProtocol.hasWriters(requests) && completedRuns.any { it.status == "done" }) {
-                            val reviewModel = availableSubModels.firstOrNull { it.contains("sonnet", true) }
-                                ?: availableSubModels.firstOrNull { it.contains("haiku", true) }
-                                ?: subModel
-                            val reviewRun = SubagentRun(
-                                id = "sub_${UUID.randomUUID().toString().take(8)}",
-                                label = "리뷰어",
-                                prompt = SubagentProtocol.reviewPrompt(requests, completedRuns.map { it.output }),
-                                model = reviewModel.ifBlank { subConn.name },
-                                status = "running",
-                                startedAt = System.currentTimeMillis()
-                            )
-                            sessions = sessions.map { s ->
-                                if (s.id == session.id) s.copy(subagentRuns = s.subagentRuns + reviewRun) else s
-                            }
-                            store.saveSessions(sessions)
-                            setPlaceholder("Orch · 라운드 $round/$maxRounds · 리뷰어 검증 중...")
-                            val reviewed = scope.async {
-                                runSingleSubagent(latestSess, subConn, reviewModel, "", effectiveDir, reviewRun)
-                            }
-                            subagentJobsMap[reviewRun.id] = reviewed
-                            completedRuns.add(reviewed.await())
-                            mainParts.add("▶ 리뷰어 검증 완료")
-                        }
-
-                        setPlaceholder("⏳ 메인 오케스트레이터가 서브에이전트 결과 종합 중...")
-                        val reportText = buildString {
-                            append("[서브에이전트 라운드 $round/$maxRounds 결과 보고]\n")
-                            completedRuns.forEach { r ->
-                                val statusLabel = when (r.status) {
-                                    "done" -> "완료"
-                                    "cancelled" -> "중단됨"
-                                    else -> "오류"
-                                }
-                                append("\n### [${r.label}] ($statusLabel)\n")
-                                append(r.output.take(1800))
-                                if (r.output.length > 1800) append("\n...(생략됨, 전체 로그는 모니터에서 확인)")
-                                append("\n")
-                            }
-                            if (round >= maxRounds) {
-                                append("\n위임 라운드 한도(${maxRounds}회)에 도달했습니다. 지금까지의 결과를 종합해 사용자에게 최종 답변을 작성하세요.")
-                            } else {
-                                append("\n추가 위임이 필요하면 <<SUBAGENTS>>를 출력하고, 충분하면 사용자에게 최종 답변을 작성하세요.")
-                            }
-                        }
-                        currentPrompt = reportText
                     }
 
+                    val port = object : com.mbta.app.orch.ConductorPort {
+                        override suspend fun askMain(prompt: String, shownSoFar: String) = askMainConn(prompt, shownSoFar)
+
+                        override fun canRunConcurrently(subId: String): Boolean {
+                            val cfg = subConfigs.find { it.id == subId } ?: return false
+                            // 웹 서브는 안정성 확인 전까지 하나씩 실행
+                            return enabledConnections.find { it.id == cfg.connectionId }?.usesHiddenWebBridge() == false
+                        }
+
+                        override fun showProgress(text: String) = setPlaceholder(text)
+
+                        override suspend fun runSub(
+                            task: com.mbta.app.orch.SubTask,
+                            dependencies: List<com.mbta.app.orch.SubResult>,
+                            round: Int
+                        ): com.mbta.app.orch.SubResult {
+                            val now = sessions.find { it.id == session.id } ?: session
+                            val cfg = now.subAgents.find { it.id == task.id }
+                                ?: return com.mbta.app.orch.SubResult(task.id, false, "서브 설정이 없습니다.")
+                            val def = subDefs.first { it.id == task.id }
+                            val subConn = enabledConnections.find { it.id == cfg.connectionId }
+                            val prompt = com.mbta.app.orch.ConductorProtocol.subPrompt(def, task, dependencies, !cfg.started, projectContext)
+                            val aiName = subConn?.labelIn(connections) ?: "연결 없음"
+                            val run = SubagentRun(
+                                id = "sub_${UUID.randomUUID().toString().take(8)}",
+                                label = "${task.id} ${cfg.role.ifBlank { aiName }} #$round",
+                                prompt = prompt,
+                                model = cfg.model.ifBlank { aiName },
+                                status = "running",
+                                startedAt = System.currentTimeMillis(),
+                                subId = task.id
+                            )
+                            sessions = sessions.map { s ->
+                                if (s.id == session.id) s.copy(subagentRuns = s.subagentRuns + run) else s
+                            }
+                            store.saveSessions(sessions)
+                            val finished = coroutineScope {
+                                // 상단 표시에서 이 서브만 중단할 수 있게 개별 작업으로 실행
+                                val d = async { runSingleSubagent(now, task.id, effectiveDir, run) }
+                                subagentJobsMap[run.id] = d
+                                try {
+                                    d.await()
+                                } catch (ce: CancellationException) {
+                                    kotlin.coroutines.coroutineContext.ensureActive()
+                                    run.copy(status = "cancelled", output = "사용자가 중단했습니다.")
+                                }
+                            }
+                            return com.mbta.app.orch.SubResult(task.id, finished.status == "done", finished.output)
+                        }
+                    }
+
+                    val outcome = com.mbta.app.orch.Conductor(subConfigs.map { it.id }.toSet(), maxRounds, port).run(firstPrompt)
+
                     activeJobs.remove(session.id)
+                    val footer = if (outcome.subRunCount == 0) "— 메인 직접 처리 (앱 서브 실행 0개)" else "— 앱 서브 실행 ${outcome.subRunCount}개"
+                    val body = if (outcome.error != null) {
+                        listOf(outcome.transcript, "❌ ${outcome.error}").filter { it.isNotBlank() }.joinToString("\n\n")
+                    } else outcome.transcript + modelWarning + "\n\n" + footer
                     val finalMsg = ChatMessage(
                         id = placeholderId,
                         role = MessageRole.ASSISTANT,
-                        content = (if (orchSwitchWarns.isEmpty()) "" else orchSwitchWarns.joinToString("\n") + "\n\n") +
-                            (finalError ?: ((mainParts + finalAnswer.ifBlank { "(응답 없음)" }).filter { it.isNotBlank() }.joinToString("\n\n") + modelWarning)),
+                        content = (if (orchSwitchWarns.isEmpty()) "" else orchSwitchWarns.joinToString("\n") + "\n\n") + body,
                         inputTokens = totalInTok,
                         outputTokens = totalOutTok,
-                        agentName = "${conn.labelIn(connections)} (오케스트레이터)",
-                        isError = finalError != null
+                        agentName = agentLabel,
+                        isError = outcome.error != null
                     )
                     sessions = sessions.map { s ->
                         if (s.id == session.id) {
@@ -915,10 +867,11 @@ fun MainScreen(
                     store.saveSessions(sessions)
                     sendingMap[session.id] = false
                     if (activeSessionId != session.id) unreadDoneSessions[session.id] = true
-                    if (finalError == null) {
+                    val outcomeError = outcome.error
+                    if (outcomeError == null) {
                         onNotifyEvent(session.id, "✅ ${conn.labelIn(connections)} 오케스트레이션 완료", finalMsg.content.take(140), false, emptyList())
                     } else {
-                        onNotifyEvent(session.id, "❌ ${conn.labelIn(connections)} 오케스트레이션 오류", finalError.take(140), true, listOf("Keep going"))
+                        onNotifyEvent(session.id, "❌ ${conn.labelIn(connections)} 오케스트레이션 오류", outcomeError.take(140), true, listOf("Keep going"))
                     }
                     val q = queuedPromptsMap[session.id].orEmpty()
                     if (q.isNotEmpty()) {
@@ -1187,7 +1140,7 @@ fun MainScreen(
                 id = if (isBridgeKind) placeholderId else "msg_${UUID.randomUUID()}",
                 role = MessageRole.ASSISTANT,
                 content = reply.error ?: (reply.text.ifBlank { "(응답 없음)" } +
-                    if (SubagentProtocol.modelMismatch(effectiveConn.model, reply.servedModel)) {
+                    if (com.mbta.app.orch.ConductorProtocol.modelMismatch(effectiveConn.model, reply.servedModel)) {
                         "\n\n⚠️ 모델 불일치: 선택 ${effectiveConn.model} → 실제 ${reply.servedModel}"
                     } else ""),
                 inputTokens = reply.inputTokens,
@@ -1423,6 +1376,7 @@ fun MainScreen(
         val releasedKey = com.mbta.app.model.webSessionKey(session.connectionId.orEmpty(), session.id)
         headlessWebBridge.releaseWebView(releasedKey)
         forgetWebApplied(releasedKey)
+        releaseSubViews(session)
         val remainingInProject = validProjectSessions.filterNot { it.id == session.id }
         sessions = sessions.filterNot { it.id == session.id }
         if (activeSessionId == session.id) {
@@ -1482,33 +1436,36 @@ fun MainScreen(
     fun attachOrchestrationToSession(
         session: AgentSession,
         enabled: Boolean,
-        subConnId: String?,
-        subModel: String,
-        subEffort: String,
-        maxParallel: Int,
+        subs: List<SubAgentConfig>,
         maxRounds: Int,
         sensitivity: String = "medium"
     ) {
+        val current = sessions.find { it.id == session.id } ?: return
+        val existing = current.effectiveSubAgents()
+        // 설정 창을 열어둔 사이에 이어진 대화 정보는 지금 저장된 값을 유지
+        val merged = subs.map { n ->
+            val old = existing.find { it.uid == n.uid }
+            if (old == null) n else old.copy(model = n.model, effort = n.effort, role = n.role)
+        }
+        existing.filter { old -> !enabled || merged.none { it.uid == old.uid } }.forEach { old ->
+            val key = subWebKey(session.id, old)
+            headlessWebBridge.releaseWebView(key)
+            forgetWebApplied(key)
+        }
         sessions = sessions.map { s ->
             if (s.id == session.id) {
                 s.copy(
                     isOrchestration = enabled,
-                    subConnectionId = if (enabled) subConnId else null,
-                    subModel = if (enabled) subModel else "",
-                    subEffort = if (enabled) subEffort else "",
-                    maxParallelSubagents = maxParallel.coerceIn(1, 8),
+                    subAgents = if (enabled) merged else emptyList(),
+                    subConnectionId = if (enabled) merged.firstOrNull()?.connectionId else null,
+                    subModel = "",
+                    subEffort = "",
                     maxDelegationRounds = maxRounds.coerceIn(1, 6),
                     subagentSensitivity = sensitivity.ifBlank { "medium" }
                 )
             } else s
         }
         store.saveSessions(sessions)
-        if (enabled && subConnId != null) {
-            val subConn = enabledConnections.find { it.id == subConnId }
-            if (subConn != null && subConn.usesHiddenWebBridge()) {
-                headlessWebBridge.getOrCreateWebView(subConn.id, subConn.endpointUrl)
-            }
-        }
     }
 
     fun togglePinMessage(sessionId: String, messageId: String) {
@@ -2104,9 +2061,10 @@ fun MainScreen(
                         onRenameSession = { newTitle -> renameSession(primarySession, newTitle) },
                         onTogglePinMessage = { msgId -> togglePinMessage(primarySession.id, msgId) },
                         onStopSubagent = { runId -> stopSubagentRun(primarySession.id, runId) },
+                        onResetSubagents = { resetSubConversations((primarySession).id) },
                         onRetrySubagent = { runId -> retrySubagentRun(primarySession.id, runId) },
-                        onAttachOrchestration = { en, subId, subM, subE, maxP, maxR, sens ->
-                            attachOrchestrationToSession(primarySession, en, subId, subM, subE, maxP, maxR, sens)
+                        onAttachOrchestration = { en, subs, maxR, sens ->
+                            attachOrchestrationToSession(primarySession, en, subs, maxR, sens)
                         },
                         onToggleSkipPermissions = { toggleSkipPermissions(primarySession) },
                         modifier = Modifier.fillMaxSize()
@@ -2162,9 +2120,10 @@ fun MainScreen(
                             onRenameSession = { newTitle -> renameSession(primarySession, newTitle) },
                             onTogglePinMessage = { msgId -> togglePinMessage(primarySession.id, msgId) },
                             onStopSubagent = { runId -> stopSubagentRun(primarySession.id, runId) },
+                            onResetSubagents = { resetSubConversations((primarySession).id) },
                             onRetrySubagent = { runId -> retrySubagentRun(primarySession.id, runId) },
-                            onAttachOrchestration = { en, subId, subM, subE, maxP, maxR, sens ->
-                                attachOrchestrationToSession(primarySession, en, subId, subM, subE, maxP, maxR, sens)
+                            onAttachOrchestration = { en, subs, maxR, sens ->
+                                attachOrchestrationToSession(primarySession, en, subs, maxR, sens)
                             },
                             onToggleSkipPermissions = { toggleSkipPermissions(primarySession) },
                             modifier = Modifier
@@ -2224,9 +2183,10 @@ fun MainScreen(
                             onRenameSession = { newTitle -> renameSession(primarySession, newTitle) },
                             onTogglePinMessage = { msgId -> togglePinMessage(primarySession.id, msgId) },
                             onStopSubagent = { runId -> stopSubagentRun((secondarySession ?: primarySession).id, runId) },
+                            onResetSubagents = { resetSubConversations((secondarySession ?: primarySession).id) },
                             onRetrySubagent = { runId -> retrySubagentRun((secondarySession ?: primarySession).id, runId) },
-                            onAttachOrchestration = { en, subId, subM, subE, maxP, maxR, sens ->
-                                attachOrchestrationToSession(secondarySession ?: primarySession, en, subId, subM, subE, maxP, maxR, sens)
+                            onAttachOrchestration = { en, subs, maxR, sens ->
+                                attachOrchestrationToSession(secondarySession ?: primarySession, en, subs, maxR, sens)
                             },
                             onToggleSkipPermissions = { toggleSkipPermissions(secondarySession ?: primarySession) },
                             modifier = Modifier
@@ -2285,9 +2245,10 @@ fun MainScreen(
                             onRenameSession = { newTitle -> renameSession(primarySession, newTitle) },
                             onTogglePinMessage = { msgId -> togglePinMessage(primarySession.id, msgId) },
                             onStopSubagent = { runId -> stopSubagentRun(primarySession.id, runId) },
+                            onResetSubagents = { resetSubConversations((primarySession).id) },
                             onRetrySubagent = { runId -> retrySubagentRun(primarySession.id, runId) },
-                            onAttachOrchestration = { en, subId, subM, subE, maxP, maxR, sens ->
-                                attachOrchestrationToSession(primarySession, en, subId, subM, subE, maxP, maxR, sens)
+                            onAttachOrchestration = { en, subs, maxR, sens ->
+                                attachOrchestrationToSession(primarySession, en, subs, maxR, sens)
                             },
                             onToggleSkipPermissions = { toggleSkipPermissions(primarySession) },
                             modifier = Modifier
@@ -2347,9 +2308,10 @@ fun MainScreen(
                             onRenameSession = { newTitle -> renameSession(primarySession, newTitle) },
                             onTogglePinMessage = { msgId -> togglePinMessage(primarySession.id, msgId) },
                             onStopSubagent = { runId -> stopSubagentRun((secondarySession ?: primarySession).id, runId) },
+                            onResetSubagents = { resetSubConversations((secondarySession ?: primarySession).id) },
                             onRetrySubagent = { runId -> retrySubagentRun((secondarySession ?: primarySession).id, runId) },
-                            onAttachOrchestration = { en, subId, subM, subE, maxP, maxR, sens ->
-                                attachOrchestrationToSession(secondarySession ?: primarySession, en, subId, subM, subE, maxP, maxR, sens)
+                            onAttachOrchestration = { en, subs, maxR, sens ->
+                                attachOrchestrationToSession(secondarySession ?: primarySession, en, subs, maxR, sens)
                             },
                             onToggleSkipPermissions = { toggleSkipPermissions(secondarySession ?: primarySession) },
                             modifier = Modifier
@@ -2703,9 +2665,8 @@ fun MainScreen(
                     store.saveActiveSessionId(newSess.id)
                 }
             },
-            onCreateOrchestration = { title, mainConnId, mainModel, mainEffort, subConnId, subModel, subEffort, maxParallel, maxRounds, sensitivity, useWorktree ->
+            onCreateOrchestration = { title, mainConnId, mainModel, mainEffort, subs, maxRounds, sensitivity, useWorktree ->
                 val mainConn = enabledConnections.find { it.id == mainConnId } ?: return@NewSessionDialog
-                val subConn = enabledConnections.find { it.id == subConnId } ?: mainConn
                 showNewSessionDialog = false
                 scope.launch {
                     val wtPath = if (useWorktree && activeProject.workDir.isNotBlank()) {
@@ -2720,18 +2681,13 @@ fun MainScreen(
                         selectedEffort = mainEffort,
                         worktreePath = wtPath,
                         isOrchestration = true,
-                        subConnectionId = subConn.id,
-                        subModel = subModel,
-                        subEffort = subEffort,
-                        maxParallelSubagents = maxParallel.coerceIn(1, 8),
+                        subConnectionId = subs.firstOrNull()?.connectionId,
+                        subAgents = subs,
                         maxDelegationRounds = maxRounds.coerceIn(1, 6),
                         subagentSensitivity = sensitivity.ifBlank { "medium" }
                     )
                     if (mainConn.usesHiddenWebBridge()) {
                         headlessWebBridge.getOrCreateWebView(mainConn.id, mainConn.endpointUrl)
-                    }
-                    if (subConn.usesHiddenWebBridge() && subConn.id != mainConn.id) {
-                        headlessWebBridge.getOrCreateWebView(subConn.id, subConn.endpointUrl)
                     }
                     sessions = sessions + newSess
                     store.saveSessions(sessions)
@@ -3049,46 +3005,30 @@ private fun NewSessionDialog(
         mainConnId: String,
         mainModel: String,
         mainEffort: String,
-        subConnId: String,
-        subModel: String,
-        subEffort: String,
-        maxParallel: Int,
+        subs: List<SubAgentConfig>,
         maxRounds: Int,
         sensitivity: String,
         useWorktree: Boolean
-    ) -> Unit = { _, _, _, _, _, _, _, _, _, _, _ -> }
+    ) -> Unit = { _, _, _, _, _, _, _, _ -> }
 ) {
     var isOrchMode by remember { mutableStateOf(false) }
     var title by remember { mutableStateOf("세션 $defaultIndex") }
     var selectedConnId by remember { mutableStateOf(enabledConnections.firstOrNull()?.id) }
-    var subConnId by remember { mutableStateOf(enabledConnections.firstOrNull()?.id) }
+    var subs by remember {
+        mutableStateOf(enabledConnections.firstOrNull()?.let { listOf(newSubAgent(emptyList(), it)) }.orEmpty())
+    }
 
     val mainConn = enabledConnections.find { it.id == selectedConnId }
-    val subConn = enabledConnections.find { it.id == subConnId } ?: mainConn
     val mainModels = remember(mainConn?.id) { mainConn?.let { availableModelsFor(it) } ?: emptyList() }
-    val subModels = remember(subConn?.id) { subConn?.let { availableModelsFor(it) } ?: emptyList() }
 
     var mainModel by remember(mainConn?.id) {
         mutableStateOf(mainConn?.let { it.model.ifBlank { defaultModelFor(it) } } ?: "")
     }
-    var subModel by remember(subConn?.id) {
-        mutableStateOf(
-            subModels.lastOrNull { m ->
-                val l = m.lowercase()
-                l.contains("mini") || l.contains("haiku") || l.contains("flash") || l.contains("fast") || l.contains("lite")
-            } ?: subConn?.let { it.model.ifBlank { defaultModelFor(it) } } ?: ""
-        )
-    }
     val mainEfforts = remember(mainConn?.id, mainModel) {
         if (mainConn != null) availableEffortsFor(mainConn, mainModel) else emptyList()
     }
-    val subEfforts = remember(subConn?.id, subModel) {
-        if (subConn != null) availableEffortsFor(subConn, subModel) else emptyList()
-    }
     var mainEffort by remember(mainConn?.id, mainModel) { mutableStateOf("") }
-    var subEffort by remember(subConn?.id, subModel) { mutableStateOf("") }
 
-    var maxParallel by remember { mutableIntStateOf(3) }
     var maxRounds by remember { mutableIntStateOf(3) }
     var sensitivity by remember { mutableStateOf("medium") }
     var useWorktree by remember { mutableStateOf(false) }
@@ -3260,123 +3200,11 @@ private fun NewSessionDialog(
 
                         HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
 
-                        // Sub AI selection
-                        Text("서브 AI (작업자 · 같은 AI의 저비용 모델 가능)", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(5.dp)
-                        ) {
-                            enabledConnections.forEach { conn ->
-                                FilterChip(
-                                    selected = conn.id == subConnId,
-                                    onClick = { subConnId = conn.id },
-                                    label = { Text(conn.labelIn(enabledConnections), fontSize = 11.sp) }
-                                )
-                            }
-                        }
-                        if (subModels.isNotEmpty()) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .horizontalScroll(rememberScrollState()),
-                                horizontalArrangement = Arrangement.spacedBy(4.dp)
-                            ) {
-                                subModels.forEach { m ->
-                                    FilterChip(
-                                        selected = m == subModel,
-                                        onClick = { subModel = m },
-                                        label = { Text(m, fontSize = 10.sp) }
-                                    )
-                                }
-                            }
-                        }
-                        if (subEfforts.isNotEmpty()) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .horizontalScroll(rememberScrollState()),
-                                horizontalArrangement = Arrangement.spacedBy(4.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text("Effort:", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                subEfforts.forEach { ef ->
-                                    FilterChip(
-                                        selected = ef == subEffort,
-                                        onClick = { subEffort = if (subEffort == ef) "" else ef },
-                                        label = { Text(ef, fontSize = 10.sp) }
-                                    )
-                                }
-                            }
-                        }
+                        Text("서브 에이전트 (각자 별도 대화)", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        SubAgentEditor(subs, enabledConnections) { subs = it }
 
                         HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
-
-                        // #3 User-configurable guardrail limits
-                        Text("안전 제한 설정", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text("최대 동시 서브에이전트", fontSize = 12.sp)
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                OutlinedButton(
-                                    onClick = { if (maxParallel > 1) maxParallel-- },
-                                    contentPadding = PaddingValues(0.dp),
-                                    modifier = Modifier.size(28.dp)
-                                ) { Text("-", fontSize = 14.sp) }
-                                Text("${maxParallel}개", fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                                OutlinedButton(
-                                    onClick = { if (maxParallel < 8) maxParallel++ },
-                                    contentPadding = PaddingValues(0.dp),
-                                    modifier = Modifier.size(28.dp)
-                                ) { Text("+", fontSize = 14.sp) }
-                            }
-                        }
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text("최대 위임 라운드", fontSize = 12.sp)
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                OutlinedButton(
-                                    onClick = { if (maxRounds > 1) maxRounds-- },
-                                    contentPadding = PaddingValues(0.dp),
-                                    modifier = Modifier.size(28.dp)
-                                ) { Text("-", fontSize = 14.sp) }
-                                Text("${maxRounds}회", fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                                OutlinedButton(
-                                    onClick = { if (maxRounds < 6) maxRounds++ },
-                                    contentPadding = PaddingValues(0.dp),
-                                    modifier = Modifier.size(28.dp)
-                                ) { Text("+", fontSize = 14.sp) }
-                            }
-                        }
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text("호출 민감도", fontSize = 12.sp)
-                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                listOf("low" to "낮음", "medium" to "보통", "high" to "높음").forEach { (key, lbl) ->
-                                    FilterChip(
-                                        selected = sensitivity == key,
-                                        onClick = { sensitivity = key },
-                                        label = { Text(lbl, fontSize = 10.5.sp) }
-                                    )
-                                }
-                            }
-                        }
+                        OrchLimits(maxRounds, { maxRounds = it }, sensitivity, { sensitivity = it })
                     }
 
                     if (hasWorkDir) {
@@ -3411,10 +3239,7 @@ private fun NewSessionDialog(
                                     id,
                                     mainModel,
                                     mainEffort,
-                                    subConnId ?: id,
-                                    subModel,
-                                    subEffort,
-                                    maxParallel,
+                                    subs,
                                     maxRounds,
                                     sensitivity,
                                     useWorktree
