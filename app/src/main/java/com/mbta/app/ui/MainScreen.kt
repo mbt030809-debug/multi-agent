@@ -178,7 +178,43 @@ fun MainScreen(
 
     val sendingMap = remember { mutableStateMapOf<String, Boolean>() }
     val webQuestionMap = remember { mutableStateMapOf<String, String>() }
-    val webAppliedSettings = remember { mutableMapOf<String, String>() }
+    // 웹 화면에 실제로 적용에 성공한 모델/effort (세션 WebView 키별) — 실패하면 다음 전송 때 다시 시도
+    val webAppliedModel = remember { mutableMapOf<String, String>() }
+    val webAppliedEffort = remember { mutableMapOf<String, String>() }
+
+    fun summarizeWebSwitch(label: String, json: String): Pair<Boolean, String> {
+        return runCatching {
+            val o = org.json.JSONObject(json)
+            val clicked = o.optString("clicked")
+            val after = o.optString("after")
+            val picker = o.optString("picker")
+            val err = o.optString("error")
+            if (clicked.isNotBlank()) {
+                true to "웹 $label 전환: $clicked → 현재 표시: ${after.ifBlank { "?" }}"
+            } else {
+                val why = when (err) {
+                    "nopicker" -> "모델 버튼을 못 찾음"
+                    "nowebview" -> "웹 화면이 아직 준비되지 않음"
+                    "timeout" -> "응답 시간 초과"
+                    else -> "메뉴에서 항목을 못 찾음"
+                }
+                false to "웹 $label 전환 실패 — $why" + (if (picker.isNotBlank()) " (버튼: $picker)" else "")
+            }
+        }.getOrDefault(false to "웹 $label 전환 결과를 읽지 못함")
+    }
+
+    suspend fun awaitWebSwitch(isModel: Boolean, key: String, value: String): Boolean {
+        val d = kotlinx.coroutines.CompletableDeferred<String>()
+        if (isModel) headlessWebBridge.switchWebModel(key, value) { d.complete(it) }
+        else headlessWebBridge.switchWebEffort(key, value) { d.complete(it) }
+        val json = kotlinx.coroutines.withTimeoutOrNull(4500L) { d.await() } ?: "{\"error\":\"timeout\"}"
+        val (ok, msg) = summarizeWebSwitch(if (isModel) "모델" else "effort", json)
+        android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_LONG).show()
+        if (ok) {
+            if (isModel) webAppliedModel[key] = value else webAppliedEffort[key] = value
+        }
+        return ok
+    }
     // 웹 질문 카드가 떠 있었을 때의 카드 정보 (응답 텍스트에서 카드 글자를 걸러내기 위함)
     val webCardMemory = remember { mutableMapOf<String, String>() }
     val activeSendingCount = sendingMap.values.count { it }
@@ -867,18 +903,14 @@ fun MainScreen(
             webCardMemory.remove(session.id)
             val wantModel = session.selectedModel.trim()
             val wantEffort = session.selectedEffort.trim()
-            val appliedSig = webAppliedSettings[webSendKey]
-            val wantSig = "$wantModel|$wantEffort"
-            val needApply = wantSig != "|" && wantSig != appliedSig
-            if (needApply) webAppliedSettings[webSendKey] = wantSig
             scope.launch {
-                if (needApply) {
-                    if (wantModel.isNotBlank()) headlessWebBridge.switchWebModel(webSendKey, wantModel)
-                    if (wantEffort.isNotBlank() && targetConn.kind == ConnectionKind.REMOTE_WEB) {
-                        kotlinx.coroutines.delay(700L)
-                        headlessWebBridge.switchWebEffort(webSendKey, wantEffort)
-                    }
-                    kotlinx.coroutines.delay(900L)
+                if (wantModel.isNotBlank() && webAppliedModel[webSendKey] != wantModel) {
+                    awaitWebSwitch(true, webSendKey, wantModel)
+                    kotlinx.coroutines.delay(400L)
+                }
+                if (wantEffort.isNotBlank() && targetConn.kind == ConnectionKind.REMOTE_WEB && webAppliedEffort[webSendKey] != wantEffort) {
+                    awaitWebSwitch(false, webSendKey, wantEffort)
+                    kotlinx.coroutines.delay(400L)
                 }
             headlessWebBridge.sendPrompt(
                 key = webSendKey,
@@ -1260,7 +1292,8 @@ fun MainScreen(
         sessions = sessions.map { if (it.id == session.id) it.copy(selectedModel = model) else it }
         store.saveSessions(sessions)
         if (conn.usesHiddenWebBridge()) {
-            headlessWebBridge.switchWebModel(com.mbta.app.model.webSessionKey(conn.id, session.id), model)
+            val wk = com.mbta.app.model.webSessionKey(conn.id, session.id)
+            scope.launch { awaitWebSwitch(true, wk, model) }
         }
     }
 
@@ -1276,8 +1309,9 @@ fun MainScreen(
             if (it.id == session.id) it.copy(selectedModel = updatedModel, selectedEffort = effort) else it
         }
         store.saveSessions(sessions)
-        if (conn.usesHiddenWebBridge()) {
-            headlessWebBridge.switchWebEffort(com.mbta.app.model.webSessionKey(conn.id, session.id), effort)
+        if (conn.usesHiddenWebBridge() && conn.kind == ConnectionKind.REMOTE_WEB) {
+            val wk = com.mbta.app.model.webSessionKey(conn.id, session.id)
+            scope.launch { awaitWebSwitch(false, wk, effort) }
         }
     }
 
