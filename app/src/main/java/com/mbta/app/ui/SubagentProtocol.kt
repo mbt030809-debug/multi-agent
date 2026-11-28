@@ -2,7 +2,21 @@ package com.mbta.app.ui
 
 import org.json.JSONArray
 
-internal data class SubagentRequest(val role: String, val task: String, val model: String = "")
+internal data class SubagentRequest(
+    val role: String,
+    val task: String,
+    val model: String = "",
+    /** 이 서브가 달성할 목표 (선택) */
+    val objective: String = "",
+    /** 기대하는 보고 형식 (선택) */
+    val output: String = "",
+    /** 이 서브가 소유(수정)하는 파일/폴더. 선언되면 파일 충돌 판정에 우선 사용 */
+    val files: List<String> = emptyList(),
+    /** 건드리면 안 되는 범위 (선택) */
+    val boundaries: String = "",
+    /** true면 읽기 전용(파일 수정 금지) */
+    val readOnly: Boolean = false
+)
 
 internal data class SubagentParseResult(
     val requests: List<SubagentRequest>,
@@ -34,7 +48,23 @@ internal object SubagentProtocol {
                     val role = obj.optString("role").ifBlank { obj.optString("label") }.ifBlank { "서브 ${i + 1}" }.trim().take(24)
                     val task = obj.optString("task").ifBlank { obj.optString("prompt") }.trim()
                     val model = obj.optString("model").trim()
-                    if (task.isNotBlank()) add(SubagentRequest(role, task, model))
+                    val files = buildList {
+                        val fa = obj.optJSONArray("files")
+                        if (fa != null) for (k in 0 until fa.length()) fa.optString(k).trim().takeIf { it.isNotEmpty() }?.let { add(it) }
+                        else obj.optString("files").split(',', '\n').map { it.trim() }.filter { it.isNotEmpty() }.forEach { add(it) }
+                    }
+                    val mode = obj.optString("mode").trim().lowercase()
+                    val readOnly = obj.optBoolean("readOnly", false) || mode in setOf("read", "readonly", "read-only", "읽기")
+                    if (task.isNotBlank()) add(
+                        SubagentRequest(
+                            role, task, model,
+                            objective = obj.optString("objective").trim(),
+                            output = obj.optString("output").trim(),
+                            files = files,
+                            boundaries = obj.optString("boundaries").trim(),
+                            readOnly = readOnly
+                        )
+                    )
                 }
             }
             if (list.isEmpty()) {
@@ -61,9 +91,57 @@ internal object SubagentProtocol {
 
     private fun isWrite(task: String): Boolean = writeRegex.containsMatchIn(task)
 
+    private fun norm(f: String): String = f.trim().trimStart('.', '/').trimEnd('/').lowercase()
+
+    /** 선언된 소유 파일끼리 겹치는지 (같은 경로 또는 한쪽이 상위 폴더) */
+    internal fun filesOverlap(a: List<String>, b: List<String>): Boolean {
+        val na = a.map(::norm).filter { it.isNotEmpty() }
+        val nb = b.map(::norm).filter { it.isNotEmpty() }
+        return na.any { x -> nb.any { y -> x == y || x.startsWith("$y/") || y.startsWith("$x/") } }
+    }
+
+    private fun writes(r: SubagentRequest): Boolean =
+        if (r.readOnly) false else r.files.isNotEmpty() || isWrite(r.task)
+
     private fun conflicts(a: SubagentRequest, b: SubagentRequest): Boolean {
-        if (!isWrite(a.task) || !isWrite(b.task)) return false
-        return paths(a.task).intersect(paths(b.task)).isNotEmpty()
+        if (!writes(a) || !writes(b)) return false
+        // 소유 파일을 둘 다 선언했으면 선언 기준으로 결정적으로 판정
+        if (a.files.isNotEmpty() && b.files.isNotEmpty()) return filesOverlap(a.files, b.files)
+        val pa = paths(a.task) + a.files.map(::norm)
+        val pb = paths(b.task) + b.files.map(::norm)
+        return pa.intersect(pb).isNotEmpty()
+    }
+
+    /** 서브에이전트에 전달할 구조화된 지시서 */
+    fun brief(r: SubagentRequest): String = buildString {
+        if (r.objective.isNotBlank()) append("■ 목표: ").append(r.objective).append("\n")
+        append("■ 작업: ").append(r.task).append("\n")
+        if (r.files.isNotEmpty()) append("■ 소유 파일(수정 허용 범위): ").append(r.files.joinToString(", ")).append("\n")
+        if (r.readOnly) append("■ 모드: 읽기 전용 — 어떤 파일도 수정·생성·삭제하지 마세요.\n")
+        else if (r.files.isNotEmpty()) append("■ 위 소유 파일 밖은 수정하지 마세요(필요하면 보고서에 제안만 적기).\n")
+        if (r.boundaries.isNotBlank()) append("■ 금지/주의: ").append(r.boundaries).append("\n")
+        if (r.output.isNotBlank()) append("■ 보고 형식: ").append(r.output).append("\n")
+    }
+
+    /** 위임 라운드에서 파일을 수정한 서브가 있는지 (리뷰어 실행 여부 판단) */
+    fun hasWriters(requests: List<SubagentRequest>): Boolean = requests.any(::writes)
+
+    /** 읽기 전용 리뷰어 + 테스트 검증 지시서 */
+    fun reviewPrompt(requests: List<SubagentRequest>, outputs: List<String>): String = buildString {
+        append("당신은 읽기 전용 코드 리뷰어입니다. 파일을 수정·생성·삭제하지 마세요.\n")
+        append("방금 서브에이전트들이 아래 작업을 수행했습니다. 변경 내용을 실제 파일/`git diff`로 확인하고 검증하세요.\n\n")
+        requests.forEachIndexed { i, r ->
+            if (!writes(r)) return@forEachIndexed
+            append("### ${r.role}\n- 작업: ${r.task.take(300)}\n")
+            if (r.files.isNotEmpty()) append("- 소유 파일: ${r.files.joinToString(", ")}\n")
+            outputs.getOrNull(i)?.let { append("- 보고 요약: ${it.take(400)}\n") }
+            append("\n")
+        }
+        append("검증 항목:\n")
+        append("1. 각 서브가 소유 파일 밖을 수정하지 않았는지, 서로의 변경이 충돌하지 않는지\n")
+        append("2. 버그·누락·요구사항 불일치\n")
+        append("3. 프로젝트의 테스트/린트/빌드 명령이 있으면 실행하고 결과(통과/실패, 실패 로그 핵심)를 보고. 없으면 \"테스트 명령 없음\"이라고 적기\n")
+        append("마지막 줄에 `VERDICT: PASS` 또는 `VERDICT: FAIL(이유)` 형식으로 판정을 적으세요.")
     }
 
     /** 같은 파일을 쓰는 작업끼리는 서로 다른 배치로 나눠 순차 실행. 각 배치는 최대 maxParallel개 병렬. (요청 인덱스 반환) */
