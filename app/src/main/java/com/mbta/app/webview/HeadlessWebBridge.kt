@@ -195,6 +195,8 @@ class HeadlessWebBridge(
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
             setBackgroundColor(Color.parseColor("#11111B"))
+            // 백그라운드에서도 렌더러 우선순위를 유지해 페이지 정지를 줄임
+            runCatching { setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false) }
 
             settings.apply {
                 javaScriptEnabled = true
@@ -1869,6 +1871,16 @@ class HeadlessWebBridge(
         pool.clear()
     }
 
+    /** 앱이 포그라운드로 돌아올 때 풀의 WebView 타이머·렌더링을 다시 켬 */
+    fun resumeAll() {
+        pool.values.forEach { wv ->
+            runCatching {
+                wv.onResume()
+                wv.resumeTimers()
+            }
+        }
+    }
+
     private fun buildAutomationJs(reqId: String, kindName: String, prompt: String): String {
         val quotedPrompt = JSONObject.quote(prompt)
         val quotedReqId = JSONObject.quote(reqId)
@@ -2157,8 +2169,10 @@ class HeadlessWebBridge(
                             } catch(e) {}
                             return info;
                         }
+                        var firstSendAt = 0;
                         function trySend() {
                             sendAttempts++;
+                            if (!firstSendAt) firstSendAt = Date.now();
                             var sb = findSendBtn();
                             var enabled = !!sb && !sb.disabled && sb.getAttribute('aria-disabled') !== 'true';
                             if (enabled && (lastClickAt === 0 || Date.now() - lastClickAt >= 1500)) {
@@ -2175,7 +2189,8 @@ class HeadlessWebBridge(
                             }
                             var retryTimer = setTimeout(function() {
                                 if (window.__mbtaReqId !== reqId) return;
-                                if (sendAttempts < 60 && inputRemaining()) trySend();
+                                // 첫 시도 후 30초(500ms 간격 약 60회) 안에서만 재시도
+                                if (Date.now() - firstSendAt < 30000 && inputRemaining()) trySend();
                             }, 500);
                             window.__mbtaTimers.push(retryTimer);
                         }
@@ -2206,16 +2221,17 @@ class HeadlessWebBridge(
                         }
 
                         var lastText = '';
-                        var stableTicks = 0;
-                        var totalTicks = 0;
-                        var idleTicks = 0;
+                        // 틱 수 대신 실제 경과 시간으로 판정 (백그라운드에서 타이머가 늦게 돌아도 시간 기준은 유지)
+                        var startAt = Date.now();
+                        var lastActiveAt = startAt;
+                        var lastActivityAt = startAt;
+                        var stableSince = startAt;
                         var lastBodyLen = beforeBodyLen;
                         // 일반 채팅(ChatGPT/Claude/Gemini)은 셀렉터만 사용, 그 외(Claude Code 웹 등)는 화면 텍스트 증가분도 보조로 사용
                         var useBodyFallback = (!isCodeWeb && kind !== 'CHATGPT_WEB' && kind !== 'CLAUDE_WEB' && kind !== 'GEMINI_WEB');
-                        var silentWorking = 0;
                         var timer = setInterval(function() {
                             if (window.__mbtaReqId !== reqId) { clearInterval(timer); return; }
-                            totalTicks++;
+                            var now = Date.now();
                             var bodyNow = (document.body && document.body.innerText) ? document.body.innerText.length : 0;
                             var activity = bodyNow !== lastBodyLen;
                             lastBodyLen = bodyNow;
@@ -2226,12 +2242,13 @@ class HeadlessWebBridge(
                                 // Claude Code 웹의 '작업 중' 줄에 글자가 있으면 생성 중 (화면 변화 없이 10분(500ms 틱 1200회)이 지나면 무시)
                                 var wl = document.querySelector('[data-testid="code-working-line"]');
                                 var working = !!(wl && (wl.innerText || '').trim());
-                                if (working && !activity) silentWorking++; else silentWorking = 0;
-                                streamingNow = working && silentWorking < 1200;
+                                // 마지막 화면 변화 시각 기준: 화면 변화 없이 10분이 지나면 '작업 중' 줄이 있어도 생성 중으로 보지 않음
+                                if (activity || !working) lastActivityAt = now;
+                                streamingNow = working && (now - lastActivityAt) < 600000;
                             }
-                            if (activity || streamingNow) idleTicks = 0; else idleTicks++;
+                            if (activity || streamingNow) lastActiveAt = now;
                             // 화면이 계속 변하거나 생성 중이면 오래 걸려도 계속 기다림. 3분간 변화가 없거나 90분이 넘으면 종료
-                            if (totalTicks > 10800 || idleTicks > 360) {
+                            if (now - startAt > 90 * 60 * 1000 || now - lastActiveAt > 180 * 1000) {
                                 clearInterval(timer);
                                 if (lastText) {
                                     var doneText = isCodeWeb ? lastText + '\n\n(⚠️ 응답 대기 시간 초과 — 일부만 수신되었을 수 있음)' : lastText;
@@ -2259,17 +2276,17 @@ class HeadlessWebBridge(
 
                             if (candidate && candidate !== lastText) {
                                 lastText = candidate;
-                                stableTicks = 0;
+                                stableSince = now;
                                 if (window.MbtABridge) window.MbtABridge.onChunk(reqId, lastText);
                             } else if (lastText) {
                                 if (!streamingNow && !activity) {
-                                    stableTicks++;
-                                    if (stableTicks >= 5) {
+                                    // 마지막 텍스트 변화 후 2.5초 경과하면 완료
+                                    if (now - stableSince >= 2500) {
                                         clearInterval(timer);
                                         if (window.MbtABridge) window.MbtABridge.onDone(reqId, lastText);
                                     }
                                 } else {
-                                    stableTicks = 0;
+                                    stableSince = now;
                                 }
                             }
                         }, 500);
