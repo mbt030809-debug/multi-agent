@@ -1746,7 +1746,7 @@ fun MainScreen(
                                 Button(onClick = { showNewSessionDialog = true }) {
                                     Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
                                     Spacer(modifier = Modifier.size(6.dp))
-                                    Text("+ 새 세션 만들기")
+                                    Text("새 세션 만들기")
                                 }
                             }
                         }
