@@ -1284,6 +1284,29 @@ class HeadlessWebBridge(
         }
     }
 
+    /** 웹 질문 카드의 '건너뛰기' 버튼을 눌러 질문을 건너뜀 (원본 AI가 건너뛴 것을 알 수 있도록) */
+    fun skipWebQuestion(key: String, onResult: (Boolean) -> Unit) {
+        val wv = pool[key]
+        if (wv == null) {
+            onResult(false)
+            return
+        }
+        val js = """
+            (function() {
+                try {
+                    $DEEP_QUERY_JS
+                    var btns = queryAllDeep('button, [role="button"]');
+                    for (var i = 0; i < btns.length; i++) {
+                        var t = (btns[i].innerText || '').trim();
+                        if (/^(건너뛰기|skip)$/i.test(t)) { btns[i].click(); return 'clicked'; }
+                    }
+                    return 'nocard';
+                } catch(e) { return 'err'; }
+            })();
+        """.trimIndent()
+        wv.evaluateJavascript(js) { raw -> onResult(raw?.trim('"') == "clicked") }
+    }
+
     /** 웹 질문 카드에서 선택지를 대신 클릭하거나, '기타' 입력란에 직접 답변을 넣어 전송 */
     fun answerWebQuestion(key: String, optionIndex: Int, freeText: String, onResult: (Boolean) -> Unit) {
         val wv = pool[key]
