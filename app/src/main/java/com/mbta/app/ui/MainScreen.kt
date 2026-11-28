@@ -179,6 +179,8 @@ fun MainScreen(
     val sendingMap = remember { mutableStateMapOf<String, Boolean>() }
     val webQuestionMap = remember { mutableStateMapOf<String, String>() }
     val webAppliedSettings = remember { mutableMapOf<String, String>() }
+    // 웹 질문 카드가 떠 있었을 때의 카드 정보 (응답 텍스트에서 카드 글자를 걸러내기 위함)
+    val webCardMemory = remember { mutableMapOf<String, String>() }
     val activeSendingCount = sendingMap.values.count { it }
     LaunchedEffect(activeSendingCount) {
         if (activeSendingCount > 0) {
@@ -541,6 +543,7 @@ fun MainScreen(
                                     kotlinx.coroutines.delay(4000L)
                                     while (sendingMap[session.id] == true) {
                                         headlessWebBridge.readWebQuestion(orchWebKey) { json ->
+                                            if (json != null) webCardMemory[session.id] = json
                                             if (json != webQuestionMap[session.id]) {
                                                 if (json == null) webQuestionMap.remove(session.id) else webQuestionMap[session.id] = json
                                                 val suffix = json?.let { "\n\n<<ASK>>$it<</ASK>>" } ?: ""
@@ -566,7 +569,7 @@ fun MainScreen(
                                     onChunk = { partial ->
                                         // 메인이 쓰는 중인 답변을 실시간으로 대답창에 표시
                                         val askSuffix = webQuestionMap[session.id]?.let { "\n\n<<ASK>>$it<</ASK>>" } ?: ""
-                                        val shown = liveText(SubagentProtocol.stripBlock(partial)).ifBlank { "⏳ 메인 오케스트레이터 분석 중..." }
+                                        val shown = liveText(SubagentProtocol.stripBlock(removeCardLines(partial, webCardMemory[session.id]))).ifBlank { "⏳ 메인 오케스트레이터 분석 중..." }
                                         setPlaceholder(shown + askSuffix)
                                     }
                                 )
@@ -587,7 +590,7 @@ fun MainScreen(
                             if (triple.second > 0L || triple.third > 0L) {
                                 onRecordTokens(effectiveMainConn.id, effectiveMainConn.kind, triple.second, triple.third)
                             }
-                            triple.first to err
+                            removeCardLines(triple.first, webCardMemory.remove(session.id)) to err
                         } else {
                             val isMainBridge = effectiveMainConn.kind == ConnectionKind.REMOTE_CONTROL || effectiveMainConn.kind == ConnectionKind.TERMUX_CLI
                             val mainPollJob = if (isMainBridge) {
@@ -841,6 +844,7 @@ fun MainScreen(
                     kotlinx.coroutines.delay(4000L)
                     while (sendingMap[askSid] == true) {
                         headlessWebBridge.readWebQuestion(askKey) { json ->
+                            if (json != null) webCardMemory[askSid] = json
                             if (json != webQuestionMap[askSid]) {
                                 if (json == null) webQuestionMap.remove(askSid) else webQuestionMap[askSid] = json
                                 val suffix = json?.let { "\n\n<<ASK>>$it<</ASK>>" } ?: ""
@@ -860,6 +864,7 @@ fun MainScreen(
             }
             // 앱에서 모델/effort를 바꾼 뒤의 첫 명령은 바뀐 설정으로 나가도록, 전송 직전에 웹 화면 설정을 맞춤
             val webSendKey = com.mbta.app.model.webSessionKey(targetConn.id, session.id)
+            webCardMemory.remove(session.id)
             val wantModel = session.selectedModel.trim()
             val wantEffort = session.selectedEffort.trim()
             val appliedSig = webAppliedSettings[webSendKey]
@@ -883,15 +888,17 @@ fun MainScreen(
                 conversationUrl = session.webConversationUrl,
                 onChunk = { partial ->
                     val askSuffix = webQuestionMap[session.id]?.let { "\n\n<<ASK>>$it<</ASK>>" } ?: ""
+                    val partialClean = removeCardLines(partial, webCardMemory[session.id])
                     sessions = sessions.map { s ->
                         if (s.id == session.id) {
                             s.copy(messages = s.messages.map { m ->
-                                if (m.id == placeholderId) m.copy(content = partial + askSuffix) else m
+                                if (m.id == placeholderId) m.copy(content = partialClean + askSuffix) else m
                             })
                         } else s
                     }
                 },
-                onDone = { finalText, inTok, outTok ->
+                onDone = { finalTextRaw, inTok, outTok ->
+                    val finalText = removeCardLines(finalTextRaw, webCardMemory.remove(session.id))
                     val curUrl = headlessWebBridge.currentUrl(com.mbta.app.model.webSessionKey(targetConn.id, session.id)).orEmpty()
                     val newConvUrl = if (isSavableConversationUrl(curUrl, targetConn.endpointUrl) && curUrl != session.webConversationUrl) {
                         curUrl

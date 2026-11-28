@@ -121,11 +121,23 @@ class HeadlessWebBridge(
         wv.evaluateJavascript(js, null)
     }
 
+    /** 웹 화면에서 긁어온 텍스트의 아이콘 폰트 글리프(사설 영역 문자)와 낱자 한자 줄을 제거 */
+    private fun cleanWebText(raw: String): String {
+        if (raw.startsWith("__")) return raw
+        return raw
+            .replace(Regex("[\\uE000-\\uF8FF]"), "")
+            .lines()
+            .filter { line -> !Regex("^\\s*[\\u4E00-\\u9FFF]\\s*$").matches(line) }
+            .joinToString("\n")
+            .replace(Regex("\\n{3,}"), "\n\n")
+            .trim()
+    }
+
     private inner class JsBridge {
         @JavascriptInterface
         fun onChunk(requestId: String, text: String) {
             mainHandler.post {
-                pending[requestId]?.onChunk?.invoke(text)
+                pending[requestId]?.onChunk?.invoke(cleanWebText(text))
             }
         }
 
@@ -134,8 +146,9 @@ class HeadlessWebBridge(
             mainHandler.post {
                 log("onDone req=$requestId len=${finalText.length}")
                 val req = pending.remove(requestId) ?: return@post
-                val outTokens = ceil(finalText.length / 3.0).toLong().coerceAtLeast(1L)
-                req.onDone(finalText, req.inputTokens, outTokens)
+                val cleaned = cleanWebText(finalText)
+                val outTokens = ceil(cleaned.length / 3.0).toLong().coerceAtLeast(1L)
+                req.onDone(cleaned, req.inputTokens, outTokens)
             }
         }
 
@@ -1085,10 +1098,70 @@ class HeadlessWebBridge(
                 try {
 
                 $DEEP_QUERY_JS
-                function parseOpt(e) {
-                    var lines = (e.innerText || '').split('\n').map(function(l) { return l.trim(); }).filter(function(l) { return l; });
-                    if (lines.length < 2 || !/^\d+$/.test(lines[0])) return null;
-                    return { label: lines[1], description: lines.slice(2).join(' '), el: e };
+                function lns(e) { return (e.innerText || '').split('\n').map(function(l) { return l.trim(); }).filter(function(l) { return l; }); }
+                var CTRL = /^(건너뛰기|skip|제출|submit|기타|other)$/i;
+                var CLICKABLE = 'button, [role="button"], [role="radio"], [role="option"], [role="checkbox"], label, input';
+                function mkOpt(row) {
+                    var ls = lns(row);
+                    if (ls.length && /^\d+$/.test(ls[0])) ls = ls.slice(1);
+                    if (!ls.length || CTRL.test(ls[0])) return null;
+                    return { label: ls[0], description: ls.slice(1).join(' '), el: row };
+                }
+                function questionOf(card, firstOpt) {
+                    var all = lns(card);
+                    var q = [];
+                    for (var k = 0; k < all.length; k++) {
+                        if (all[k] === firstOpt.label || /^\d+$/.test(all[k])) break;
+                        q.push(all[k]);
+                    }
+                    return q.join(' ');
+                }
+                // 전략 A: '기타' 행의 형제 행들을 선택지로 사용 (번호가 글자가 아니어도 동작)
+                function strategyA(card) {
+                    var els = Array.prototype.slice.call(card.querySelectorAll('*'));
+                    var other = null;
+                    for (var i = 0; i < els.length; i++) {
+                        var l = lns(els[i]);
+                        if (l.length >= 1 && l.length <= 2 && /^(기타|other)$/i.test(l[0])) other = els[i];
+                    }
+                    if (!other) return null;
+                    var row = other;
+                    while (row.parentElement && row.parentElement !== card && row.parentElement.children.length < 3) row = row.parentElement;
+                    var parent = row.parentElement;
+                    if (!parent) return null;
+                    var sibs = Array.prototype.slice.call(parent.children);
+                    var idx = sibs.indexOf(row);
+                    var before = sibs.slice(0, idx);
+                    var cand = before.filter(function(r) {
+                        var ls = lns(r);
+                        if (!ls.length || /^h[1-6]$/i.test(r.tagName)) return false;
+                        var ptr = false;
+                        try { ptr = window.getComputedStyle(r).cursor === 'pointer'; } catch(e) {}
+                        return ptr || !!r.querySelector(CLICKABLE) || r.matches(CLICKABLE);
+                    });
+                    var opts = cand.map(mkOpt).filter(function(o) { return o; });
+                    if (opts.length >= 2) return { card: card, opts: opts, question: questionOf(card, opts[0]) };
+                    return null;
+                }
+                // 전략 B: 클릭 가능한 요소(버튼/라디오 등) 중 안쪽 것만
+                function strategyB(card) {
+                    var els = Array.prototype.slice.call(card.querySelectorAll(CLICKABLE));
+                    var opts = els.map(mkOpt).filter(function(o) { return o; });
+                    var inner = opts.filter(function(a) { return !opts.some(function(b) { return b !== a && a.el.contains(b.el); }); });
+                    if (inner.length >= 2) return { card: card, opts: inner, question: questionOf(card, inner[0]) };
+                    return null;
+                }
+                // 전략 C: 줄 맨 앞이 숫자인 요소
+                function strategyC(card) {
+                    var els = Array.prototype.slice.call(card.querySelectorAll('div, li, button, label'));
+                    var opts = [];
+                    for (var j = 0; j < els.length; j++) {
+                        var ls = lns(els[j]);
+                        if (ls.length >= 2 && /^\d+$/.test(ls[0])) opts.push({ label: ls[1], description: ls.slice(2).join(' '), el: els[j] });
+                    }
+                    var inner = opts.filter(function(a) { return !opts.some(function(b) { return b !== a && a.el.contains(b.el); }); });
+                    if (inner.length >= 2) return { card: card, opts: inner, question: questionOf(card, inner[0]) };
+                    return null;
                 }
                 function findCard() {
                     var btns = queryAllDeep('button, [role="button"]');
@@ -1102,22 +1175,8 @@ class HeadlessWebBridge(
                     for (var up = 0; up < 8 && el; up++) {
                         el = el.parentElement;
                         if (!el) break;
-                        var cands = Array.prototype.slice.call(el.querySelectorAll('button, [role="button"], [role="option"], [role="radio"], label, li, div'));
-                        var parsed = [];
-                        for (var j = 0; j < cands.length; j++) {
-                            var p = parseOpt(cands[j]);
-                            if (p) parsed.push(p);
-                        }
-                        // 가장 안쪽 요소만 유지 (중첩 중복 제거)
-                        var inner = parsed.filter(function(a) {
-                            return !parsed.some(function(b) { return b !== a && a.el.contains(b.el); });
-                        });
-                        if (inner.length >= 2) {
-                            var all = (el.innerText || '').split('\n').map(function(l) { return l.trim(); }).filter(function(l) { return l; });
-                            var q = [];
-                            for (var k = 0; k < all.length; k++) { if (/^\d+$/.test(all[k])) break; q.push(all[k]); }
-                            return { card: el, opts: inner, question: q.join(' ') };
-                        }
+                        var r = strategyA(el) || strategyC(el) || strategyB(el);
+                        if (r && r.question) return r;
                     }
                     return null;
                 }
@@ -1153,10 +1212,70 @@ class HeadlessWebBridge(
                 try {
 
                 $DEEP_QUERY_JS
-                function parseOpt(e) {
-                    var lines = (e.innerText || '').split('\n').map(function(l) { return l.trim(); }).filter(function(l) { return l; });
-                    if (lines.length < 2 || !/^\d+$/.test(lines[0])) return null;
-                    return { label: lines[1], description: lines.slice(2).join(' '), el: e };
+                function lns(e) { return (e.innerText || '').split('\n').map(function(l) { return l.trim(); }).filter(function(l) { return l; }); }
+                var CTRL = /^(건너뛰기|skip|제출|submit|기타|other)$/i;
+                var CLICKABLE = 'button, [role="button"], [role="radio"], [role="option"], [role="checkbox"], label, input';
+                function mkOpt(row) {
+                    var ls = lns(row);
+                    if (ls.length && /^\d+$/.test(ls[0])) ls = ls.slice(1);
+                    if (!ls.length || CTRL.test(ls[0])) return null;
+                    return { label: ls[0], description: ls.slice(1).join(' '), el: row };
+                }
+                function questionOf(card, firstOpt) {
+                    var all = lns(card);
+                    var q = [];
+                    for (var k = 0; k < all.length; k++) {
+                        if (all[k] === firstOpt.label || /^\d+$/.test(all[k])) break;
+                        q.push(all[k]);
+                    }
+                    return q.join(' ');
+                }
+                // 전략 A: '기타' 행의 형제 행들을 선택지로 사용 (번호가 글자가 아니어도 동작)
+                function strategyA(card) {
+                    var els = Array.prototype.slice.call(card.querySelectorAll('*'));
+                    var other = null;
+                    for (var i = 0; i < els.length; i++) {
+                        var l = lns(els[i]);
+                        if (l.length >= 1 && l.length <= 2 && /^(기타|other)$/i.test(l[0])) other = els[i];
+                    }
+                    if (!other) return null;
+                    var row = other;
+                    while (row.parentElement && row.parentElement !== card && row.parentElement.children.length < 3) row = row.parentElement;
+                    var parent = row.parentElement;
+                    if (!parent) return null;
+                    var sibs = Array.prototype.slice.call(parent.children);
+                    var idx = sibs.indexOf(row);
+                    var before = sibs.slice(0, idx);
+                    var cand = before.filter(function(r) {
+                        var ls = lns(r);
+                        if (!ls.length || /^h[1-6]$/i.test(r.tagName)) return false;
+                        var ptr = false;
+                        try { ptr = window.getComputedStyle(r).cursor === 'pointer'; } catch(e) {}
+                        return ptr || !!r.querySelector(CLICKABLE) || r.matches(CLICKABLE);
+                    });
+                    var opts = cand.map(mkOpt).filter(function(o) { return o; });
+                    if (opts.length >= 2) return { card: card, opts: opts, question: questionOf(card, opts[0]) };
+                    return null;
+                }
+                // 전략 B: 클릭 가능한 요소(버튼/라디오 등) 중 안쪽 것만
+                function strategyB(card) {
+                    var els = Array.prototype.slice.call(card.querySelectorAll(CLICKABLE));
+                    var opts = els.map(mkOpt).filter(function(o) { return o; });
+                    var inner = opts.filter(function(a) { return !opts.some(function(b) { return b !== a && a.el.contains(b.el); }); });
+                    if (inner.length >= 2) return { card: card, opts: inner, question: questionOf(card, inner[0]) };
+                    return null;
+                }
+                // 전략 C: 줄 맨 앞이 숫자인 요소
+                function strategyC(card) {
+                    var els = Array.prototype.slice.call(card.querySelectorAll('div, li, button, label'));
+                    var opts = [];
+                    for (var j = 0; j < els.length; j++) {
+                        var ls = lns(els[j]);
+                        if (ls.length >= 2 && /^\d+$/.test(ls[0])) opts.push({ label: ls[1], description: ls.slice(2).join(' '), el: els[j] });
+                    }
+                    var inner = opts.filter(function(a) { return !opts.some(function(b) { return b !== a && a.el.contains(b.el); }); });
+                    if (inner.length >= 2) return { card: card, opts: inner, question: questionOf(card, inner[0]) };
+                    return null;
                 }
                 function findCard() {
                     var btns = queryAllDeep('button, [role="button"]');
@@ -1170,22 +1289,8 @@ class HeadlessWebBridge(
                     for (var up = 0; up < 8 && el; up++) {
                         el = el.parentElement;
                         if (!el) break;
-                        var cands = Array.prototype.slice.call(el.querySelectorAll('button, [role="button"], [role="option"], [role="radio"], label, li, div'));
-                        var parsed = [];
-                        for (var j = 0; j < cands.length; j++) {
-                            var p = parseOpt(cands[j]);
-                            if (p) parsed.push(p);
-                        }
-                        // 가장 안쪽 요소만 유지 (중첩 중복 제거)
-                        var inner = parsed.filter(function(a) {
-                            return !parsed.some(function(b) { return b !== a && a.el.contains(b.el); });
-                        });
-                        if (inner.length >= 2) {
-                            var all = (el.innerText || '').split('\n').map(function(l) { return l.trim(); }).filter(function(l) { return l; });
-                            var q = [];
-                            for (var k = 0; k < all.length; k++) { if (/^\d+$/.test(all[k])) break; q.push(all[k]); }
-                            return { card: el, opts: inner, question: q.join(' ') };
-                        }
+                        var r = strategyA(el) || strategyC(el) || strategyB(el);
+                        if (r && r.question) return r;
                     }
                     return null;
                 }
@@ -1195,7 +1300,9 @@ class HeadlessWebBridge(
                     var idx = $optionIndex;
                     var text = $quotedText;
                     if (idx >= 0 && idx < c.opts.length && !text) {
-                        c.opts[idx].el.click();
+                        var target = c.opts[idx].el;
+                        var clickEl = target.matches(CLICKABLE) ? target : (target.querySelector(CLICKABLE) || target);
+                        clickEl.click();
                         return 'clicked';
                     }
                     if (text) {

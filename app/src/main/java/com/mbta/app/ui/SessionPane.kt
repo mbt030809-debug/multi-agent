@@ -268,6 +268,26 @@ private fun formatBytes(n: Long): String = when {
     else -> "${n}B"
 }
 
+/** 웹 화면에서 긁은 응답 텍스트에서 질문 카드(질문/선택지/기타/건너뛰기/제출) 줄을 제거 */
+internal fun removeCardLines(text: String, cardJson: String?): String {
+    if (cardJson.isNullOrBlank()) return text
+    return runCatching {
+        val obj = org.json.JSONObject(cardJson)
+        val drop = mutableSetOf("기타", "건너뛰기", "제출", "skip", "submit", "other")
+        obj.optString("question").trim().takeIf { it.isNotEmpty() }?.let { drop.add(it) }
+        val arr = obj.optJSONArray("options")
+        if (arr != null) {
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                o.optString("label").trim().takeIf { it.isNotEmpty() }?.let { drop.add(it) }
+                o.optString("description").trim().takeIf { it.isNotEmpty() }?.let { drop.add(it) }
+            }
+        }
+        text.lines().filter { it.trim() !in drop && !it.trim().matches(Regex("^\\d+$")) }
+            .joinToString("\n").replace(Regex("\\n{3,}"), "\n\n").trim()
+    }.getOrDefault(text)
+}
+
 private val askMarkerRegex = Regex("<<ASK>>([\\s\\S]*?)<</ASK>>")
 
 internal fun stripAskMarker(text: String): String = text.replace(askMarkerRegex, "").trim()
