@@ -529,11 +529,15 @@ class HeadlessWebBridge(
                 if (!picker) return;
                 picker.click();
                 setTimeout(function() {
-                    var items = queryAllDeep('[role="menuitem"], [role="option"], li, button');
+                    var items = queryAllDeep('[role="menuitem"], [role="option"], [role="menuitemradio"], li, button, div');
                     for (var j = 0; j < items.length; j++) {
-                        var txt = (items[j].innerText || '').toLowerCase();
-                        if (txt && (txt.indexOf(target) !== -1 || target.indexOf(txt.trim()) !== -1)) {
-                            items[j].click();
+                        var el = items[j];
+                        if (el === picker || picker.contains(el)) continue;
+                        if (el.children && el.children.length > 4) continue;
+                        var txt = (el.innerText || '').toLowerCase().trim();
+                        if (!txt || txt.length > 60) continue;
+                        if (txt.indexOf(target) !== -1 || target.indexOf(txt) !== -1) {
+                            el.click();
                             return;
                         }
                     }
@@ -575,7 +579,7 @@ class HeadlessWebBridge(
                         var txt = (el.innerText || '').trim().split('\n')[0].trim().toLowerCase();
                         if (!txt) continue;
                         for (var k = 0; k < cands.length; k++) {
-                            if (txt === cands[k]) { el.click(); return true; }
+                            if (txt === cands[k] || txt.indexOf(cands[k] + ' ') === 0) { el.click(); return true; }
                         }
                     }
                     return false;
