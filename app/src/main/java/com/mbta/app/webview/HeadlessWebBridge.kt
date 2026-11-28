@@ -2019,7 +2019,6 @@ class HeadlessWebBridge(
                         }
                         trySend();
 
-                        var sendConfirmed = false;
                         var lastText = '';
                         var stableTicks = 0;
                         var totalTicks = 0;
@@ -2049,19 +2048,6 @@ class HeadlessWebBridge(
                                 streamingNow = working && silentWorking < 240;
                             }
                             if (activity || streamingNow) idleTicks = 0; else idleTicks++;
-                            // 전송 확인: 입력창이 비었거나 생성이 시작되면 전송된 것. 아니면 재시도하고, 끝내 안 되면 3분 기다리지 말고 바로 실패 처리
-                            if (!sendConfirmed) {
-                                if (streamingNow || !inputRemaining()) {
-                                    sendConfirmed = true;
-                                } else if (totalTicks === 40 || totalTicks === 80) {
-                                    sendAttempts = 0;
-                                    trySend();
-                                } else if (totalTicks >= 140 && !lastText && getLatestMsgText().count <= before.count) {
-                                    clearInterval(timer);
-                                    window.MbtABridge.onError(reqId, 'SEND_FAILED', '웹 입력창에 명령은 들어갔지만 전송되지 않았습니다. 웹 화면의 전송 버튼을 직접 눌러보고, 안 되면 설정의 진단 로그를 복사해 주세요.');
-                                    return;
-                                }
-                            }
                             // 화면이 계속 변하거나 생성 중이면 오래 걸려도 계속 기다림. 3분간 변화가 없거나 90분이 넘으면 종료
                             if (totalTicks > 10800 || idleTicks > 360) {
                                 clearInterval(timer);
