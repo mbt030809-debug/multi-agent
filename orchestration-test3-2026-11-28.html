@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>오케스트레이션 테스트 3</title>
+<style>
+  :root { --bg:#fff; --fg:#1a1a1a; --muted:#666; --main:#c2410c; --sub:#7c3aed; --card:#f5f5f4; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#161616; --fg:#eee; --muted:#aaa; --main:#fb923c; --sub:#a78bfa; --card:#242424; }
+  }
+  body { margin:0; padding:16px; background:var(--bg); color:var(--fg); font:15px/1.5 system-ui,sans-serif; }
+  h1 { font-size:18px; margin:0 0 4px; }
+  .note { color:var(--muted); font-size:13px; margin-bottom:20px; }
+  .diagram { position:relative; padding-left:48px; }
+  /* 메인: 세로선 */
+  .diagram::before { content:""; position:absolute; left:16px; top:0; bottom:0; width:5px; background:var(--main); border-radius:3px; }
+  .main-label { margin:0 0 18px; font-size:13px; font-weight:700; color:var(--main); }
+  /* 서브: 가로줄 */
+  .row { position:relative; margin:0 0 24px; }
+  .row::before { content:""; position:absolute; left:-32px; top:11px; width:32px; height:4px; background:var(--sub); border-radius:2px; }
+  .row::after { content:""; position:absolute; left:-36px; top:7px; width:12px; height:12px; background:var(--sub); border-radius:50%; }
+  .tag { display:block; font-size:13px; font-weight:700; color:var(--sub); }
+  .model { display:inline-block; margin-top:2px; font-size:12px; color:var(--muted); }
+  .card { margin-top:6px; background:var(--card); border-radius:8px; padding:8px 10px; font-size:14px; }
+</style>
+</head>
+<body>
+<h1>오케스트레이션 테스트 3</h1>
+<div class="note">2026-11-28 · 세로선 = 메인 · 가로줄 = 서브(병렬 3개, sonnet 지정)</div>
+
+<div class="diagram">
+  <div class="main-label">메인 · claude-sonnet-5-5 · effort high</div>
+
+  <div class="row">
+    <span class="tag">서브A 구조</span>
+    <span class="model">claude-sonnet-5-5 · effort 미지정</span>
+    <div class="card">scripts/: mbta-bridge.py(약 42KB), release.sh(약 1KB). .github/workflows/: build-apk.yml 1개.</div>
+  </div>
+
+  <div class="row">
+    <span class="tag">서브B 깃상태</span>
+    <span class="model">claude-sonnet-5-5 · effort 미지정</span>
+    <div class="card">로컬/원격 브랜치 각 2개(작업 브랜치, main). 현재 claude/gracious-maxwell-do0f79. 최근 커밋: 59ea649 → dd2d5c2 → 1d12219(PR #6).</div>
+  </div>
+
+  <div class="row">
+    <span class="tag">서브C 문서</span>
+    <span class="model">claude-sonnet-5-5 · effort 미지정</span>
+    <div class="card">README 주요 기능: 멀티 AI WebView 패널, 영구 세션 유지, 화면 분할 + 워크스페이스 프리셋.</div>
+  </div>
+</div>
+
+<p class="note" style="margin-top:28px">
+  표기 근거: 메인은 get_session 값. 서브는 model=sonnet 지정 후 자기보고(claude-sonnet-5-5). effort는 서브에 지정한 적이 없어 모두 미지정.
+</p>
+</body>
+</html>
