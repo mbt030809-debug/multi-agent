@@ -1308,13 +1308,14 @@ class HeadlessWebBridge(
     }
 
     /** 웹 질문 카드에서 선택지를 대신 클릭하거나, '기타' 입력란에 직접 답변을 넣어 전송 */
-    fun answerWebQuestion(key: String, optionIndex: Int, freeText: String, onResult: (Boolean) -> Unit) {
+    fun answerWebQuestion(key: String, optionIndices: List<Int>, freeText: String, onResult: (Boolean) -> Unit) {
         val wv = pool[key]
         if (wv == null) {
             onResult(false)
             return
         }
         val quotedText = JSONObject.quote(freeText)
+        val idxArr = optionIndices.joinToString(",")
         val js = """
             (function() {
                 try {
@@ -1405,15 +1406,37 @@ class HeadlessWebBridge(
 
                     var c = findCard();
                     if (!c) return 'nocard';
-                    var idx = $optionIndex;
+                    var idxs = [$idxArr];
                     var text = $quotedText;
-                    if (idx >= 0 && idx < c.opts.length && !text) {
-                        var target = c.opts[idx].el;
+                    function clickOpt(i) {
+                        if (i < 0 || i >= c.opts.length) return;
+                        var target = c.opts[i].el;
                         var clickEl = target.matches(CLICKABLE) ? target : (target.querySelector(CLICKABLE) || target);
                         clickEl.click();
+                    }
+                    // 선택지를 눌러도 '제출' 버튼을 따로 눌러야 하는 카드가 있어, 선택 후 제출 버튼이 있으면 눌러줌
+                    function findSubmit() {
+                        var cardNow = findCard();
+                        var scope = cardNow ? cardNow.card : document;
+                        var bs = Array.prototype.slice.call(scope.querySelectorAll('button, [role="button"]'));
+                        for (var q = 0; q < bs.length; q++) {
+                            var tt = (bs[q].innerText || '').trim();
+                            if (/^(제출|submit|보내기|전송|확인|답변 제출|완료|다음|next)$/i.test(tt) && !bs[q].disabled && bs[q].getAttribute('aria-disabled') !== 'true') return bs[q];
+                        }
+                        return null;
+                    }
+                    function submitSoon(delay) { setTimeout(function() { var sb = findSubmit(); if (sb) sb.click(); }, delay); }
+                    if (idxs.length && !text) {
+                        idxs.forEach(function(i, n) { setTimeout(function() { clickOpt(i); }, n * 300); });
+                        submitSoon(idxs.length * 300 + 450);
                         return 'clicked';
                     }
                     if (text) {
+                        var combined = text;
+                        if (idxs.length) {
+                            var labels = idxs.map(function(i) { return c.opts[i] ? c.opts[i].label : ''; }).filter(function(x) { return x; });
+                            combined = '선택: ' + labels.join(', ') + '\n' + text;
+                        }
                         function findInput() {
                             return c.card.querySelector('textarea, input[type="text"], input:not([type]), [contenteditable="true"]');
                         }
@@ -1427,19 +1450,16 @@ class HeadlessWebBridge(
                             return 'opened_other';
                         }
                         inp.focus();
-                        if (inp.isContentEditable) { inp.textContent = text; }
+                        if (inp.isContentEditable) { inp.textContent = combined; }
                         else {
                             var proto = inp.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-                            Object.getOwnPropertyDescriptor(proto, 'value').set.call(inp, text);
+                            Object.getOwnPropertyDescriptor(proto, 'value').set.call(inp, combined);
                         }
                         inp.dispatchEvent(new Event('input', { bubbles: true }));
                         var kd = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true };
                         inp.dispatchEvent(new KeyboardEvent('keydown', kd));
                         inp.dispatchEvent(new KeyboardEvent('keyup', kd));
-                        var sb = Array.prototype.slice.call(c.card.querySelectorAll('button, [role="button"]')).filter(function(b) {
-                            return /^(제출|보내기|전송|submit|send|확인|답변)/i.test((b.innerText || b.getAttribute('aria-label') || '').trim());
-                        })[0];
-                        if (sb) sb.click();
+                        submitSoon(500);
                         return 'typed';
                     }
                     return 'noop';
@@ -1450,7 +1470,7 @@ class HeadlessWebBridge(
             val r = raw?.trim()?.trim('"').orEmpty()
             if (r == "opened_other" && freeText.isNotBlank()) {
                 // '기타' 입력란이 열리면 잠시 후 한 번 더 시도
-                mainHandler.postDelayed({ answerWebQuestion(key, -1, freeText, onResult) }, 500L)
+                mainHandler.postDelayed({ answerWebQuestion(key, optionIndices, freeText, onResult) }, 500L)
             } else {
                 onResult(r == "clicked" || r == "typed")
             }

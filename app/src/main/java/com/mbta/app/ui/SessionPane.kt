@@ -1660,9 +1660,16 @@ fun SessionPane(
                                             if (detectedQuestion.webCard && connection != null && headlessWebBridge != null) {
                                                 // 웹 화면의 질문 카드에서 직접 선택/입력 (원본이 답을 기다리며 멈춰 있음)
                                                 val webKey = com.mbta.app.model.webSessionKey(connection.id, session.id)
-                                                val idx = selectedOpts.sorted().firstOrNull() ?: -1
-                                                headlessWebBridge.answerWebQuestion(webKey, idx, customAnswer.trim()) { ok ->
-                                                    if (!ok) android.widget.Toast.makeText(context, "웹 질문 카드에 답을 입력하지 못했습니다. 웹 화면에서 직접 선택해 주세요.", android.widget.Toast.LENGTH_LONG).show()
+                                                val idxs = selectedOpts.sorted()
+                                                headlessWebBridge.answerWebQuestion(webKey, idxs, customAnswer.trim()) { ok ->
+                                                    if (!ok) {
+                                                        // 실패하면 질문창을 다시 살려 재시도/수동 선택이 가능하게 함
+                                                        dismissedQuestionMsgId = ""
+                                                        expandedQuestionMsgId = lastMsg.id
+                                                        android.widget.Toast.makeText(context, "웹 질문 카드에 답하지 못했습니다. 다시 시도하거나 웹 화면에서 직접 선택해 주세요.", android.widget.Toast.LENGTH_LONG).show()
+                                                    } else {
+                                                        android.widget.Toast.makeText(context, "웹 질문 카드에 답을 전달했습니다.", android.widget.Toast.LENGTH_SHORT).show()
+                                                    }
                                                 }
                                             } else if (replyBody.isNotEmpty()) onSendMessage(replyBody)
                                         }
