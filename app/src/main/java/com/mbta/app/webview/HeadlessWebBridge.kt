@@ -122,16 +122,16 @@ class HeadlessWebBridge(
     }
 
     /** 웹 화면에서 긁어온 텍스트의 아이콘 폰트 글리프(사설 영역 문자)와 낱자 한자 줄을 제거 */
-    private fun cleanWebText(raw: String): String {
+    private fun cleanWebText(raw: String, final: Boolean = true): String {
         if (raw.startsWith("__")) return raw
-        return WebTextCleaner.clean(raw)
+        return WebTextCleaner.clean(raw, final)
     }
 
     private inner class JsBridge {
         @JavascriptInterface
         fun onChunk(requestId: String, text: String) {
             mainHandler.post {
-                pending[requestId]?.onChunk?.invoke(cleanWebText(text))
+                pending[requestId]?.onChunk?.invoke(cleanWebText(text, final = false))
             }
         }
 

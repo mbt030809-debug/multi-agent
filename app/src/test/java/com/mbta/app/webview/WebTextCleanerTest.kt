@@ -37,4 +37,10 @@ class WebTextCleanerTest {
         val raw = "세션 초기화됨\n\n세션 초기화됨\n\n안녕하세요!\n\n안녕하세요! 무엇을 도와드릴까요?"
         assertEquals("안녕하세요! 무엇을 도와드릴까요?", WebTextCleaner.clean(raw))
     }
+
+    @Test
+    fun streamingKeepsProgressFinalReplaces() {
+        val raw = "세션 초기화됨\n\n안녕하세요!\n\n안녕하세요! 무엇을 도와드릴까요?"
+        assertEquals(raw, WebTextCleaner.clean(raw, final = false))
+    }
 }

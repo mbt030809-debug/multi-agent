@@ -19,11 +19,12 @@ internal object WebTextCleaner {
         return keep.joinToString("\n\n")
     }
 
-    fun clean(raw: String): String {
+    /** final=false(스트리밍 중)는 진행 상태·중간 내용을 그대로 보여주고, final=true(최종 답)에서만 상태 줄/중간본을 제거해 대체 */
+    fun clean(raw: String, final: Boolean = true): String {
         val lines = raw.replace(puaRegex, "").lines()
         val out = ArrayList<String>(lines.size)
         for (line in lines) {
-            if (loneIdeographLine.matches(line) || timeLabelLine.matches(line) || statusLine.matches(line)) continue
+            if (loneIdeographLine.matches(line) || timeLabelLine.matches(line) || (final && statusLine.matches(line))) continue
             // 바로 앞의 (비어 있지 않은) 줄과 똑같은 줄은 한 번만 (사이에 빈 줄이 있어도)
             if (line.trim().length >= 8 && !line.trim().startsWith("|")) {
                 val lastNonBlank = out.lastOrNull { it.isNotBlank() }
@@ -34,6 +35,7 @@ internal object WebTextCleaner {
             }
             out.add(line)
         }
-        return dropPrefixBlocks(out.joinToString("\n").replace(Regex("\\n{3,}"), "\n\n").trim()).trim()
+        val joined = out.joinToString("\n").replace(Regex("\\n{3,}"), "\n\n").trim()
+        return if (final) dropPrefixBlocks(joined).trim() else joined
     }
 }
