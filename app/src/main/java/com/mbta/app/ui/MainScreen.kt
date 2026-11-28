@@ -788,7 +788,7 @@ fun MainScreen(
                     onRecordTokens(targetConn.id, targetConn.kind, inTok, outTok)
                     sendingMap[session.id] = false
                     if (activeSessionId != session.id) unreadDoneSessions[session.id] = true
-                    val replies = detectQuickReplies(finalText)
+                    val replies = detectQuickReplies(finalText, targetConn.endpointUrl.lowercase().let { it.contains("/claude") || it.contains("claude.ai") })
                     when {
                         replies.firstOrNull() == "허용" -> onNotifyEvent(session.id, "⚠️ ${targetConn.name} 권한 승인 필요", finalText.take(140), true, listOf("허용", "거부"))
                         replies.isNotEmpty() -> onNotifyEvent(session.id, "❓ ${targetConn.name} 확인 대기 중", finalText.take(140), true, replies.take(2))
@@ -920,7 +920,7 @@ fun MainScreen(
             if (activeSessionId != session.id) unreadDoneSessions[session.id] = true
             if (reply.error == null) {
                 autoRetryCountMap[session.id] = 0
-                val replies = detectQuickReplies(assistantMsg.content)
+                val replies = detectQuickReplies(assistantMsg.content, targetConn.endpointUrl.lowercase().let { it.contains("/claude") || it.contains("claude.ai") })
                 when {
                     replies.firstOrNull() == "허용" -> onNotifyEvent(session.id, "⚠️ ${targetConn.name} 권한 승인 필요", assistantMsg.content.take(140), true, listOf("허용", "거부"))
                     replies.isNotEmpty() -> onNotifyEvent(session.id, "❓ ${targetConn.name} 확인 대기 중", assistantMsg.content.take(140), true, replies.take(2))

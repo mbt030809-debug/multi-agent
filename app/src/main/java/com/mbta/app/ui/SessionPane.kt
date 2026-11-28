@@ -188,10 +188,10 @@ internal fun parseAskMarker(raw: String): DetectedQuestion? {
     }.getOrNull()
 }
 
-internal fun detectQuickReplies(rawContent: String): List<String> =
-    detectQuestionPrompt(rawContent)?.options ?: emptyList()
+internal fun detectQuickReplies(rawContent: String, structuredOnly: Boolean = false): List<String> =
+    detectQuestionPrompt(rawContent, structuredOnly)?.options ?: emptyList()
 
-internal fun detectQuestionPrompt(rawContent: String): DetectedQuestion? {
+internal fun detectQuestionPrompt(rawContent: String, structuredOnly: Boolean = false): DetectedQuestion? {
     if (rawContent.isBlank()) return null
     parseAskMarker(rawContent)?.let { return it }
     val cleaned = rawContent
@@ -224,6 +224,9 @@ internal fun detectQuestionPrompt(rawContent: String): DetectedQuestion? {
         }
         return DetectedQuestion(title = permBlock.take(500), options = opts, isPermission = true)
     }
+
+    // Claude 세션: 구조화된 <<ASK>> 질문과 권한 카드만 허용 (글자 추측 오탐 방지)
+    if (structuredOnly) return null
 
     // 2. 마지막 문장이 의례적인 마무리 인사/열린 질문이면 표시하지 않음
     if (openEndedSignoffRegex.containsMatchIn(lastLine)) {
@@ -1103,7 +1106,7 @@ fun SessionPane(
                 if (lastMsg == null || lastMsg.role != MessageRole.ASSISTANT || lastMsg.isError || lastMsg.id == dismissedQuestionMsgId) {
                     null
                 } else {
-                    val q = detectQuestionPrompt(lastMsg.content)
+                    val q = detectQuestionPrompt(lastMsg.content, structuredOnly = connection?.endpointUrl?.lowercase()?.let { it.contains("/claude") || it.contains("claude.ai") } == true)
                     if (q != null && (!isSending || q.isPermission)) q else null
                 }
             }
