@@ -1321,7 +1321,6 @@ fun MainScreen(
     }
 
     fun deleteSession(session: AgentSession) {
-        sessionDrafts.clear(session.id)
         headlessWebBridge.releaseWebView(com.mbta.app.model.webSessionKey(session.connectionId.orEmpty(), session.id))
         val remainingInProject = validProjectSessions.filterNot { it.id == session.id }
         sessions = sessions.filterNot { it.id == session.id }
