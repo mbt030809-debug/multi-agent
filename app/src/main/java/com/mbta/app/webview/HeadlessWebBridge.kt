@@ -42,6 +42,11 @@ class HeadlessWebBridge(
     private val mainHandler = Handler(Looper.getMainLooper())
     private val logs = ArrayDeque<String>()
 
+    init {
+        // adb(무선 디버깅) 승인된 기기에서만 접근 가능한 WebView 원격 디버깅 (DOM/전송 버튼 구조 확인용)
+        runCatching { WebView.setWebContentsDebuggingEnabled(true) }
+    }
+
     private fun log(msg: String) {
         val ts = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(java.util.Date())
         synchronized(logs) {
