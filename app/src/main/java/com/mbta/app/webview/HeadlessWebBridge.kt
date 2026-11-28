@@ -2103,35 +2103,48 @@ class HeadlessWebBridge(
                             var excludeRe = /내보내기|공유|export|share|stop|중지|취소|cancel|opus|sonnet|haiku|fable|flash|\bpro\b|모델/i;
                             var exactSendSelectors = ['button[aria-label="메시지 보내기"]', 'button[aria-label="Send message"]'];
                             var sb = null;
+                            // 1) 정확 일치 셀렉터: 요소가 있으면 가시성·화면 위치와 무관하게 첫 요소 선택 (disabled 여부는 trySend 에서 판단)
+                            for (var ei = 0; ei < exactSendSelectors.length && !sb; ei++) {
+                                var exEls = [];
+                                try { exEls = queryAllDeep(exactSendSelectors[ei]); } catch(e) { exEls = []; }
+                                if (exEls && exEls.length > 0 && exEls[0]) sb = exEls[0];
+                            }
+                            // 2) 그 외 셀렉터: 가시 + 화면 안 우선, 없으면 제외 패턴에 안 걸리는 첫 후보(가시성 무관)를 폴백
+                            var fallbackCand = null;
                             for (var si = 0; si < sendSelectors.length && !sb; si++) {
-                                var isExact = exactSendSelectors.indexOf(sendSelectors[si]) >= 0;
+                                if (exactSendSelectors.indexOf(sendSelectors[si]) >= 0) continue;
                                 var sEls = [];
                                 try { sEls = queryAllDeep(sendSelectors[si]); } catch(e) { sEls = []; }
                                 for (var se = 0; se < sEls.length; se++) {
                                     var cand = sEls[se];
-                                    if (!cand || !isVisible(cand)) continue;
+                                    if (!cand) continue;
                                     var candLabel = (cand.getAttribute('aria-label') || '') + ' ' + (cand.innerText || '');
-                                    if (!isExact) {
-                                        if (/mic|voice|마이크|음성/i.test(candLabel)) continue;
-                                        if (excludeRe.test(candLabel)) continue;
-                                    }
+                                    if (/mic|voice|마이크|음성/i.test(candLabel)) continue;
+                                    if (excludeRe.test(candLabel)) continue;
+                                    if (!fallbackCand) fallbackCand = cand;
+                                    if (!isVisible(cand)) continue;
                                     var cr = cand.getBoundingClientRect();
                                     if (!(cr.bottom > 0 && cr.top < innerHeight)) continue;
                                     sb = cand;
                                     break;
                                 }
                             }
+                            if (!sb && fallbackCand) sb = fallbackCand;
                             if (!sb) {
                                 var scopeEl = (inputEl.closest && inputEl.closest('form')) || (inputEl.parentElement && inputEl.parentElement.parentElement && inputEl.parentElement.parentElement.parentElement);
                                 if (scopeEl && scopeEl.querySelectorAll) {
                                     var btns = scopeEl.querySelectorAll('button');
-                                    for (var b = btns.length - 1; b >= 0; b--) {
-                                        var btn = btns[b];
-                                        if (!btn || btn.disabled || !isVisible(btn)) continue;
-                                        var bLabel = ((btn.getAttribute('aria-label') || '') + ' ' + (btn.innerText || '')).toLowerCase();
-                                        if (/attach|upload|mic|voice|record|plus|add|menu|model|gemini|claude|마이크|음성|첨부|업로드|추가|도구|모델|내보내기|공유|export|share|stop|중지|취소|cancel|opus|sonnet|haiku|fable|flash|\bpro\b/.test(bLabel)) continue;
-                                        sb = btn;
-                                        break;
+                                    // 입력창 주변 버튼: 가시 버튼 우선, 없으면 가시성 무관 첫 비제외 버튼
+                                    for (var pass = 0; pass < 2 && !sb; pass++) {
+                                        for (var b = btns.length - 1; b >= 0; b--) {
+                                            var btn = btns[b];
+                                            if (!btn || btn.disabled) continue;
+                                            if (pass === 0 && !isVisible(btn)) continue;
+                                            var bLabel = ((btn.getAttribute('aria-label') || '') + ' ' + (btn.innerText || '')).toLowerCase();
+                                            if (/attach|upload|mic|voice|record|plus|add|menu|model|gemini|claude|마이크|음성|첨부|업로드|추가|도구|모델|내보내기|공유|export|share|stop|중지|취소|cancel|opus|sonnet|haiku|fable|flash|\bpro\b/.test(bLabel)) continue;
+                                            sb = btn;
+                                            break;
+                                        }
                                     }
                                 }
                             }
