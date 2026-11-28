@@ -2005,13 +2005,37 @@ class HeadlessWebBridge(
                         }
                         // 프레임워크가 전송 버튼을 활성화할 때까지 기다리며 여러 번 시도 (Gemini 등은 입력 반영이 늦음)
                         var sendAttempts = 0;
+                        var lastSendAction = 'none';
+                        function describeBtn(b) {
+                            try {
+                                return '[' + (b.getAttribute('aria-label') || '').slice(0, 20) + '|' + (b.innerText || '').trim().slice(0, 12) + '|dis=' + (b.disabled ? 1 : 0) + '|ariaDis=' + (b.getAttribute('aria-disabled') || '-') + '|vis=' + (isVisible(b) ? 1 : 0) + ']';
+                            } catch(e) { return '[?]'; }
+                        }
+                        // 전송 실패 진단: 입력창 글자 수, 마지막 전송 동작, 입력창 주변 버튼 목록
+                        function sendDiag() {
+                            var info = 'input=' + (((inputEl.value !== undefined ? inputEl.value : inputEl.innerText) || '').trim().length) + '/' + promptText.length + ', last=' + lastSendAction + ', attempts=' + sendAttempts;
+                            try {
+                                var sc = (inputEl.closest && inputEl.closest('form')) || (inputEl.parentElement && inputEl.parentElement.parentElement && inputEl.parentElement.parentElement.parentElement && inputEl.parentElement.parentElement.parentElement.parentElement);
+                                if (sc && sc.querySelectorAll) {
+                                    var bl = sc.querySelectorAll('button');
+                                    var parts = [];
+                                    for (var bi = 0; bi < bl.length && bi < 10; bi++) parts.push(describeBtn(bl[bi]));
+                                    info += ', buttons=' + parts.join('');
+                                }
+                            } catch(e) {}
+                            return info;
+                        }
                         function trySend() {
                             sendAttempts++;
                             var sb = findSendBtn();
                             if (sb && !sb.disabled && sb.getAttribute('aria-disabled') !== 'true') {
+                                lastSendAction = 'click#' + sendAttempts + ':' + describeBtn(sb);
                                 try { sb.click(); } catch(e) {}
                             } else if (sendAttempts >= 3) {
+                                lastSendAction = 'enter#' + sendAttempts + (sb ? ' (btn disabled:' + describeBtn(sb) + ')' : ' (no btn)');
                                 fireEnter(inputEl);
+                            } else {
+                                lastSendAction = 'wait#' + sendAttempts + (sb ? ' (btn disabled:' + describeBtn(sb) + ')' : ' (no btn)');
                             }
                             setTimeout(function() {
                                 if (sendAttempts < 8 && inputRemaining()) trySend();
@@ -2054,7 +2078,7 @@ class HeadlessWebBridge(
                                 if (lastText) {
                                     window.MbtABridge.onDone(reqId, lastText);
                                 } else {
-                                    window.MbtABridge.onError(reqId, 'TIMEOUT', '응답 시간이 초과되었습니다.');
+                                    window.MbtABridge.onError(reqId, 'TIMEOUT', '응답 시간이 초과되었습니다. [전송 진단 ' + sendDiag() + ']');
                                 }
                                 return;
                             }
