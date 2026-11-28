@@ -1862,29 +1862,33 @@ class HeadlessWebBridge(
                     }
 
                     setTimeout(function() {
-                        var sendBtn = findFirst([
-                            'button[data-testid="send-button"]',
-                            'button[aria-label*="send" i]',
-                            'button[aria-label*="submit" i]',
-                            'button[aria-label*="run" i]',
-                            'button[aria-label*="전송"]',
-                            'button[aria-label*="보내기"]',
-                            'button.send-button',
-                            'button[type="submit"]'
-                        ]);
-                        if (!sendBtn) {
-                            var scopeEl = (inputEl.closest && inputEl.closest('form')) || (inputEl.parentElement && inputEl.parentElement.parentElement && inputEl.parentElement.parentElement.parentElement);
-                            if (scopeEl && scopeEl.querySelectorAll) {
-                                var btns = scopeEl.querySelectorAll('button');
-                                for (var b = btns.length - 1; b >= 0; b--) {
-                                    var btn = btns[b];
-                                    if (!btn || btn.disabled || !isVisible(btn)) continue;
-                                    var bLabel = ((btn.getAttribute('aria-label') || '') + ' ' + (btn.innerText || '')).toLowerCase();
-                                    if (/attach|upload|mic|voice|record|plus|add|menu|model|gemini|claude/.test(bLabel)) continue;
-                                    sendBtn = btn;
-                                    break;
+                        function findSendBtn() {
+                            var sb = findFirst([
+                                'button[data-testid="send-button"]',
+                                'button.send-button',
+                                'button[aria-label*="send" i]',
+                                'button[aria-label*="submit" i]',
+                                'button[aria-label*="run" i]',
+                                'button[aria-label*="전송"]',
+                                'button[aria-label*="보내기"]',
+                                'button[type="submit"]'
+                            ]);
+                            if (sb && /mic|voice|마이크|음성/i.test((sb.getAttribute('aria-label') || '') + ' ' + (sb.innerText || ''))) sb = null;
+                            if (!sb) {
+                                var scopeEl = (inputEl.closest && inputEl.closest('form')) || (inputEl.parentElement && inputEl.parentElement.parentElement && inputEl.parentElement.parentElement.parentElement);
+                                if (scopeEl && scopeEl.querySelectorAll) {
+                                    var btns = scopeEl.querySelectorAll('button');
+                                    for (var b = btns.length - 1; b >= 0; b--) {
+                                        var btn = btns[b];
+                                        if (!btn || btn.disabled || !isVisible(btn)) continue;
+                                        var bLabel = ((btn.getAttribute('aria-label') || '') + ' ' + (btn.innerText || '')).toLowerCase();
+                                        if (/attach|upload|mic|voice|record|plus|add|menu|model|gemini|claude|마이크|음성|첨부|업로드|추가|도구|모델/.test(bLabel)) continue;
+                                        sb = btn;
+                                        break;
+                                    }
                                 }
                             }
+                            return sb;
                         }
                         function fireEnter(el) {
                             var opts = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true };
@@ -1892,17 +1896,24 @@ class HeadlessWebBridge(
                             el.dispatchEvent(new KeyboardEvent('keypress', opts));
                             el.dispatchEvent(new KeyboardEvent('keyup', opts));
                         }
-                        if (sendBtn && !sendBtn.disabled) {
-                            sendBtn.click();
-                            setTimeout(function() {
-                                var rem = (inputEl.value !== undefined ? inputEl.value : inputEl.innerText) || '';
-                                if (rem.trim().length > 0) {
-                                    fireEnter(inputEl);
-                                }
-                            }, 350);
-                        } else {
-                            fireEnter(inputEl);
+                        function inputRemaining() {
+                            return ((inputEl.value !== undefined ? inputEl.value : inputEl.innerText) || '').trim().length > 0;
                         }
+                        // 프레임워크가 전송 버튼을 활성화할 때까지 기다리며 여러 번 시도 (Gemini 등은 입력 반영이 늦음)
+                        var sendAttempts = 0;
+                        function trySend() {
+                            sendAttempts++;
+                            var sb = findSendBtn();
+                            if (sb && !sb.disabled && sb.getAttribute('aria-disabled') !== 'true') {
+                                try { sb.click(); } catch(e) {}
+                            } else if (sendAttempts >= 3) {
+                                fireEnter(inputEl);
+                            }
+                            setTimeout(function() {
+                                if (sendAttempts < 8 && inputRemaining()) trySend();
+                            }, 500);
+                        }
+                        trySend();
 
                         var lastText = '';
                         var stableTicks = 0;
