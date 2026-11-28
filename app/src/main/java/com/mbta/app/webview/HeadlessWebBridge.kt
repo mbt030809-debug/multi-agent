@@ -1863,6 +1863,13 @@ class HeadlessWebBridge(
                             var activity = bodyNow !== lastBodyLen;
                             lastBodyLen = bodyNow;
                             var streamingNow = !!document.querySelector('button[aria-label*="Stop"], button[aria-label*="중지"], button[data-testid="stop-button"], [data-is-streaming="true"]');
+                            // 질문 카드(건너뛰기 버튼)가 떠 있으면 사용자 답을 기다리는 중이므로 시간 초과/완료로 보지 않음
+                            if (!streamingNow) {
+                                var qbtns = document.querySelectorAll('button, [role="button"]');
+                                for (var qi = 0; qi < qbtns.length; qi++) {
+                                    if (/^(건너뛰기|skip)$/i.test((qbtns[qi].innerText || '').trim())) { streamingNow = true; break; }
+                                }
+                            }
                             if (!streamingNow && isCodeWeb) {
                                 // Claude Code 웹의 '작업 중' 줄에 글자가 있으면 생성 중 (화면 변화 없이 2분이 지나면 무시)
                                 var wl = document.querySelector('[data-testid="code-working-line"]');
