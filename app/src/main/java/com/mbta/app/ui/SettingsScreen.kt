@@ -206,15 +206,30 @@ fun SettingsScreen(
                         }
                         OutlinedButton(
                             onClick = {
-                                runCatching {
-                                    val intent = Intent(
-                                        Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
-                                        Uri.parse("package:${context.packageName}")
-                                    )
-                                    context.startActivity(intent)
-                                }.onFailure {
+                                if (isIgnoringBatteryOpt) {
+                                    // 이미 해제된 상태: 앱 상세 설정 화면을 열어 사용자가 직접 조정할 수 있게 함
                                     runCatching {
-                                        context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                                        val intent = Intent(
+                                            Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                            Uri.parse("package:${context.packageName}")
+                                        )
+                                        context.startActivity(intent)
+                                    }.onFailure {
+                                        runCatching {
+                                            context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                                        }
+                                    }
+                                } else {
+                                    runCatching {
+                                        val intent = Intent(
+                                            Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                                            Uri.parse("package:${context.packageName}")
+                                        )
+                                        context.startActivity(intent)
+                                    }.onFailure {
+                                        runCatching {
+                                            context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                                        }
                                     }
                                 }
                                 isIgnoringBatteryOpt = pm?.isIgnoringBatteryOptimizations(context.packageName) == true
