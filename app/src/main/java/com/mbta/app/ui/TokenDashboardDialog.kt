@@ -35,6 +35,7 @@ import com.mbta.app.model.labelIn
 import com.mbta.app.model.TokenSource
 import com.mbta.app.model.defaultContextLimitFor
 import com.mbta.app.model.displayLabel
+import com.mbta.app.model.formatResetSummary
 import com.mbta.app.model.formatTokens
 import kotlin.math.roundToInt
 
@@ -193,6 +194,14 @@ fun TokenDashboardDialog(
                                             fontWeight = FontWeight.Medium,
                                             color = remColor
                                         )
+                                        val reset5 = formatResetSummary(usage.quotaResetFiveHourMs)
+                                        if (usage.quotaPercent != null && reset5.isNotBlank()) {
+                                            Text(
+                                                text = "초기화 $reset5",
+                                                fontSize = 9.5.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
                                         LinearProgressIndicator(
                                             progress = { (remPctFloat / 100f).coerceIn(0f, 1f) },
                                             color = remColor,
@@ -209,6 +218,14 @@ fun TokenDashboardDialog(
                                                 fontWeight = FontWeight.Medium,
                                                 color = weeklyColor
                                             )
+                                            val reset7 = formatResetSummary(usage.quotaResetWeekMs)
+                                            if (reset7.isNotBlank()) {
+                                                Text(
+                                                    text = "초기화 $reset7",
+                                                    fontSize = 9.5.sp,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            }
                                             LinearProgressIndicator(
                                                 progress = { (weeklyPct / 100f).coerceIn(0f, 1f) },
                                                 color = weeklyColor,

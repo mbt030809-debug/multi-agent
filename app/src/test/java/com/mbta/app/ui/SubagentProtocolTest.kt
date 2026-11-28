@@ -70,4 +70,30 @@ class SubagentProtocolTest {
         assertFalse(SubagentProtocol.modelMismatch("sonnet", "claude-sonnet-5-5"))
         assertFalse(SubagentProtocol.modelMismatch("", "claude-sonnet-5-5"))
     }
+
+    @Test
+    fun parsesStructuredFields() {
+        val r = SubagentProtocol.parse("<<SUBAGENTS>>[{\"role\":\"a\",\"task\":\"t\",\"files\":[\"src/A.kt\"],\"mode\":\"read\",\"objective\":\"o\",\"output\":\"x\",\"boundaries\":\"b\"}]<</SUBAGENTS>>")
+        val q = r.requests[0]
+        assertEquals(listOf("src/A.kt"), q.files)
+        assertTrue(q.readOnly)
+        assertEquals("o", q.objective)
+        assertTrue(SubagentProtocol.brief(q).contains("읽기 전용"))
+    }
+
+    @Test
+    fun declaredFilesDriveBatches() {
+        val a = SubagentRequest("a", "x", files = listOf("src/ui"))
+        val b = SubagentRequest("b", "y", files = listOf("src/ui/Main.kt"))
+        val c = SubagentRequest("c", "z", files = listOf("docs/a.md"))
+        val d = SubagentRequest("d", "w", files = listOf("src/ui/Main.kt"), readOnly = true)
+        assertEquals(listOf(listOf(0, 2, 3), listOf(1)), SubagentProtocol.batches(listOf(a, b, c, d), 4))
+    }
+
+    @Test
+    fun reviewerOnlyWhenWriters() {
+        assertTrue(SubagentProtocol.hasWriters(listOf(SubagentRequest("a", "t", files = listOf("f.kt")))))
+        assertTrue(!SubagentProtocol.hasWriters(listOf(SubagentRequest("a", "코드 조사", readOnly = true))))
+        assertTrue(SubagentProtocol.reviewPrompt(listOf(SubagentRequest("a", "t", files = listOf("f.kt"))), listOf("ok")).contains("VERDICT"))
+    }
 }

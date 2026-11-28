@@ -25,6 +25,32 @@ QUOTA_CACHE = {}
 QUOTA_LOCK = threading.Lock()
 
 
+def iso_to_ms(value):
+    """ISO8601 문자열(예: 2026-11-28T08:00:00.123+00:00)을 epoch ms로 변환. 실패하면 0"""
+    if not value or not isinstance(value, str):
+        return 0
+    try:
+        from datetime import datetime, timezone
+        v = value.strip().replace("Z", "+00:00")
+        dt = datetime.fromisoformat(v)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp() * 1000)
+    except Exception:
+        return 0
+
+
+def duration_to_ms(text):
+    """'133h24m19s', 'in 2h 30m', '3d 4h' 같은 남은 시간 문구를 ms로 변환. 못 읽으면 0"""
+    if not text:
+        return 0
+    total = 0
+    for num, unit in re.findall(r"(\d+)\s*([dhms])(?![a-z])", str(text).lower()):
+        n = int(num)
+        total += n * {"d": 86400, "h": 3600, "m": 60, "s": 1}[unit]
+    return total * 1000
+
+
 def fetch_agy_quota():
     try:
         proc = subprocess.run(
@@ -33,6 +59,8 @@ def fetch_agy_quota():
         )
         out = (proc.stdout or "") + "\n" + (proc.stderr or "")
         g5 = g7 = c5 = c7 = None
+        reset5 = reset7 = 0
+        now_ms = int(time.time() * 1000)
         for line in out.splitlines():
             parts = [p.strip() for p in line.split("\t")]
             if len(parts) < 3:
@@ -43,11 +71,16 @@ def fetch_agy_quota():
             if not m:
                 continue
             val = max(0, min(100, int(m.group(1))))
+            rest_ms = duration_to_ms(" ".join(parts[3:])) if len(parts) > 3 else 0
             if "gemini" in group:
                 if "five hour" in metric or "5" in metric:
                     g5 = val
+                    if rest_ms:
+                        reset5 = now_ms + rest_ms
                 elif "weekly" in metric or "week" in metric:
                     g7 = val
+                    if rest_ms:
+                        reset7 = now_ms + rest_ms
             elif "claude" in group or "gpt" in group:
                 if "five hour" in metric or "5" in metric:
                     c5 = val
@@ -63,7 +96,8 @@ def fetch_agy_quota():
             lbl_parts.append(f"주간 {g7}%")
         if c5 is not None and c7 is not None:
             lbl_parts.append(f"Claude/GPT 5시간 {c5}% · 주간 {c7}%")
-        return {"ok": True, "quotaPercent": primary, "quotaLabel": " · ".join(lbl_parts)}
+        return {"ok": True, "quotaPercent": primary, "quotaLabel": " · ".join(lbl_parts),
+                "fiveHourResetsAt": reset5, "weekResetsAt": reset7}
     except Exception as e:
         return {"ok": False, "quotaPercent": None, "quotaLabel": "", "error": str(e)}
 
@@ -101,7 +135,8 @@ def fetch_claude_quota():
             parts.append(f"5시간 {h5}%")
         if d7 is not None:
             parts.append(f"주간 {d7}%")
-        return {"ok": True, "quotaPercent": primary, "quotaLabel": " · ".join(parts)}
+        return {"ok": True, "quotaPercent": primary, "quotaLabel": " · ".join(parts),
+                "fiveHourResetsAt": iso_to_ms(fh.get("resets_at")), "weekResetsAt": iso_to_ms(sd.get("resets_at"))}
     except Exception as e:
         return {"ok": False, "quotaPercent": None, "quotaLabel": "", "error": str(e)}
 

@@ -236,6 +236,8 @@ fun MainScreen(
     }
     // 웹 질문 카드가 떠 있었을 때의 카드 정보 (응답 텍스트에서 카드 글자를 걸러내기 위함)
     val webCardMemory = remember { mutableMapOf<String, String>() }
+    // 이번 앱 실행에서 오케스트레이터 전체 프로토콜을 이미 보낸 세션 (기존 대화에 나중에 오케스트레이션을 붙인 세션도 한 번은 전체 프로토콜을 받도록)
+    val orchProtocolSent = remember { mutableSetOf<String>() }
     val activeSendingCount = sendingMap.values.count { it }
     LaunchedEffect(activeSendingCount) {
         if (activeSendingCount > 0) {
@@ -320,11 +322,13 @@ fun MainScreen(
             Regex("/code/(?:session_)?[a-z0-9_-]{8,}").containsMatchIn(lower)
     }
 
-    fun applyQuotaUpdate(connId: String, pct: Int, lbl: String) {
+    fun applyQuotaUpdate(connId: String, pct: Int, lbl: String, reset5: Long = 0L, reset7: Long = 0L) {
         val cur = tokenUsageMap[connId] ?: AgentTokenUsage(panelId = connId)
         tokenUsageMap[connId] = cur.copy(
             quotaPercent = pct,
             quotaLabel = lbl,
+            quotaResetFiveHourMs = if (reset5 > 0L) reset5 else cur.quotaResetFiveHourMs,
+            quotaResetWeekMs = if (reset7 > 0L) reset7 else cur.quotaResetWeekMs,
             updatedAt = System.currentTimeMillis()
         )
         store.saveTokenUsage(tokenUsageMap)
@@ -335,20 +339,20 @@ fun MainScreen(
             ConnectionKind.REMOTE_CONTROL -> {
                 val bridgeKind = if (conn.endpointUrl.lowercase().contains("/agy")) "agy" else "claude"
                 scope.launch {
-                    val (pct, lbl) = GitBridgeClient.fetchQuota(bridgeKind, force)
-                    if (pct != null) applyQuotaUpdate(conn.id, pct, lbl)
+                    val q = GitBridgeClient.fetchQuota(bridgeKind, force)
+                    if (q.pct != null) applyQuotaUpdate(conn.id, q.pct, q.label, q.fiveHourResetMs, q.weekResetMs)
                 }
             }
             ConnectionKind.CLAUDE_WEB, ConnectionKind.REMOTE_WEB -> {
-                headlessWebBridge.fetchClaudeWebUsagePercent(conn.id) { pct, lbl ->
-                    if (pct != null) applyQuotaUpdate(conn.id, pct, lbl)
+                headlessWebBridge.fetchClaudeWebUsagePercent(conn.id) { pct, lbl, r5, r7 ->
+                    if (pct != null) applyQuotaUpdate(conn.id, pct, lbl, r5, r7)
                 }
                 // 웹 조회가 응답 없으면(로그인 전/엔드포인트 차이) 로컬 브리지의 실제 한도 조회로 대체
                 scope.launch {
                     kotlinx.coroutines.delay(8000L)
                     if (tokenUsageMap[conn.id]?.quotaPercent == null) {
-                        val (pct, lbl) = GitBridgeClient.fetchQuota("claude", force)
-                        if (pct != null) applyQuotaUpdate(conn.id, pct, lbl)
+                        val q = GitBridgeClient.fetchQuota("claude", force)
+                        if (q.pct != null) applyQuotaUpdate(conn.id, q.pct, q.label, q.fiveHourResetMs, q.weekResetMs)
                     }
                 }
             }
@@ -579,11 +583,12 @@ fun MainScreen(
                             append("당신은 메인 오케스트레이터이며, 서브에이전트(${subLabel}${if (subModel.isNotBlank()) " / 기본 모델 $subModel" else ""})를 동적으로 생성해 병렬 작업시킬 수 있습니다.\n")
                             append(sensitivityRule).append("\n")
                             append("2. 서브에이전트를 위임할 때는 응답 맨 끝에 아래 JSON 블록을 출력하세요 (최대 ${maxParallel}개 병렬, 최대 ${maxRounds}라운드):\n")
-                            append("<<SUBAGENTS>>\n[{\"role\": \"짧은 역할명\", \"task\": \"구체적 작업 지시\", \"model\": \"(선택) 서브 모델\"}]\n<</SUBAGENTS>>\n")
+                            append("<<SUBAGENTS>>\n[{\"role\": \"짧은 역할명\", \"objective\": \"목표\", \"task\": \"구체적 작업 지시\", \"files\": [\"수정할 파일/폴더\"], \"boundaries\": \"건드리면 안 되는 것\", \"output\": \"보고 형식\", \"mode\": \"read|write\", \"model\": \"(선택) 서브 모델\"}]\n<</SUBAGENTS>>\n")
+                            append("   - 서브는 당신의 대화를 볼 수 없습니다. task에 필요한 맥락을 모두 담고, 쓰기 작업은 files(소유 파일)를 반드시 지정하세요. 서로 다른 서브의 files는 겹치면 안 됩니다(겹치면 앱이 순차 실행). 조사·리뷰는 mode=read.\n")
                             append("   - model을 생략하면 기본 모델을 씁니다. 단순 반복·조사는 저비용 모델, 복잡한 판단은 고성능 모델을 지정하세요.")
                             if (availableSubModels.isNotEmpty()) append(" 사용 가능: ${availableSubModels.take(8).joinToString(", ")}")
                             append("\n")
-                            append("3. 파일 충돌 방지: 읽기/조사는 병렬 위임하되, 파일 수정 작업은 서로 겹치지 않는 파일 단위로 분할해 지시하세요. 같은 파일을 수정하는 작업은 앱이 순차 실행합니다.\n")
+                            append("3. 파일 소유권: 한 파일은 한 서브만 소유합니다. 읽기/조사는 병렬 위임하고, 수정 작업은 겹치지 않는 files로 분할하세요. 쓰기 라운드가 끝나면 앱이 읽기 전용 리뷰어를 자동 실행해 테스트·충돌을 검증하고 VERDICT를 보고합니다.\n")
                             append("4. 서브에이전트 결과는 핵심 요약으로 보고됩니다. 결과를 받으면 종합해 사용자에게 최종 답변을 작성하세요.\n")
                             append("5. JSON이 잘못되면 오류 내용이 되돌아오니 고쳐서 다시 출력하세요.\n")
                         } else {
@@ -593,7 +598,7 @@ fun MainScreen(
                     // Claude 브리지는 프로토콜을 시스템 프롬프트로 분리 전달(사용자 메시지는 순수 요청), 그 외는 첫 턴에 메시지 앞에 붙임
                     val orchSystemPrompt = if (sysChannel) protocolText(true) else ""
                     var currentPrompt = buildString {
-                        if (!sysChannel) append(protocolText(isFirstOrchTurn))
+                        if (!sysChannel) append(protocolText(isFirstOrchTurn || session.id !in orchProtocolSent))
                         if (useProjectContext && (effectiveDir.isNotBlank() || activeProject.memoryText.isNotBlank())) {
                             append(if (sysChannel) "[프로젝트 컨텍스트]\n" else "\n[프로젝트 컨텍스트]\n")
                             if (effectiveDir.isNotBlank()) append("- 작업 경로: $effectiveDir\n")
@@ -604,6 +609,7 @@ fun MainScreen(
                         append(text)
                     }
 
+                    orchProtocolSent.add(session.id)
                     var finalAnswer = ""
                     // 메인 에이전트가 각 라운드에서 한 말(계획/위임 안내)을 대답창에 계속 보여주기 위한 누적 기록
                     val mainParts = mutableListOf<String>()
@@ -761,7 +767,7 @@ fun MainScreen(
                             SubagentRun(
                                 id = "sub_${UUID.randomUUID().toString().take(8)}",
                                 label = req.role,
-                                prompt = req.task,
+                                prompt = SubagentProtocol.brief(req),
                                 model = resolvedModels[i].ifBlank { subConn.name },
                                 status = "running",
                                 startedAt = System.currentTimeMillis()
@@ -799,6 +805,32 @@ fun MainScreen(
                                 }
                             }
                             completedRuns.addAll(part)
+                        }
+
+                        // 쓰기 작업이 있었으면 읽기 전용 리뷰어가 변경·테스트를 검증
+                        if (SubagentProtocol.hasWriters(requests) && completedRuns.any { it.status == "done" }) {
+                            val reviewModel = availableSubModels.firstOrNull { it.contains("sonnet", true) }
+                                ?: availableSubModels.firstOrNull { it.contains("haiku", true) }
+                                ?: subModel
+                            val reviewRun = SubagentRun(
+                                id = "sub_${UUID.randomUUID().toString().take(8)}",
+                                label = "리뷰어",
+                                prompt = SubagentProtocol.reviewPrompt(requests, completedRuns.map { it.output }),
+                                model = reviewModel.ifBlank { subConn.name },
+                                status = "running",
+                                startedAt = System.currentTimeMillis()
+                            )
+                            sessions = sessions.map { s ->
+                                if (s.id == session.id) s.copy(subagentRuns = s.subagentRuns + reviewRun) else s
+                            }
+                            store.saveSessions(sessions)
+                            setPlaceholder("Orch · 라운드 $round/$maxRounds · 리뷰어 검증 중...")
+                            val reviewed = scope.async {
+                                runSingleSubagent(latestSess, subConn, reviewModel, "", effectiveDir, reviewRun)
+                            }
+                            subagentJobsMap[reviewRun.id] = reviewed
+                            completedRuns.add(reviewed.await())
+                            mainParts.add("▶ 리뷰어 검증 완료")
                         }
 
                         setPlaceholder("⏳ 메인 오케스트레이터가 서브에이전트 결과 종합 중...")

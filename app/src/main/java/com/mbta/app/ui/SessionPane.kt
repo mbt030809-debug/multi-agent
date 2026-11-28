@@ -120,6 +120,7 @@ import com.mbta.app.model.defaultContextLimitForKind
 import com.mbta.app.model.defaultModelFor
 import com.mbta.app.model.displayLabel
 import com.mbta.app.model.extractParenEffort
+import com.mbta.app.model.formatResetSummary
 import com.mbta.app.model.formatTokens
 import com.mbta.app.model.isHiddenWebBridge
 import com.mbta.app.model.stripParenEffort
@@ -413,6 +414,9 @@ private fun skipWebCardIfNeeded(
     return true
 }
 
+/** 로그인 경고를 이미 닫은 연결 (앱이 켜진 동안만 기억) */
+private val loginWarningDismissed = mutableSetOf<String>()
+
 private val askMarkerRegex = Regex("<<ASK>>([\\s\\S]*?)<</ASK>>")
 
 internal fun stripAskMarker(text: String): String = text.replace(askMarkerRegex, "").trim()
@@ -625,6 +629,18 @@ fun SessionPane(
     var inspectingSubagentId by remember(session.id) { mutableStateOf<String?>(null) }
     var dismissedQuestionMsgId by remember(session.id) { mutableStateOf("") }
     var skippedQuestionMsgId by remember(session.id) { mutableStateOf("") }
+    var showQuotaDetail by remember { mutableStateOf(false) }
+    // 로그인이 필요한 웹 연결이면 팝업으로 경고 (시작 직후 로그인 확인 중 깜빡임을 피하려고 잠깐 기다린 뒤 표시)
+    var showLoginWarning by remember { mutableStateOf(false) }
+    val needsLogin = connection != null && connection.kind.isHiddenWebBridge() && !isLoggedIn
+    androidx.compose.runtime.LaunchedEffect(connection?.id, needsLogin) {
+        if (needsLogin && connection != null && connection.id !in loginWarningDismissed) {
+            kotlinx.coroutines.delay(2500L)
+            showLoginWarning = true
+        } else {
+            showLoginWarning = false
+        }
+    }
     var expandedQuestionMsgId by remember(session.id) { mutableStateOf<String?>(null) }
     var autoOpenedQuestionMsgId by remember(session.id) { mutableStateOf("") }
     var autoApprovedMsgId by remember(session.id) { mutableStateOf("") }
@@ -850,7 +866,7 @@ fun SessionPane(
                 } else null
                 val effectiveRemPct = remPct?.toDouble() ?: customRemPct
                 val badgeText = when {
-                    remPct != null -> "5h $remPct%"
+                    remPct != null -> "$remPct%"
                     customRemPct != null -> "남음 ${customRemPct.roundToInt()}%"
                     else -> formatTokens(totalTok)
                 }
@@ -864,7 +880,8 @@ fun SessionPane(
                     color = MaterialTheme.colorScheme.surface.copy(alpha = 0.75f),
                     modifier = Modifier
                         .padding(end = 4.dp)
-                        .clickable { onOpenTokenDashboard() }
+                        // 실제 한도 정보가 있으면 상세(5시간·주간 남은 양과 초기화 시각)를, 없으면 토큰 대시보드를 염
+                        .clickable { if (remPct != null) showQuotaDetail = true else onOpenTokenDashboard() }
                 ) {
                     Text(
                         text = badgeText,
@@ -876,20 +893,7 @@ fun SessionPane(
             }
 
             if (connection != null && connection.kind.isHiddenWebBridge()) {
-                Surface(
-                    shape = RoundedCornerShape(6.dp),
-                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.75f),
-                    modifier = Modifier
-                        .padding(end = 4.dp)
-                        .clickable { onLoginConnection(connection) }
-                ) {
-                    Text(
-                        text = if (isLoggedIn) "● 로그인됨" else "○ 로그인 필요",
-                        fontSize = 9.5.sp,
-                        color = if (isLoggedIn) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
-                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
-                    )
-                }
+                // 로그인 상태 배지는 표시하지 않음 (로그인이 필요하면 팝업으로 경고)
                 IconButton(
                     onClick = { onLoginConnection(connection) },
                     modifier = Modifier.size(24.dp)
@@ -1811,6 +1815,68 @@ fun SessionPane(
                 }
             }
         }
+    }
+
+    if (showLoginWarning && connection != null) {
+        AlertDialog(
+            onDismissRequest = {
+                loginWarningDismissed.add(connection.id)
+                showLoginWarning = false
+            },
+            title = { Text("로그인이 필요합니다", fontSize = 16.sp, fontWeight = FontWeight.Bold) },
+            text = { Text("${connection.labelIn(enabledConnections)}에 로그인되어 있지 않아 대화를 보내거나 한도를 확인할 수 없습니다.", fontSize = 13.sp) },
+            confirmButton = {
+                Button(onClick = {
+                    showLoginWarning = false
+                    onLoginConnection(connection)
+                }) { Text("로그인 하기") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    loginWarningDismissed.add(connection.id)
+                    showLoginWarning = false
+                }) { Text("나중에") }
+            }
+        )
+    }
+
+    if (showQuotaDetail && tokenUsage != null) {
+        val weeklyRem = remember(tokenUsage.quotaLabel) {
+            Regex("주간\\s*(\\d{1,3})%").find(tokenUsage.quotaLabel)?.groupValues?.getOrNull(1)?.toIntOrNull()?.coerceIn(0, 100)
+        }
+        val nowMs = System.currentTimeMillis()
+        AlertDialog(
+            onDismissRequest = { showQuotaDetail = false },
+            title = { Text(connection?.labelIn(enabledConnections) ?: "사용 한도", fontSize = 16.sp, fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text("5시간 한도", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                        Text("남음 ${tokenUsage.quotaPercent ?: "?"}%", fontSize = 13.sp)
+                        val r5 = formatResetSummary(tokenUsage.quotaResetFiveHourMs, nowMs)
+                        Text(
+                            if (r5.isNotBlank()) "초기화: $r5" else "초기화 시각 정보 없음",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    if (weeklyRem != null) {
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text("주간 한도", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                            Text("남음 ${weeklyRem}%", fontSize = 13.sp)
+                            val r7 = formatResetSummary(tokenUsage.quotaResetWeekMs, nowMs)
+                            Text(
+                                if (r7.isNotBlank()) "초기화: $r7" else "초기화 시각 정보 없음",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { showQuotaDetail = false }) { Text("닫기") } },
+            dismissButton = { TextButton(onClick = { showQuotaDetail = false; onOpenTokenDashboard() }) { Text("전체 보기") } }
+        )
     }
 
     val inspectedRun = session.subagentRuns.find { it.id == inspectingSubagentId }
