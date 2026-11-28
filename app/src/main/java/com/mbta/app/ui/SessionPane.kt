@@ -15,6 +15,9 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -203,6 +206,8 @@ private fun makeAttachmentThumb(context: android.content.Context, bytes: ByteArr
         val dir = java.io.File(context.filesDir, "att_thumbs").apply { mkdirs() }
         val f = java.io.File(dir, "${java.util.UUID.randomUUID()}.jpg")
         f.outputStream().use { bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, it) }
+        // 확대 보기용 원본 보관 (같은 이름 + .orig)
+        runCatching { java.io.File(dir, f.nameWithoutExtension + ".orig").writeBytes(bytes) }
         f.absolutePath
     }.getOrDefault("")
 }
@@ -249,16 +254,63 @@ private fun MessageAttachmentStrip(atts: List<MsgAttachment>) {
     }
     val zp = zoomPath
     if (zp != null) {
-        val zb = remember(zp) { runCatching { android.graphics.BitmapFactory.decodeFile(zp)?.asImageBitmap() }.getOrNull() }
-        androidx.compose.ui.window.Dialog(onDismissRequest = { zoomPath = null }) {
-            if (zb != null) {
-                androidx.compose.foundation.Image(
-                    bitmap = zb,
-                    contentDescription = null,
-                    contentScale = androidx.compose.ui.layout.ContentScale.Fit,
-                    modifier = Modifier.fillMaxWidth().clickable { zoomPath = null }
-                )
-            }
+        val orig = java.io.File(zp.removeSuffix(".jpg") + ".orig")
+        val zb = remember(zp) { decodeSampled(if (orig.exists()) orig.absolutePath else zp, null, 4096) }
+        if (zb != null) ZoomImageDialog(zb) { zoomPath = null }
+    }
+}
+
+/** 큰 이미지는 긴 변이 maxSide 이하가 되도록 샘플링해 디코딩 (파일 경로 또는 바이트) */
+internal fun decodeSampled(path: String?, bytes: ByteArray?, maxSide: Int): androidx.compose.ui.graphics.ImageBitmap? = runCatching {
+    val o = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    if (path != null) android.graphics.BitmapFactory.decodeFile(path, o) else android.graphics.BitmapFactory.decodeByteArray(bytes!!, 0, bytes.size, o)
+    var sample = 1
+    while (o.outWidth / sample > maxSide || o.outHeight / sample > maxSide) sample *= 2
+    val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = sample }
+    (if (path != null) android.graphics.BitmapFactory.decodeFile(path, opts) else android.graphics.BitmapFactory.decodeByteArray(bytes!!, 0, bytes.size, opts))?.asImageBitmap()
+}.getOrNull()
+
+/** 전체 화면 이미지 보기: 핀치 확대·이동, 더블탭 초기화, 바깥 탭으로 닫기 */
+@Composable
+internal fun ZoomImageDialog(bmp: androidx.compose.ui.graphics.ImageBitmap, onDismiss: () -> Unit) {
+    var scale by remember { mutableStateOf(1f) }
+    var offset by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
+    androidx.compose.ui.window.Dialog(
+        onDismissRequest = onDismiss,
+        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.92f))
+                .pointerInput(Unit) {
+                    detectTransformGestures { _, pan, zoom, _ ->
+                        scale = (scale * zoom).coerceIn(1f, 8f)
+                        offset = if (scale <= 1f) androidx.compose.ui.geometry.Offset.Zero else offset + pan
+                    }
+                }
+                .pointerInput(Unit) {
+                    detectTapGestures(
+                        onDoubleTap = { if (scale > 1f) { scale = 1f; offset = androidx.compose.ui.geometry.Offset.Zero } else scale = 3f },
+                        onTap = { if (scale <= 1f) onDismiss() }
+                    )
+                },
+            contentAlignment = Alignment.Center
+        ) {
+            androidx.compose.foundation.Image(
+                bitmap = bmp,
+                contentDescription = null,
+                contentScale = androidx.compose.ui.layout.ContentScale.Fit,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer(scaleX = scale, scaleY = scale, translationX = offset.x, translationY = offset.y)
+            )
+            Text(
+                "✕",
+                color = androidx.compose.ui.graphics.Color.White,
+                fontSize = 22.sp,
+                modifier = Modifier.align(Alignment.TopEnd).padding(16.dp).clickable { onDismiss() }
+            )
         }
     }
 }
@@ -336,6 +388,35 @@ private fun FileRefCards(refs: List<FileRef>, fromWeb: Boolean) {
             }
             if (!exists) return@forEach
             val scope = androidx.compose.runtime.rememberCoroutineScope()
+            val isImage = Regex("\\.(png|jpe?g|gif|webp)$", RegexOption.IGNORE_CASE).containsMatchIn(ref.name)
+            var previewBytes by remember(ref.url, ref.path) { mutableStateOf<ByteArray?>(null) }
+            var showZoom by remember(ref.url, ref.path) { mutableStateOf(false) }
+            if (isImage) {
+                androidx.compose.runtime.LaunchedEffect(ref.url, ref.path) {
+                    val u = ref.url ?: com.mbta.app.network.FileDownloader.bridgeUrl(ref.path.orEmpty())
+                    previewBytes = com.mbta.app.network.FileDownloader.fetchBytes(u, useWebCookies = ref.url != null && fromWeb)
+                }
+                val pb = previewBytes
+                if (pb != null) {
+                    val thumb = remember(pb) { decodeSampled(null, pb, 1024) }
+                    if (thumb != null) {
+                        androidx.compose.foundation.Image(
+                            bitmap = thumb,
+                            contentDescription = ref.name,
+                            contentScale = androidx.compose.ui.layout.ContentScale.Fit,
+                            modifier = Modifier
+                                .widthIn(max = 280.dp)
+                                .heightIn(max = 240.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable { showZoom = true }
+                        )
+                    }
+                    if (showZoom) {
+                        val full = remember(pb) { decodeSampled(null, pb, 4096) }
+                        if (full != null) ZoomImageDialog(full) { showZoom = false }
+                    }
+                }
+            }
             Surface(
                 shape = RoundedCornerShape(10.dp),
                 color = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f),

@@ -79,6 +79,24 @@ object FileDownloader {
             }.getOrNull()
         }
 
+    /** 이미지 미리보기/확대용으로 바이트를 가져옴 (최대 maxBytes). 실패하면 null */
+    suspend fun fetchBytes(url: String, useWebCookies: Boolean, maxBytes: Long = 25_000_000L): ByteArray? =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val rb = Request.Builder().url(url)
+                if (useWebCookies) {
+                    CookieManager.getInstance().getCookie(url)?.let { rb.addHeader("Cookie", it) }
+                    rb.addHeader("User-Agent", UA)
+                }
+                client.newCall(rb.build()).execute().use { resp ->
+                    if (!resp.isSuccessful) return@use null
+                    val body = resp.body ?: return@use null
+                    if (body.contentLength() > maxBytes) return@use null
+                    body.bytes()
+                }
+            }.getOrNull()
+        }
+
     /** 브리지에 파일이 실제로 있는지 확인 */
     suspend fun bridgeFileExists(path: String): Boolean = withContext(Dispatchers.IO) {
         runCatching {
