@@ -516,32 +516,30 @@ class HeadlessWebBridge(
         val js = """
             (function() {
                 $DEEP_QUERY_JS
+                $PICKER_FIND_JS
                 var target = $quoted;
-                var btns = queryAllDeep('button, [role="button"], [aria-haspopup]');
-                var picker = null;
-                for (var i = 0; i < btns.length; i++) {
-                    var t = (btns[i].innerText || btns[i].getAttribute('aria-label') || '').toLowerCase();
-                    if (/gemini|claude|gpt|sonnet|opus|haiku|neon|hydrogen|model|모델/.test(t)) {
-                        picker = btns[i];
-                        break;
-                    }
-                }
+                var picker = findPicker();
                 if (!picker) return;
-                picker.click();
-                setTimeout(function() {
+                var done = false;
+                function pick() {
+                    if (done) return;
                     var items = queryAllDeep('[role="menuitem"], [role="option"], [role="menuitemradio"], li, button, div');
                     for (var j = 0; j < items.length; j++) {
                         var el = items[j];
-                        if (el === picker || picker.contains(el)) continue;
+                        if (el === picker || picker.contains(el) || el.contains(picker)) continue;
                         if (el.children && el.children.length > 4) continue;
                         var txt = (el.innerText || '').toLowerCase().trim();
                         if (!txt || txt.length > 60) continue;
                         if (txt.indexOf(target) !== -1 || target.indexOf(txt) !== -1) {
+                            done = true;
                             el.click();
                             return;
                         }
                     }
-                }, 350);
+                }
+                picker.click();
+                setTimeout(pick, 450);
+                setTimeout(pick, 1300);
             })();
         """.trimIndent()
         wv.evaluateJavascript(js, null)
@@ -563,32 +561,28 @@ class HeadlessWebBridge(
             (function() {
                 $DEEP_QUERY_JS
                 var cands = [$arr];
-                function findPicker() {
-                    var btns = queryAllDeep('button, [role="button"], [aria-haspopup]');
-                    for (var i = 0; i < btns.length; i++) {
-                        var t = (btns[i].innerText || btns[i].getAttribute('aria-label') || '').toLowerCase();
-                        if (/sonnet|opus|haiku|fable|claude|모델|model/.test(t)) return btns[i];
-                    }
-                    return null;
-                }
+                $PICKER_FIND_JS
                 function clickEffort() {
                     var items = queryAllDeep('[role="menuitem"], [role="option"], [role="menuitemradio"], li, button, div');
                     for (var j = 0; j < items.length; j++) {
                         var el = items[j];
                         if (el.children && el.children.length > 4) continue;
+                        if (typeof picker !== 'undefined' && picker && (el === picker || picker.contains(el) || el.contains(picker))) continue;
                         var txt = (el.innerText || '').trim().split('\n')[0].trim().toLowerCase();
                         if (!txt) continue;
                         for (var k = 0; k < cands.length; k++) {
-                            if (txt === cands[k] || txt.indexOf(cands[k] + ' ') === 0) { el.click(); return true; }
+                            if (txt === cands[k] || (txt.indexOf(cands[k]) === 0 && txt.length - cands[k].length <= 6)) { el.click(); return true; }
                         }
                     }
                     return false;
                 }
-                if (clickEffort()) return;
                 var picker = findPicker();
                 if (!picker) return;
+                var effDone = false;
+                function tryEffort() { if (!effDone && clickEffort()) effDone = true; }
                 picker.click();
-                setTimeout(clickEffort, 400);
+                setTimeout(tryEffort, 450);
+                setTimeout(tryEffort, 1300);
             })();
         """.trimIndent()
         wv.evaluateJavascript(js, null)
@@ -1604,6 +1598,17 @@ class HeadlessWebBridge(
                         if (lastUser && !(lastUser.compareDocumentPosition(a) & Node.DOCUMENT_POSITION_FOLLOWING)) continue;
                         var t = (a.innerText || '').trim();
                         if (t) parts.push(t);
+                        // 파일 카드/다운로드 링크는 글자만으로는 안 보이므로 [📎 이름](주소) 줄로 덧붙임 (앱이 다운로드 버튼으로 표시)
+                        var ls = a.querySelectorAll('a[href]');
+                        for (var li = 0; li < ls.length; li++) {
+                            var l = ls[li];
+                            var href = l.href || '';
+                            if (!href || href.indexOf('blob:') === 0 || t.indexOf(href) >= 0) continue;
+                            if (l.hasAttribute('download') || /\.(apk|zip|pdf|png|jpe?g|gif|webp|mp4|mp3|csv|xlsx?|docx?|pptx?|tar|gz|7z|txt|md|json)(\?|#|$)/i.test(href) || /\/(download|files)\//i.test(href)) {
+                                var nm = ((l.getAttribute('download') || l.innerText || '') + '').trim().split('\n')[0] || href.split('?')[0].split('/').pop();
+                                parts.push('[📎 ' + nm + '](' + href + ')');
+                            }
+                        }
                     }
                     return { count: assts.length, text: parts.join('\n\n') };
                 }
@@ -1828,6 +1833,32 @@ class HeadlessWebBridge(
     companion object {
         private const val MOBILE_UA =
             "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
+        /** 모델/effort 선택 버튼 찾기: 입력창 근처의 '모델명+숫자' 버튼 우선 (사이드바의 'Claude' 같은 버튼을 잘못 고르지 않도록) */
+        private const val PICKER_FIND_JS = """
+            function pickerLabel(b) { return ((b.innerText || '') + ' ' + (b.getAttribute('aria-label') || '')).trim(); }
+            var VNUM = /(opus|sonnet|haiku|fable|gemini|gpt|neon|hydrogen)[^a-z0-9]{0,3}\d/i;
+            function findPicker() {
+                var inputs = queryAllDeep('[contenteditable="true"], textarea, [role="textbox"]');
+                for (var i = 0; i < inputs.length; i++) {
+                    var p = inputs[i];
+                    for (var up = 0; up < 7 && p; up++) {
+                        p = p.parentElement;
+                        if (!p) break;
+                        var bs = p.querySelectorAll('button, [role="button"], [aria-haspopup]');
+                        for (var j = 0; j < bs.length; j++) { if (VNUM.test(pickerLabel(bs[j]))) return bs[j]; }
+                    }
+                }
+                var all = queryAllDeep('button, [role="button"], [aria-haspopup]');
+                var last = null;
+                for (var k = 0; k < all.length; k++) { if (VNUM.test(pickerLabel(all[k]))) last = all[k]; }
+                if (last) return last;
+                for (var m = 0; m < all.length; m++) {
+                    if (/gemini|claude|gpt|sonnet|opus|haiku|neon|hydrogen|model|모델/i.test(pickerLabel(all[m]))) return all[m];
+                }
+                return null;
+            }
+        """
+
         private const val DEEP_QUERY_JS = """
             function queryAllDeep(selector) {
                 var results = [];

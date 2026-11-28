@@ -210,7 +210,7 @@ private fun makeAttachmentThumb(context: android.content.Context, bytes: ByteArr
 private fun MessageAttachmentStrip(atts: List<MsgAttachment>) {
     var zoomPath by remember { mutableStateOf<String?>(null) }
     Column(
-        modifier = Modifier.padding(top = 4.dp),
+        modifier = Modifier.padding(bottom = 6.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
         atts.forEach { a ->
@@ -286,6 +286,112 @@ internal fun removeCardLines(text: String, cardJson: String?): String {
         text.lines().filter { it.trim() !in drop && !it.trim().matches(Regex("^\\d+$")) }
             .joinToString("\n").replace(Regex("\\n{3,}"), "\n\n").trim()
     }.getOrDefault(text)
+}
+
+internal data class FileRef(val name: String, val url: String?, val path: String?)
+
+private const val FILE_EXTS = "apk|zip|pdf|png|jpe?g|gif|webp|mp4|mp3|csv|xlsx?|docx?|pptx?|tar|gz|7z|html?|txt|md|json|log"
+private val mdFileLinkRegex = Regex("\\[([^\\]\\n]+)]\\((https?://[^)\\s]+)\\)")
+private val plainFileUrlRegex = Regex("https?://[^\\s)\\]>\"']+?\\.(?:$FILE_EXTS)(?:\\?[^\\s)\\]>\"']*)?(?=[\\s)\\]>\"',;]|$)", RegexOption.IGNORE_CASE)
+private val localFilePathRegex = Regex("(?<![\\w:/.])(?:~|/storage|/sdcard|/data/data/com\\.termux)(?:/[\\w.\\-가-힣()+]+)+\\.(?:$FILE_EXTS)\\b", RegexOption.IGNORE_CASE)
+
+/** AI 응답에서 내려받을 수 있는 파일(링크/기기 경로) 목록 추출 — 다운로드 버튼용 */
+internal fun extractFileRefs(text: String): List<FileRef> {
+    if (text.isBlank()) return emptyList()
+    val out = LinkedHashMap<String, FileRef>()
+    val noCode = text.replace(codeFenceRegex, " ")
+    mdFileLinkRegex.findAll(noCode).forEach { m ->
+        val url = m.groupValues[2]
+        val label = m.groupValues[1].removePrefix("📎").trim()
+        val last = url.substringBefore('?').substringAfterLast('/')
+        val isFile = Regex("\\.(?:$FILE_EXTS)$", RegexOption.IGNORE_CASE).containsMatchIn(url.substringBefore('?')) ||
+            label.contains('.') || url.contains("/download", true) || url.contains("/files/", true)
+        if (isFile) out.putIfAbsent(url, FileRef(label.ifBlank { last }, url, null))
+    }
+    plainFileUrlRegex.findAll(noCode).forEach { m ->
+        val url = m.value
+        out.putIfAbsent(url, FileRef(url.substringBefore('?').substringAfterLast('/'), url, null))
+    }
+    localFilePathRegex.findAll(noCode).forEach { m ->
+        val path = m.value
+        out.putIfAbsent(path, FileRef(path.substringAfterLast('/'), null, path))
+    }
+    return out.values.take(6).toList()
+}
+
+@Composable
+private fun FileRefCards(refs: List<FileRef>, fromWeb: Boolean) {
+    if (refs.isEmpty()) return
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    Column(modifier = Modifier.padding(top = 6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        refs.forEach { ref ->
+            var state by remember(ref.url, ref.path) { mutableStateOf("idle") } // idle / loading / done / failed / missing
+            var savedLoc by remember(ref.url, ref.path) { mutableStateOf("") }
+            var savedUri by remember(ref.url, ref.path) { mutableStateOf<android.net.Uri?>(null) }
+            var savedMime by remember(ref.url, ref.path) { mutableStateOf("") }
+            var exists by remember(ref.path) { mutableStateOf(ref.path == null) }
+            androidx.compose.runtime.LaunchedEffect(ref.path) {
+                if (ref.path != null) exists = com.mbta.app.network.FileDownloader.bridgeFileExists(ref.path)
+            }
+            if (!exists) return@forEach
+            val scope = androidx.compose.runtime.rememberCoroutineScope()
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text("📄", fontSize = 18.sp)
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(ref.name, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        val sub = when (state) {
+                            "loading" -> "내려받는 중..."
+                            "done" -> "저장됨 · $savedLoc"
+                            "failed" -> "다운로드 실패 · 다시 시도"
+                            else -> if (ref.path != null) "기기 파일" else "링크"
+                        }
+                        Text(sub, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                    if (state == "done" && savedUri != null) {
+                        TextButton(onClick = {
+                            runCatching {
+                                ctx.startActivity(
+                                    android.content.Intent(android.content.Intent.ACTION_VIEW)
+                                        .setDataAndType(savedUri, savedMime)
+                                        .addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                                )
+                            }.onFailure {
+                                android.widget.Toast.makeText(ctx, "열 수 있는 앱이 없습니다. Download 폴더를 확인하세요.", android.widget.Toast.LENGTH_SHORT).show()
+                            }
+                        }) { Text("열기", fontSize = 12.sp) }
+                    }
+                    Button(
+                        enabled = state != "loading",
+                        onClick = {
+                            state = "loading"
+                            scope.launch {
+                                val url = ref.url ?: com.mbta.app.network.FileDownloader.bridgeUrl(ref.path.orEmpty())
+                                val saved = com.mbta.app.network.FileDownloader.download(ctx, url, ref.name, useWebCookies = ref.url != null && fromWeb)
+                                if (saved != null) {
+                                    savedLoc = saved.location; savedUri = saved.uri; savedMime = saved.mime
+                                    state = "done"
+                                    android.widget.Toast.makeText(ctx, "저장됨: ${saved.location}", android.widget.Toast.LENGTH_SHORT).show()
+                                } else {
+                                    state = "failed"
+                                }
+                            }
+                        },
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                    ) { Text(if (state == "done") "다시 받기" else "다운로드", fontSize = 12.sp) }
+                }
+            }
+        }
+    }
 }
 
 private val askMarkerRegex = Regex("<<ASK>>([\\s\\S]*?)<</ASK>>")
@@ -2254,6 +2360,8 @@ private fun ChatBubble(
                     Column(modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp)) {
                         val msgAtts = remember(message.content) { parseAttMarker(message.content) }
                         val shownText = remember(message.content) { stripAttMarker(message.content) }
+                        // 첨부 파일/이미지는 위에, 내 명령은 아래에 배치
+                        if (msgAtts.isNotEmpty()) MessageAttachmentStrip(msgAtts)
                         SelectionContainer {
                             Text(
                                 text = if (isCli) "$ $shownText" else shownText,
@@ -2262,7 +2370,6 @@ private fun ChatBubble(
                                 color = MaterialTheme.colorScheme.onPrimaryContainer
                             )
                         }
-                        if (msgAtts.isNotEmpty()) MessageAttachmentStrip(msgAtts)
                         Row(
                             modifier = Modifier.padding(top = 4.dp),
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -2365,6 +2472,10 @@ private fun ChatBubble(
                                 SelectionContainer {
                                     FormattedMessageContent(text = displayBody, isCli = isCli, fontScale = fontScale)
                                 }
+                            }
+                            if (!isStreaming && !message.isError) {
+                                val fileRefs = remember(displayBody) { extractFileRefs(displayBody) }
+                                FileRefCards(fileRefs, fromWeb = message.agentName.isNotBlank())
                             }
                             if (isStreaming) {
                                 WavingDotsIndicator(statusText = processStatus)
