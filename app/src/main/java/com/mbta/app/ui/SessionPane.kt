@@ -414,6 +414,9 @@ private fun skipWebCardIfNeeded(
     return true
 }
 
+/** 로그인 경고를 이미 닫은 연결 (앱이 켜진 동안만 기억) */
+private val loginWarningDismissed = mutableSetOf<String>()
+
 private val askMarkerRegex = Regex("<<ASK>>([\\s\\S]*?)<</ASK>>")
 
 internal fun stripAskMarker(text: String): String = text.replace(askMarkerRegex, "").trim()
@@ -627,6 +630,17 @@ fun SessionPane(
     var dismissedQuestionMsgId by remember(session.id) { mutableStateOf("") }
     var skippedQuestionMsgId by remember(session.id) { mutableStateOf("") }
     var showQuotaDetail by remember { mutableStateOf(false) }
+    // 로그인이 필요한 웹 연결이면 팝업으로 경고 (시작 직후 로그인 확인 중 깜빡임을 피하려고 잠깐 기다린 뒤 표시)
+    var showLoginWarning by remember { mutableStateOf(false) }
+    val needsLogin = connection != null && connection.kind.isHiddenWebBridge() && !isLoggedIn
+    androidx.compose.runtime.LaunchedEffect(connection?.id, needsLogin) {
+        if (needsLogin && connection != null && connection.id !in loginWarningDismissed) {
+            kotlinx.coroutines.delay(2500L)
+            showLoginWarning = true
+        } else {
+            showLoginWarning = false
+        }
+    }
     var expandedQuestionMsgId by remember(session.id) { mutableStateOf<String?>(null) }
     var autoOpenedQuestionMsgId by remember(session.id) { mutableStateOf("") }
     var autoApprovedMsgId by remember(session.id) { mutableStateOf("") }
@@ -879,23 +893,7 @@ fun SessionPane(
             }
 
             if (connection != null && connection.kind.isHiddenWebBridge()) {
-                // 로그인된 상태 표시는 생략하고, 로그인이 필요할 때만 알림 표시
-                if (!isLoggedIn) {
-                    Surface(
-                        shape = RoundedCornerShape(6.dp),
-                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.75f),
-                        modifier = Modifier
-                            .padding(end = 4.dp)
-                            .clickable { onLoginConnection(connection) }
-                    ) {
-                        Text(
-                            text = "○ 로그인 필요",
-                            fontSize = 9.5.sp,
-                            color = MaterialTheme.colorScheme.error,
-                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
-                        )
-                    }
-                }
+                // 로그인 상태 배지는 표시하지 않음 (로그인이 필요하면 팝업으로 경고)
                 IconButton(
                     onClick = { onLoginConnection(connection) },
                     modifier = Modifier.size(24.dp)
@@ -1817,6 +1815,29 @@ fun SessionPane(
                 }
             }
         }
+    }
+
+    if (showLoginWarning && connection != null) {
+        AlertDialog(
+            onDismissRequest = {
+                loginWarningDismissed.add(connection.id)
+                showLoginWarning = false
+            },
+            title = { Text("로그인이 필요합니다", fontSize = 16.sp, fontWeight = FontWeight.Bold) },
+            text = { Text("${connection.labelIn(enabledConnections)}에 로그인되어 있지 않아 대화를 보내거나 한도를 확인할 수 없습니다.", fontSize = 13.sp) },
+            confirmButton = {
+                Button(onClick = {
+                    showLoginWarning = false
+                    onLoginConnection(connection)
+                }) { Text("로그인 하기") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    loginWarningDismissed.add(connection.id)
+                    showLoginWarning = false
+                }) { Text("나중에") }
+            }
+        )
     }
 
     if (showQuotaDetail && tokenUsage != null) {
