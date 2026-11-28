@@ -14,6 +14,8 @@ import uuid
 import json
 import os
 import re
+import hmac
+import secrets
 import sqlite3
 import subprocess
 import sys
@@ -292,6 +294,25 @@ JOBS_LOCK = threading.Lock()
 JOBS_MAP = {}
 ASK_CAPTURE = {}
 
+BRIDGE_TOKEN_PATH = os.path.expanduser("~/.mbta-bridge-token")
+BRIDGE_REQUIRE_TOKEN = os.environ.get("MBTA_BRIDGE_REQUIRE_TOKEN") == "1"
+BRIDGE_TOKEN = ""
+
+
+def load_or_create_bridge_token():
+    """브리지 토큰 파일을 준비한다 (없으면 생성, 권한 600)."""
+    global BRIDGE_TOKEN
+    try:
+        if not os.path.exists(BRIDGE_TOKEN_PATH):
+            fd = os.open(BRIDGE_TOKEN_PATH, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(secrets.token_urlsafe(32) + "\n")
+        os.chmod(BRIDGE_TOKEN_PATH, 0o600)
+        with open(BRIDGE_TOKEN_PATH, encoding="utf-8") as f:
+            BRIDGE_TOKEN = f.read().strip()
+    except OSError as e:
+        sys.stderr.write(f"[MbtA-Bridge] 토큰 파일 준비 실패: {e}\n")
+
 ASK_SYSTEM_PROMPT = (
     "사용자의 결정이 필요하거나 질문할 때는 반드시 AskUserQuestion 도구로 선택지(2~4개)와 함께 질문하세요. "
     "도구를 쓸 수 없으면 답변 끝에 <<ASK>>{\"question\":\"질문\",\"options\":[\"선택지1\",\"선택지2\"]}<</ASK>> 형식으로만 질문하세요. "
@@ -442,6 +463,17 @@ def run_cli(cmd, cwd=None, timeout=1800, progress_key="", stream_mode=False):
 
     t = threading.Thread(target=_read_err, daemon=True)
     t.start()
+
+    def _kill_on_timeout():
+        # 스트림 루프는 readline 에서 블록되므로 전체 타임아웃은 워치독으로 강제한다.
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+    watchdog = threading.Timer(timeout, _kill_on_timeout)
+    watchdog.daemon = True
+    watchdog.start()
     try:
         if stream_mode and proc.stdout:
             for line in proc.stdout:
@@ -515,6 +547,7 @@ def run_cli(cmd, cwd=None, timeout=1800, progress_key="", stream_mode=False):
         proc.kill()
         out, _ = proc.communicate()
     finally:
+        watchdog.cancel()
         with PROGRESS_LOCK:
             if ACTIVE_PROCS.get(progress_key) is proc:
                 ACTIVE_PROCS.pop(progress_key, None)
@@ -693,6 +726,15 @@ def list_agy_sessions(limit=25):
 
 
 class BridgeHandler(http.server.BaseHTTPRequestHandler):
+    def _token_ok(self):
+        given = self.headers.get("X-MbtA-Token", "") or ""
+        if BRIDGE_TOKEN and hmac.compare_digest(given.encode("utf-8"), BRIDGE_TOKEN.encode("utf-8")):
+            return True
+        if BRIDGE_REQUIRE_TOKEN:
+            return False
+        sys.stderr.write(f"[MbtA-Bridge] 경고: X-MbtA-Token 없음/불일치 ({self.path}); MBTA_BRIDGE_REQUIRE_TOKEN=1 이면 차단됩니다\n")
+        return True
+
     def _send_json(self, code, obj):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
@@ -702,6 +744,9 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
+        if not self._token_ok():
+            self._send_json(401, {"error": "Unauthorized"})
+            return
         if self.path == "/health":
             self._send_json(200, {"status": "ok", "endpoints": ["/claude", "/agy", "/exec", "/sessions", "/progress"]})
         elif self.path.startswith("/filestat") or self.path.startswith("/download"):
@@ -802,6 +847,9 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
             self._send_json(404, {"error": "Not found"})
 
     def do_POST(self):
+        if not self._token_ok():
+            self._send_json(401, {"error": "Unauthorized"})
+            return
         length = int(self.headers.get("Content-Length", 0))
         raw = self.rfile.read(length).decode("utf-8") if length > 0 else "{}"
         try:
@@ -842,8 +890,22 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
 
         if self.path == "/exec":
             command = data.get("command", "")
-            proc = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=120)
-            self._send_json(200, {"output": proc.stdout + proc.stderr, "exitCode": proc.returncode})
+            sid = (data.get("session_id") or data.get("mbta_session_id") or "").strip()
+            proc = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            if sid:
+                with PROGRESS_LOCK:
+                    ACTIVE_PROCS[sid] = proc
+            try:
+                try:
+                    out, err = proc.communicate(timeout=120)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    out, err = proc.communicate()
+            finally:
+                with PROGRESS_LOCK:
+                    if sid and ACTIVE_PROCS.get(sid) is proc:
+                        ACTIVE_PROCS.pop(sid, None)
+            self._send_json(200, {"output": (out or "") + (err or ""), "exitCode": proc.returncode})
             return
 
         if self.path == "/git/status":
@@ -1084,5 +1146,10 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 8765), BridgeHandler)
+    load_or_create_bridge_token()
+    if BRIDGE_REQUIRE_TOKEN:
+        print(f"MbtA Bridge: X-MbtA-Token 검사 강제 (토큰 파일: {BRIDGE_TOKEN_PATH})")
+    else:
+        print("MbtA Bridge: X-MbtA-Token 검사는 기본 비활성 (MBTA_BRIDGE_REQUIRE_TOKEN=1 로 강제, 미강제 시 경고만 로그)")
     print("MbtA Bridge listening on http://127.0.0.1:8765 (/exec, /claude, /agy)")
     server.serve_forever()
