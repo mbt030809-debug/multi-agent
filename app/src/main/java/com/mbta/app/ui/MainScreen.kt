@@ -178,6 +178,7 @@ fun MainScreen(
 
     val sendingMap = remember { mutableStateMapOf<String, Boolean>() }
     val webQuestionMap = remember { mutableStateMapOf<String, String>() }
+    val sessionDrafts = remember { SessionDraftStore() }
     // 웹 화면에 실제로 적용에 성공한 모델/effort (세션 WebView 키별) — 실패하면 다음 전송 때 다시 시도
     val webAppliedModel = remember { mutableMapOf<String, String>() }
     val webAppliedEffort = remember { mutableMapOf<String, String>() }
@@ -201,6 +202,19 @@ fun MainScreen(
                 false to "웹 $label 전환 실패 — $why" + (if (picker.isNotBlank()) " (버튼: $picker)" else "")
             }
         }.getOrDefault(false to "웹 $label 전환 결과를 읽지 못함")
+    }
+
+    /** 이전에 답하지 않고 남은 웹 질문 카드가 있으면 건너뛰기로 닫음 (카드가 떠 있으면 새 입력이 막힘) */
+    suspend fun skipLeftoverWebCard(key: String) {
+        val leftover = kotlinx.coroutines.CompletableDeferred<String?>()
+        headlessWebBridge.readWebQuestion(key) { leftover.complete(it) }
+        if (kotlinx.coroutines.withTimeoutOrNull(2500L) { leftover.await() } == null) return
+        val skipped = kotlinx.coroutines.CompletableDeferred<Boolean>()
+        headlessWebBridge.skipWebQuestion(key) { skipped.complete(it) }
+        if (kotlinx.coroutines.withTimeoutOrNull(2500L) { skipped.await() } == true) {
+            android.widget.Toast.makeText(context, "⏭ 답하지 않은 AI 질문을 건너뛰고 전송합니다", android.widget.Toast.LENGTH_SHORT).show()
+            kotlinx.coroutines.delay(1200L)
+        }
     }
 
     suspend fun awaitWebSwitch(isModel: Boolean, key: String, value: String): Boolean {
@@ -376,7 +390,9 @@ fun MainScreen(
         effectiveDir: String,
         run: SubagentRun
     ): SubagentRun {
-        val effectiveSubConn = if (subModel.isNotBlank()) subConn.copy(model = subModel) else subConn
+        // effort가 모델 이름 변형으로 표현되는 연결(Antigravity 등)은 effort를 모델에 반영
+        val subModelFinal = com.mbta.app.model.modelWithEffort(subModel, subEffort, availableModelsFor(subConn))
+        val effectiveSubConn = if (subModelFinal.isNotBlank()) subConn.copy(model = subModelFinal) else subConn
         val subPrompt = buildString {
             append("[서브에이전트 작업 지시 — 역할: ${run.label}]\n")
             if (useProjectContext && effectiveDir.isNotBlank()) append("- 작업 경로: $effectiveDir\n")
@@ -386,6 +402,15 @@ fun MainScreen(
         }
         return try {
             val (outText, errText) = if (effectiveSubConn.usesHiddenWebBridge()) {
+                // 웹 서브: 지정된 모델/effort를 웹 화면에 맞춘 뒤 전송
+                if (subModelFinal.isNotBlank() && webAppliedModel[effectiveSubConn.id] != subModelFinal) {
+                    awaitWebSwitch(true, effectiveSubConn.id, subModelFinal)
+                    kotlinx.coroutines.delay(400L)
+                }
+                if (subEffort.isNotBlank() && effectiveSubConn.kind == ConnectionKind.REMOTE_WEB && webAppliedEffort[effectiveSubConn.id] != subEffort) {
+                    awaitWebSwitch(false, effectiveSubConn.id, subEffort)
+                    kotlinx.coroutines.delay(400L)
+                }
                 val (triple, err) = headlessWebBridge.sendPromptSuspend(
                     key = effectiveSubConn.id,
                     kind = effectiveSubConn.kind,
@@ -469,10 +494,22 @@ fun MainScreen(
         if (text.isBlank()) return
         if (sendingMap[session.id] == true) {
             queuedPromptsMap[session.id] = (queuedPromptsMap[session.id] ?: emptyList()) + textRaw.trim()
+            // 웹 AI가 질문 카드의 답을 기다리는 중에 새 메시지를 보내면 카드를 건너뛰어 풀어 줌
+            // → 응답이 끝나면 대기 큐의 이 메시지가 자동으로 전송됨
+            if (conn.usesHiddenWebBridge() && webQuestionMap[session.id] != null) {
+                headlessWebBridge.skipWebQuestion(com.mbta.app.model.webSessionKey(conn.id, session.id)) { ok ->
+                    android.widget.Toast.makeText(
+                        context,
+                        if (ok) "⏭ 답하지 않은 AI 질문을 건너뛰고 메시지를 이어서 보냅니다" else "AI 질문 카드를 닫지 못했습니다. 웹 화면에서 건너뛰어 주세요.",
+                        android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }
             return
         }
         if (session.isOrchestration && !text.startsWith("@")) {
-            val effectiveMainConn = if (session.selectedModel.isNotBlank()) conn.copy(model = session.selectedModel) else conn
+            val mainModelFinal = com.mbta.app.model.modelWithEffort(session.selectedModel, session.selectedEffort, availableModelsFor(conn))
+            val effectiveMainConn = if (mainModelFinal.isNotBlank()) conn.copy(model = mainModelFinal) else conn
             val subConn = enabledConnections.find { it.id == (session.subConnectionId ?: session.connectionId) } ?: conn
             val subModel = session.subModel.ifBlank { defaultModelFor(subConn) }
             val effectiveDir = session.worktreePath.ifBlank { activeProject.workDir }
@@ -573,6 +610,7 @@ fun MainScreen(
                     for (round in 1..(maxRounds + 1)) {
                         val (mainText, mainErr) = if (effectiveMainConn.usesHiddenWebBridge()) {
                             val orchWebKey = com.mbta.app.model.webSessionKey(effectiveMainConn.id, session.id)
+                            skipLeftoverWebCard(orchWebKey)
                             // 메인이 웹 질문 카드를 띄우고 답을 기다리는 동안 앱에도 같은 질문창을 보여줌
                             val orchAskPoll = if (effectiveMainConn.kind == ConnectionKind.REMOTE_WEB) {
                                 scope.launch {
@@ -826,7 +864,8 @@ fun MainScreen(
 
         val targetConn = mentionedConn ?: conn
         val effectiveConn = if (mentionedConn == null && session.selectedModel.isNotBlank()) {
-            targetConn.copy(model = session.selectedModel)
+            // effort가 모델 이름 변형("(High)")으로 표현되는 연결은 고른 effort를 모델에 반영
+            targetConn.copy(model = com.mbta.app.model.modelWithEffort(session.selectedModel, session.selectedEffort, availableModelsFor(targetConn)))
         } else {
             targetConn
         }
@@ -904,6 +943,7 @@ fun MainScreen(
             val wantModel = session.selectedModel.trim()
             val wantEffort = session.selectedEffort.trim()
             scope.launch {
+                skipLeftoverWebCard(webSendKey)
                 if (wantModel.isNotBlank() && webAppliedModel[webSendKey] != wantModel) {
                     awaitWebSwitch(true, webSendKey, wantModel)
                     kotlinx.coroutines.delay(400L)
@@ -1140,7 +1180,9 @@ fun MainScreen(
         }
         sendingMap[session.id] = false
         if (conn.usesHiddenWebBridge()) {
-            headlessWebBridge.cancelActiveRequest(com.mbta.app.model.webSessionKey(conn.id, session.id))
+            val cancelKey = com.mbta.app.model.webSessionKey(conn.id, session.id)
+            if (webQuestionMap.remove(session.id) != null) headlessWebBridge.skipWebQuestion(cancelKey) {}
+            headlessWebBridge.cancelActiveRequest(cancelKey)
         } else if (conn.kind == ConnectionKind.REMOTE_CONTROL || conn.kind == ConnectionKind.TERMUX_CLI) {
             scope.launch { GitBridgeClient.cancelSession(session.id) }
         }
@@ -1273,6 +1315,7 @@ fun MainScreen(
     }
 
     fun deleteSession(session: AgentSession) {
+        sessionDrafts.clear(session.id)
         headlessWebBridge.releaseWebView(com.mbta.app.model.webSessionKey(session.connectionId.orEmpty(), session.id))
         val remainingInProject = validProjectSessions.filterNot { it.id == session.id }
         sessions = sessions.filterNot { it.id == session.id }
@@ -1919,6 +1962,7 @@ fun MainScreen(
             when (splitMode) {
                 SplitMode.SINGLE -> {
                     SessionPane(
+                        drafts = sessionDrafts,
                         showModelControls = !isLandscape,
                         project = activeProject,
                         session = primarySession,
@@ -1976,6 +2020,7 @@ fun MainScreen(
                 SplitMode.SPLIT_VERTICAL -> {
                     Column(modifier = Modifier.fillMaxSize()) {
                         SessionPane(
+                            drafts = sessionDrafts,
                         showModelControls = !isLandscape,
                             project = activeProject,
                             session = primarySession,
@@ -2033,6 +2078,7 @@ fun MainScreen(
                         )
                         HorizontalDivider(thickness = 2.dp, color = MaterialTheme.colorScheme.outline)
                         SessionPane(
+                            drafts = sessionDrafts,
                         showModelControls = !isLandscape,
                             project = activeProject,
                             session = secondarySession ?: primarySession,
@@ -2097,6 +2143,7 @@ fun MainScreen(
                 SplitMode.SPLIT_HORIZONTAL -> {
                     Row(modifier = Modifier.fillMaxSize()) {
                         SessionPane(
+                            drafts = sessionDrafts,
                         showModelControls = !isLandscape,
                             project = activeProject,
                             session = primarySession,
@@ -2154,6 +2201,7 @@ fun MainScreen(
                         )
                         VerticalDivider(thickness = 2.dp, color = MaterialTheme.colorScheme.outline)
                         SessionPane(
+                            drafts = sessionDrafts,
                         showModelControls = !isLandscape,
                             project = activeProject,
                             session = secondarySession ?: primarySession,

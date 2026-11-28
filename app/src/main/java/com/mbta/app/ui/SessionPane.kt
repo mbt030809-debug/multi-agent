@@ -536,7 +536,14 @@ internal fun detectQuestionPrompt(rawContent: String, structuredOnly: Boolean = 
     } else null
 }
 
-private data class PendingAttachment(
+/** 세션별 입력 초안 보관소 (메모리 전용) */
+class SessionDraftStore {
+    val texts = HashMap<String, String>()
+    val atts = HashMap<String, List<PendingAttachment>>()
+    fun clear(sessionId: String) { texts.remove(sessionId); atts.remove(sessionId) }
+}
+
+data class PendingAttachment(
     val name: String,
     val mimeType: String,
     val bytes: ByteArray,
@@ -597,14 +604,22 @@ fun SessionPane(
     onSendQueuedNow: (Int) -> Unit = {},
     onRenameSession: (String) -> Unit = {},
     onTogglePinMessage: (String) -> Unit = {},
+    drafts: SessionDraftStore? = null,
     onStopSubagent: (String) -> Unit = {},
     onRetrySubagent: (String) -> Unit = {},
     onAttachOrchestration: (enabled: Boolean, subConnId: String?, subModel: String, subEffort: String, maxParallel: Int, maxRounds: Int, sensitivity: String) -> Unit = { _, _, _, _, _, _, _ -> },
     onToggleSkipPermissions: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
-    var inputText by remember(session.id) { mutableStateOf("") }
-    var attachments by remember(session.id) { mutableStateOf<List<PendingAttachment>>(emptyList()) }
+    // 입력 중이던 글/첨부는 세션별로 보관(앱이 켜진 동안만): 다른 세션이나 설정 화면에 다녀와도 유지
+    var inputText by remember(session.id) { mutableStateOf(drafts?.texts?.get(session.id) ?: "") }
+    var attachments by remember(session.id) { mutableStateOf(drafts?.atts?.get(session.id) ?: emptyList<PendingAttachment>()) }
+    androidx.compose.runtime.SideEffect {
+        if (drafts != null) {
+            drafts.texts[session.id] = inputText
+            drafts.atts[session.id] = attachments
+        }
+    }
     var showHandoffDialog by remember { mutableStateOf(false) }
     var showAttachOrchDialog by remember { mutableStateOf(false) }
     var showModelMenu by remember { mutableStateOf(false) }
@@ -1645,9 +1660,16 @@ fun SessionPane(
                                             if (detectedQuestion.webCard && connection != null && headlessWebBridge != null) {
                                                 // 웹 화면의 질문 카드에서 직접 선택/입력 (원본이 답을 기다리며 멈춰 있음)
                                                 val webKey = com.mbta.app.model.webSessionKey(connection.id, session.id)
-                                                val idx = selectedOpts.sorted().firstOrNull() ?: -1
-                                                headlessWebBridge.answerWebQuestion(webKey, idx, customAnswer.trim()) { ok ->
-                                                    if (!ok) android.widget.Toast.makeText(context, "웹 질문 카드에 답을 입력하지 못했습니다. 웹 화면에서 직접 선택해 주세요.", android.widget.Toast.LENGTH_LONG).show()
+                                                val idxs = selectedOpts.sorted()
+                                                headlessWebBridge.answerWebQuestion(webKey, idxs, customAnswer.trim()) { ok ->
+                                                    if (!ok) {
+                                                        // 실패하면 질문창을 다시 살려 재시도/수동 선택이 가능하게 함
+                                                        dismissedQuestionMsgId = ""
+                                                        expandedQuestionMsgId = lastMsg.id
+                                                        android.widget.Toast.makeText(context, "웹 질문 카드에 답하지 못했습니다. 다시 시도하거나 웹 화면에서 직접 선택해 주세요.", android.widget.Toast.LENGTH_LONG).show()
+                                                    } else {
+                                                        android.widget.Toast.makeText(context, "웹 질문 카드에 답을 전달했습니다.", android.widget.Toast.LENGTH_SHORT).show()
+                                                    }
                                                 }
                                             } else if (replyBody.isNotEmpty()) onSendMessage(replyBody)
                                         }
