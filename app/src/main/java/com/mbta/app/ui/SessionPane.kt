@@ -32,6 +32,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -2218,10 +2219,16 @@ private fun ChatBubble(
         }
         MessageRole.USER -> {
             val clipboard = LocalClipboardManager.current
+            // 다크 테마에서는 내 명령(파랑 톤)과 AI 대답(회색 톤)을 확실히 구분
+            val userBubbleColor = if (MaterialTheme.colorScheme.background.luminance() < 0.5f) {
+                androidx.compose.ui.graphics.Color(0xFF2F4170)
+            } else {
+                MaterialTheme.colorScheme.primaryContainer
+            }
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                 Surface(
                     shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.primaryContainer,
+                    color = userBubbleColor,
                     modifier = Modifier.widthIn(max = 300.dp)
                 ) {
                     Column(modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp)) {
@@ -2267,7 +2274,7 @@ private fun ChatBubble(
                 Surface(
                     shape = RoundedCornerShape(12.dp),
                     color = bubbleColor,
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth().padding(end = 20.dp)
                 ) {
                     Column(modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp)) {
                         Row(
