@@ -39,6 +39,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AccountTree
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Code
@@ -634,7 +635,7 @@ fun MainScreen(
                             Regex("<<SUBAGENTS>>[\\s\\S]*?<</SUBAGENTS>>", RegexOption.IGNORE_CASE),
                             ""
                         ).trim().take(280)
-                        val subStatusHeader = "⚡ 라운드 $round/$maxRounds · 서브에이전트 ${runs.size}개 실행 중 (${runs.joinToString(", ") { it.label }})..."
+                        val subStatusHeader = "Orch · 라운드 $round/$maxRounds · 서브에이전트 ${runs.size}개 실행 중 (${runs.joinToString(", ") { it.label }})..."
                         setPlaceholder(if (mainPlanNote.isNotBlank()) "$mainPlanNote\n\n$subStatusHeader" else subStatusHeader)
 
                         val latestSess = sessions.find { it.id == session.id } ?: session
@@ -696,7 +697,7 @@ fun MainScreen(
                     sendingMap[session.id] = false
                     if (activeSessionId != session.id) unreadDoneSessions[session.id] = true
                     if (finalError == null) {
-                        onNotifyEvent(session.id, "⚡ ${conn.labelIn(connections)} 오케스트레이션 완료", finalMsg.content.take(140), false, emptyList())
+                        onNotifyEvent(session.id, "✅ ${conn.labelIn(connections)} 오케스트레이션 완료", finalMsg.content.take(140), false, emptyList())
                     } else {
                         onNotifyEvent(session.id, "❌ ${conn.labelIn(connections)} 오케스트레이션 오류", finalError.take(140), true, listOf("Keep going"))
                     }
@@ -989,7 +990,7 @@ fun MainScreen(
         sessions = sessions.map { s ->
             if (s.id == session.id) {
                 val last = s.messages.lastOrNull()
-                val updated = if (last != null && last.role == MessageRole.ASSISTANT && (last.content.startsWith("⏳") || last.content.startsWith("⚡") || last.content == "응답 대기 중...")) {
+                val updated = if (last != null && last.role == MessageRole.ASSISTANT && (last.content.startsWith("⏳") || last.content.startsWith("⚡") || last.content.startsWith("Orch ·") || last.content == "응답 대기 중...")) {
                     s.messages.dropLast(1) + last.copy(content = "⛔ 작업이 취소되었습니다.", isError = true)
                 } else {
                     s.messages + ChatMessage(id = "msg_${UUID.randomUUID()}", role = MessageRole.SYSTEM, content = "⛔ 작업이 취소되었습니다.")
@@ -2791,7 +2792,7 @@ private fun NewSessionDialog(
     var useWorktree by remember { mutableStateOf(false) }
     var pickerConn by remember { mutableStateOf<AiConnection?>(null) }
 
-    val titleC: @Composable () -> Unit = { Text(if (isOrchMode) "⚡ 새 오케스트레이션 세션" else "새 하위 세션", fontSize = 16.sp, fontWeight = FontWeight.Bold) }
+    val titleC: @Composable () -> Unit = { Text(if (isOrchMode) "새 Orch 세션" else "새 하위 세션", fontSize = 16.sp, fontWeight = FontWeight.Bold) }
     val textC: @Composable () -> Unit = {
             Column(
                 modifier = Modifier
@@ -2829,7 +2830,8 @@ private fun NewSessionDialog(
                                     if (title == "세션 $defaultIndex") title = "오케스트레이션 $defaultIndex"
                                 }
                             },
-                            label = { Text("⚡ 오케스트레이션", fontSize = 12.sp) },
+                            label = { Text("Orch", fontSize = 12.sp) },
+                            leadingIcon = { Icon(Icons.Default.AccountTree, contentDescription = null, modifier = Modifier.size(16.dp)) },
                             modifier = Modifier.weight(1f)
                         )
                     }

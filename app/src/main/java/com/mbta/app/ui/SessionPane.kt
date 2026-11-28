@@ -1789,7 +1789,7 @@ fun SessionPane(
             onDismissRequest = { showAttachOrchDialog = false },
             title = {
                 Text(
-                    text = if (session.isOrchestration) "⚡ 서브 모델 설정" else "⚡ 현재 세션에 서브 모델 연결",
+                    text = if (session.isOrchestration) "서브 모델 설정" else "현재 세션에 서브 모델 연결",
                     fontSize = 15.sp,
                     fontWeight = FontWeight.Bold
                 )
