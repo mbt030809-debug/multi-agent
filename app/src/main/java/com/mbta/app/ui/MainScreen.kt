@@ -1374,11 +1374,11 @@ fun MainScreen(
             if (fetched.isNotEmpty() && sendingMap[sess.id] != true) {
                 val latestSess = sessions.find { it.id == sess.id }
                 val curNonSys = latestSess?.messages?.filter { it.role != MessageRole.SYSTEM }.orEmpty()
-                val hasNew = fetched.size > curNonSys.size ||
-                    fetched.last().content != curNonSys.lastOrNull()?.content ||
-                    fetched.last().role != curNonSys.lastOrNull()?.role
-                if (hasNew) {
-                    sessions = sessions.map { if (it.id == sess.id) it.copy(messages = fetched) else it }
+                // 웹에서 긁어온 목록이 앱에 저장된 대화보다 "더 많을 때만" 뒤쪽 새 메시지를 덧붙임.
+                // (기존에는 통째로 덮어써서, 긁기가 일부만 가져오면 앱의 최신 대답이 사라질 수 있었음)
+                if (latestSess != null && fetched.size > curNonSys.size) {
+                    val toAppend = fetched.drop(curNonSys.size)
+                    sessions = sessions.map { if (it.id == sess.id) it.copy(messages = it.messages + toAppend) else it }
                     store.saveSessions(sessions)
                 }
             }
