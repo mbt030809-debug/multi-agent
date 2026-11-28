@@ -328,6 +328,7 @@ fun SessionPane(
     onShareMarkdown: () -> Unit,
     onSelectModel: (String) -> Unit,
     onSelectEffort: (String) -> Unit = {},
+    showModelControls: Boolean = true,
     onHandoffTo: (target: AiConnection, smartSummary: Boolean, includeGit: Boolean, autoSend: Boolean) -> Unit,
     onDeleteSession: () -> Unit,
     onOpenTokenDashboard: () -> Unit,
@@ -462,7 +463,7 @@ fun SessionPane(
                     }
                 }
                 val models = dynamicModels.ifEmpty { availableModelsFor(connection) }
-                if (models.isNotEmpty()) {
+                if (models.isNotEmpty() && showModelControls) {
                     val activeModel = session.selectedModel.ifBlank {
                         connection.model.ifBlank { defaultModelFor(connection) }
                     }
