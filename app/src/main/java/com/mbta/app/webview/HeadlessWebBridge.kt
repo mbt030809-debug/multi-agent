@@ -938,7 +938,7 @@ class HeadlessWebBridge(
                     var links = queryAllDeep('a[href]');
                     for (var i = 0; i < links.length; i++) {
                         var href = links[i].href || '';
-                        if (!/(\/c\/[^\/?#]+|\/chat\/[^\/?#]+|\/app\/[^\/?#]+|\/r\/[^\/?#]+|\/gem\/[^\/?#]+\/[^\/?#]+|\/code\/(?:session_)?[A-Za-z0-9_-]{8,})/.test(href)) continue;
+                        if (!/(\/c\/[^\/?#]+|\/chat\/[^\/?#]+|\/app\/[^\/?#]+|\/r\/[^\/?#]+|\/gem\/[^\/?#]+\/[^\/?#]+|\/code\/(?:sessions?\/)?(?:session_)?[A-Za-z0-9_-]{8,})/.test(href)) continue;
                         if (/\/(new|settings|pricing|login|signin|about|faq|updates|extensions|gems)(\/|$|\?)/i.test(href)) continue;
                         if (seen[href]) continue;
                         var title = extractTitleFromEl(links[i]);
@@ -1061,6 +1061,42 @@ class HeadlessWebBridge(
 
         val initialDelay = if (loadedUrls[key] == true) 50L else 2200L
         mainHandler.postDelayed({ pollScrape(0, false) }, initialDelay)
+    }
+
+    /** 세션 목록이 비었을 때 원인 파악용: 현재 페이지의 링크/사이드바 요소를 텍스트로 덤프 */
+    fun dumpSidebarDiagnostics(key: String, onResult: (String) -> Unit) {
+        val wv = pool[key]
+        if (wv == null) {
+            onResult("WebView 없음 (key=$key)")
+            return
+        }
+        val js = """
+            (function() {
+                try {
+                    $DEEP_QUERY_JS
+                    var out = [];
+                    out.push('url=' + location.href);
+                    var links = queryAllDeep('a[href]');
+                    out.push('links=' + links.length);
+                    for (var i = 0; i < links.length && i < 60; i++) {
+                        out.push('A ' + (links[i].getAttribute('href') || '') + ' | ' + ((links[i].innerText || '').trim().replace(/\s+/g, ' ').slice(0, 40)));
+                    }
+                    var cands = queryAllDeep('[data-session-id],[data-testid*="session" i],[role="link"],[role="listitem"],nav button');
+                    out.push('candidates=' + cands.length);
+                    for (var j = 0; j < cands.length && j < 30; j++) {
+                        var e = cands[j];
+                        out.push('E <' + e.tagName.toLowerCase() + ' testid=' + (e.getAttribute('data-testid') || '') + ' sid=' + (e.getAttribute('data-session-id') || '') + '> ' + ((e.innerText || '').trim().replace(/\s+/g, ' ').slice(0, 40)));
+                    }
+                    return out.join('\n');
+                } catch(e) { return 'err:' + e; }
+            })();
+        """.trimIndent()
+        wv.evaluateJavascript(js) { raw ->
+            val text = raw?.trim()?.let {
+                if (it.startsWith("\"") && it.endsWith("\"")) org.json.JSONTokener(it).nextValue().toString() else it
+            } ?: ""
+            onResult(text)
+        }
     }
 
     /** 로그인된 웹 계정의 이메일/이름을 읽어옴 (Claude/ChatGPT는 계정 API, 그 외는 화면의 계정 아바타 라벨) */

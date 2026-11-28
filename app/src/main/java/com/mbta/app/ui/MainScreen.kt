@@ -2605,6 +2605,18 @@ private fun ExistingSessionPickerDialog(
                             fontSize = 12.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                        val diagCtx = androidx.compose.ui.platform.LocalContext.current
+                        if (selectedConn?.usesHiddenWebBridge() == true) {
+                            TextButton(onClick = {
+                                val c = selectedConn ?: return@TextButton
+                                headlessWebBridge.dumpSidebarDiagnostics(c.id) { dump ->
+                                    val cm = diagCtx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                                    cm.setPrimaryClip(android.content.ClipData.newPlainText("MbtA Sidebar", dump))
+                                    android.widget.Toast.makeText(diagCtx, "목록 진단 정보가 복사되었습니다. 채팅에 붙여 넣어 주세요.", android.widget.Toast.LENGTH_LONG).show()
+                                }
+                            }) { Text("진단 정보 복사", fontSize = 12.sp) }
+                        }
+                        TextButton(onClick = { reloadNonce++ }) { Text("다시 불러오기", fontSize = 12.sp) }
                     } else {
                         LazyColumn(
                             modifier = Modifier.heightIn(max = 300.dp),
