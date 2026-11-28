@@ -524,6 +524,9 @@ fun MainScreen(
                     }
 
                     var finalAnswer = ""
+                    // 메인 에이전트가 각 라운드에서 한 말(계획/위임 안내)을 대답창에 계속 보여주기 위한 누적 기록
+                    val mainParts = mutableListOf<String>()
+                    fun liveText(extra: String): String = (mainParts + extra).filter { it.isNotBlank() }.joinToString("\n\n")
                     var modelWarning = ""
                     var finalError: String? = null
                     var totalInTok = 0L
@@ -559,7 +562,13 @@ fun MainScreen(
                                     key = orchWebKey,
                                     kind = effectiveMainConn.kind,
                                     url = effectiveMainConn.endpointUrl,
-                                    prompt = currentPrompt
+                                    prompt = currentPrompt,
+                                    onChunk = { partial ->
+                                        // 메인이 쓰는 중인 답변을 실시간으로 대답창에 표시
+                                        val askSuffix = webQuestionMap[session.id]?.let { "\n\n<<ASK>>$it<</ASK>>" } ?: ""
+                                        val shown = liveText(SubagentProtocol.stripBlock(partial)).ifBlank { "⏳ 메인 오케스트레이터 분석 중..." }
+                                        setPlaceholder(shown + askSuffix)
+                                    }
                                 )
                             } finally {
                                 orchAskPoll?.cancel()
@@ -679,9 +688,12 @@ fun MainScreen(
                             if (s.id == session.id) s.copy(subagentRuns = s.subagentRuns + runs) else s
                         }
                         store.saveSessions(sessions)
-                        val mainPlanNote = SubagentProtocol.stripBlock(mainText).take(280)
+                        // 메인이 한 말(계획)과 위임 내용을 대답창 기록에 남김
+                        val mainPlanText = SubagentProtocol.stripBlock(mainText)
+                        if (mainPlanText.isNotBlank()) mainParts.add(mainPlanText)
+                        mainParts.add("▶ 서브에이전트 ${requests.size}개 위임: " + requests.indices.joinToString(", ") { i -> "${requests[i].role}(${resolvedModels[i].ifBlank { subConn.name }})" })
                         val subStatusHeader = "Orch · 라운드 $round/$maxRounds · 서브에이전트 ${runs.size}개 실행 중 (${runs.joinToString(", ") { it.label }})..."
-                        setPlaceholder(if (mainPlanNote.isNotBlank()) "$mainPlanNote\n\n$subStatusHeader" else subStatusHeader)
+                        setPlaceholder(liveText("").let { if (it.isBlank()) subStatusHeader else "$it\n\n$subStatusHeader" })
 
                         val latestSess = sessions.find { it.id == session.id } ?: session
                         // 같은 파일을 쓰는 작업은 배치를 나눠 순차 실행, 배치 안에서는 병렬(최대 maxParallel)
@@ -733,7 +745,7 @@ fun MainScreen(
                     val finalMsg = ChatMessage(
                         id = placeholderId,
                         role = MessageRole.ASSISTANT,
-                        content = finalError ?: (finalAnswer.ifBlank { "(응답 없음)" } + modelWarning),
+                        content = finalError ?: ((mainParts + finalAnswer.ifBlank { "(응답 없음)" }).filter { it.isNotBlank() }.joinToString("\n\n") + modelWarning),
                         inputTokens = totalInTok,
                         outputTokens = totalOutTok,
                         agentName = "${conn.labelIn(connections)} (오케스트레이터)",

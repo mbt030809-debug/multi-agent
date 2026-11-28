@@ -467,14 +467,15 @@ class HeadlessWebBridge(
         key: String,
         kind: ConnectionKind,
         url: String,
-        prompt: String
+        prompt: String,
+        onChunk: (String) -> Unit = {}
     ): Pair<Triple<String, Long, Long>, String?> = suspendCancellableCoroutine { cont ->
         sendPrompt(
             key = key,
             kind = kind,
             url = url,
             prompt = prompt,
-            onChunk = {},
+            onChunk = onChunk,
             onDone = { finalText, inTok, outTok ->
                 if (cont.isActive) cont.resume(Triple(finalText, inTok, outTok) to null)
             },
