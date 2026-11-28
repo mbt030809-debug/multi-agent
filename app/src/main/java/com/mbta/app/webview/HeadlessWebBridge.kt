@@ -1269,6 +1269,58 @@ class HeadlessWebBridge(
                     if (inner.length >= 2) return { card: card, opts: inner, question: questionOf(card, inner[0]) };
                     return null;
                 }
+                // 전략 D: 동그라미(라디오) 표시가 있는 행들 — 행마다 동그라미가 하나씩 있는 카드
+                function isCircle(e) {
+                    if (e.getAttribute && (e.getAttribute('role') === 'radio' || e.getAttribute('role') === 'checkbox' || (e.tagName === 'INPUT' && /radio|checkbox/.test(e.type)))) return true;
+                    if ((e.innerText || '').trim()) return false;
+                    var r = e.getBoundingClientRect();
+                    if (r.width < 10 || r.width > 34 || Math.abs(r.width - r.height) > 3) return false;
+                    var br = '';
+                    try { br = window.getComputedStyle(e).borderRadius || ''; } catch(x) {}
+                    var v = parseFloat(br) || 0;
+                    return br.indexOf('%') >= 0 ? v >= 45 : v >= r.width / 2 - 1;
+                }
+                function strategyD(card) {
+                    var all = Array.prototype.slice.call(card.querySelectorAll('*'));
+                    var circles = all.filter(isCircle).filter(function(c) { return !all.some(function(o) { return o !== c && c.contains(o) && isCircle(o); }); });
+                    if (circles.length < 3) return null;
+                    function cnt(n) { return circles.filter(function(c) { return n.contains(c); }).length; }
+                    var opts = [];
+                    circles.forEach(function(c) {
+                        var row = c;
+                        while (row.parentElement && row.parentElement !== card && cnt(row.parentElement) === 1) row = row.parentElement;
+                        var o = mkOpt(row);
+                        if (o) opts.push(o);
+                    });
+                    if (opts.length >= 2) return { card: card, opts: opts, question: questionOf(card, opts[0]) };
+                    return null;
+                }
+                // 전략 E: 마지막 수단 — 카드 글자 줄(질문, 선택지[, 설명], 기타)을 해석하고 글자로 요소를 찾아 누름
+                function strategyE(card) {
+                    var ls = lns(card);
+                    var oi = -1;
+                    for (var k = 0; k < ls.length; k++) if (/^(기타|other)$/i.test(ls[k])) { oi = k; break; }
+                    if (oi < 3) return null;
+                    var L = ls.slice(0, oi);
+                    var rest = L.slice(1);
+                    var items = [];
+                    if (rest.length % 2 === 0 && rest.length >= 4) {
+                        for (var a = 0; a < rest.length; a += 2) items.push({ label: rest[a], description: rest[a + 1] });
+                    } else {
+                        rest.forEach(function(x) { items.push({ label: x, description: '' }); });
+                    }
+                    if (items.length < 2) return null;
+                    var els = Array.prototype.slice.call(card.querySelectorAll('*'));
+                    var opts = items.map(function(it) {
+                        var m = null;
+                        for (var i = 0; i < els.length; i++) {
+                            var l2 = lns(els[i]);
+                            if (l2.length && l2[0] === it.label && (!m || m.contains(els[i]))) m = els[i];
+                        }
+                        return { label: it.label, description: it.description, el: m || card };
+                    });
+                    return { card: card, opts: opts, question: L[0] };
+                }
                 function findCard() {
                     var btns = queryAllDeep('button, [role="button"]');
                     var skip = null;
@@ -1281,7 +1333,7 @@ class HeadlessWebBridge(
                     for (var up = 0; up < 8 && el; up++) {
                         el = el.parentElement;
                         if (!el) break;
-                        var r = strategyA(el) || strategyC(el) || strategyB(el);
+                        var r = strategyA(el) || strategyC(el) || strategyD(el) || strategyB(el) || strategyE(el);
                         if (r && r.question) return r;
                     }
                     return null;
@@ -1409,6 +1461,58 @@ class HeadlessWebBridge(
                     if (inner.length >= 2) return { card: card, opts: inner, question: questionOf(card, inner[0]) };
                     return null;
                 }
+                // 전략 D: 동그라미(라디오) 표시가 있는 행들 — 행마다 동그라미가 하나씩 있는 카드
+                function isCircle(e) {
+                    if (e.getAttribute && (e.getAttribute('role') === 'radio' || e.getAttribute('role') === 'checkbox' || (e.tagName === 'INPUT' && /radio|checkbox/.test(e.type)))) return true;
+                    if ((e.innerText || '').trim()) return false;
+                    var r = e.getBoundingClientRect();
+                    if (r.width < 10 || r.width > 34 || Math.abs(r.width - r.height) > 3) return false;
+                    var br = '';
+                    try { br = window.getComputedStyle(e).borderRadius || ''; } catch(x) {}
+                    var v = parseFloat(br) || 0;
+                    return br.indexOf('%') >= 0 ? v >= 45 : v >= r.width / 2 - 1;
+                }
+                function strategyD(card) {
+                    var all = Array.prototype.slice.call(card.querySelectorAll('*'));
+                    var circles = all.filter(isCircle).filter(function(c) { return !all.some(function(o) { return o !== c && c.contains(o) && isCircle(o); }); });
+                    if (circles.length < 3) return null;
+                    function cnt(n) { return circles.filter(function(c) { return n.contains(c); }).length; }
+                    var opts = [];
+                    circles.forEach(function(c) {
+                        var row = c;
+                        while (row.parentElement && row.parentElement !== card && cnt(row.parentElement) === 1) row = row.parentElement;
+                        var o = mkOpt(row);
+                        if (o) opts.push(o);
+                    });
+                    if (opts.length >= 2) return { card: card, opts: opts, question: questionOf(card, opts[0]) };
+                    return null;
+                }
+                // 전략 E: 마지막 수단 — 카드 글자 줄(질문, 선택지[, 설명], 기타)을 해석하고 글자로 요소를 찾아 누름
+                function strategyE(card) {
+                    var ls = lns(card);
+                    var oi = -1;
+                    for (var k = 0; k < ls.length; k++) if (/^(기타|other)$/i.test(ls[k])) { oi = k; break; }
+                    if (oi < 3) return null;
+                    var L = ls.slice(0, oi);
+                    var rest = L.slice(1);
+                    var items = [];
+                    if (rest.length % 2 === 0 && rest.length >= 4) {
+                        for (var a = 0; a < rest.length; a += 2) items.push({ label: rest[a], description: rest[a + 1] });
+                    } else {
+                        rest.forEach(function(x) { items.push({ label: x, description: '' }); });
+                    }
+                    if (items.length < 2) return null;
+                    var els = Array.prototype.slice.call(card.querySelectorAll('*'));
+                    var opts = items.map(function(it) {
+                        var m = null;
+                        for (var i = 0; i < els.length; i++) {
+                            var l2 = lns(els[i]);
+                            if (l2.length && l2[0] === it.label && (!m || m.contains(els[i]))) m = els[i];
+                        }
+                        return { label: it.label, description: it.description, el: m || card };
+                    });
+                    return { card: card, opts: opts, question: L[0] };
+                }
                 function findCard() {
                     var btns = queryAllDeep('button, [role="button"]');
                     var skip = null;
@@ -1421,7 +1525,7 @@ class HeadlessWebBridge(
                     for (var up = 0; up < 8 && el; up++) {
                         el = el.parentElement;
                         if (!el) break;
-                        var r = strategyA(el) || strategyC(el) || strategyB(el);
+                        var r = strategyA(el) || strategyC(el) || strategyD(el) || strategyB(el) || strategyE(el);
                         if (r && r.question) return r;
                     }
                     return null;
@@ -1901,13 +2005,37 @@ class HeadlessWebBridge(
                         }
                         // 프레임워크가 전송 버튼을 활성화할 때까지 기다리며 여러 번 시도 (Gemini 등은 입력 반영이 늦음)
                         var sendAttempts = 0;
+                        var lastSendAction = 'none';
+                        function describeBtn(b) {
+                            try {
+                                return '[' + (b.getAttribute('aria-label') || '').slice(0, 20) + '|' + (b.innerText || '').trim().slice(0, 12) + '|dis=' + (b.disabled ? 1 : 0) + '|ariaDis=' + (b.getAttribute('aria-disabled') || '-') + '|vis=' + (isVisible(b) ? 1 : 0) + ']';
+                            } catch(e) { return '[?]'; }
+                        }
+                        // 전송 실패 진단: 입력창 글자 수, 마지막 전송 동작, 입력창 주변 버튼 목록
+                        function sendDiag() {
+                            var info = 'input=' + (((inputEl.value !== undefined ? inputEl.value : inputEl.innerText) || '').trim().length) + '/' + promptText.length + ', last=' + lastSendAction + ', attempts=' + sendAttempts;
+                            try {
+                                var sc = (inputEl.closest && inputEl.closest('form')) || (inputEl.parentElement && inputEl.parentElement.parentElement && inputEl.parentElement.parentElement.parentElement && inputEl.parentElement.parentElement.parentElement.parentElement);
+                                if (sc && sc.querySelectorAll) {
+                                    var bl = sc.querySelectorAll('button');
+                                    var parts = [];
+                                    for (var bi = 0; bi < bl.length && bi < 10; bi++) parts.push(describeBtn(bl[bi]));
+                                    info += ', buttons=' + parts.join('');
+                                }
+                            } catch(e) {}
+                            return info;
+                        }
                         function trySend() {
                             sendAttempts++;
                             var sb = findSendBtn();
                             if (sb && !sb.disabled && sb.getAttribute('aria-disabled') !== 'true') {
+                                lastSendAction = 'click#' + sendAttempts + ':' + describeBtn(sb);
                                 try { sb.click(); } catch(e) {}
                             } else if (sendAttempts >= 3) {
+                                lastSendAction = 'enter#' + sendAttempts + (sb ? ' (btn disabled:' + describeBtn(sb) + ')' : ' (no btn)');
                                 fireEnter(inputEl);
+                            } else {
+                                lastSendAction = 'wait#' + sendAttempts + (sb ? ' (btn disabled:' + describeBtn(sb) + ')' : ' (no btn)');
                             }
                             setTimeout(function() {
                                 if (sendAttempts < 8 && inputRemaining()) trySend();
@@ -1950,7 +2078,7 @@ class HeadlessWebBridge(
                                 if (lastText) {
                                     window.MbtABridge.onDone(reqId, lastText);
                                 } else {
-                                    window.MbtABridge.onError(reqId, 'TIMEOUT', '응답 시간이 초과되었습니다.');
+                                    window.MbtABridge.onError(reqId, 'TIMEOUT', '응답 시간이 초과되었습니다. [전송 진단 ' + sendDiag() + ']');
                                 }
                                 return;
                             }
