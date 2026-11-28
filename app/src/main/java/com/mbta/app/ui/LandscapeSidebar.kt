@@ -19,6 +19,10 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Sync
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Close
@@ -195,12 +199,6 @@ internal fun LandscapeSidebar(
                 } else {
                     sess.id == primarySession?.id || sess.id == secondarySession?.id
                 }
-                val dotColor = when {
-                    sendingMap[sess.id] == true -> Color(0xFFF59E0B)
-                    sess.messages.lastOrNull()?.isError == true -> Color(0xFFEF4444)
-                    unreadDoneSessions[sess.id] == true -> Color(0xFF22C55E)
-                    else -> Color.Black
-                }
                 Surface(
                     onClick = { onSelectSession(sess) },
                     shape = RoundedCornerShape(10.dp),
@@ -218,7 +216,7 @@ internal fun LandscapeSidebar(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        Box(modifier = Modifier.size(7.dp).background(dotColor, CircleShape))
+                        SessionStatusBadge(sess, conn, sendingMap[sess.id] == true, unreadDoneSessions[sess.id] == true)
                         ProviderMarkIcon(connection = conn, size = 19.dp)
                         val t = sess.title.trim()
                         val isDefault = t.isBlank() || t.matches(Regex("^세션\\s*\\d+$")) || t == "기본 세션" ||
@@ -359,6 +357,56 @@ private fun SidebarModelPicker(
                     }
                 }
             }
+        }
+    }
+}
+
+
+/** 세션 상태 배지: 진행중(파랑 회전 화살표) / 질문(노랑 ?) / 오류(빨강 !) / 완료 미확인(초록 체크) / 확인함(검정 점) */
+@androidx.compose.runtime.Composable
+internal fun SessionStatusBadge(
+    sess: com.mbta.app.model.AgentSession,
+    conn: com.mbta.app.model.AiConnection?,
+    sending: Boolean,
+    unreadDone: Boolean
+) {
+    val last = sess.messages.lastOrNull()
+    val hasQuestion = androidx.compose.runtime.remember(last?.id, last?.content, sending) {
+        !sending && last != null && last.role == com.mbta.app.model.MessageRole.ASSISTANT && !last.isError &&
+            detectQuestionPrompt(
+                last.content,
+                structuredOnly = conn?.endpointUrl?.lowercase()?.let { it.contains("/claude") || it.contains("claude.ai") } == true
+            ) != null
+    }
+    val size = 18.dp
+    when {
+        sending -> {
+            val rot = androidx.compose.animation.core.rememberInfiniteTransition(label = "spin")
+                .animateFloat(
+                    0f, 360f,
+                    androidx.compose.animation.core.infiniteRepeatable(
+                        androidx.compose.animation.core.tween(1000, easing = androidx.compose.animation.core.LinearEasing)
+                    ),
+                    label = "rot"
+                )
+            Box(Modifier.size(size).background(Color(0xFF3B82F6), CircleShape), contentAlignment = Alignment.Center) {
+                Icon(
+                    Icons.Default.Sync, contentDescription = "진행 중", tint = Color.White,
+                    modifier = Modifier.size(12.dp).graphicsLayer { rotationZ = -rot.value }
+                )
+            }
+        }
+        last?.isError == true -> Box(Modifier.size(size).background(Color(0xFFEF4444), CircleShape), contentAlignment = Alignment.Center) {
+            Text("!", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+        }
+        hasQuestion -> Box(Modifier.size(size).background(Color(0xFFFACC15), CircleShape), contentAlignment = Alignment.Center) {
+            Text("?", color = Color.Black, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+        }
+        unreadDone -> Box(Modifier.size(size).background(Color(0xFF22C55E), CircleShape), contentAlignment = Alignment.Center) {
+            Icon(Icons.Default.Check, contentDescription = "완료", tint = Color.White, modifier = Modifier.size(12.dp))
+        }
+        else -> Box(Modifier.size(size), contentAlignment = Alignment.Center) {
+            Box(Modifier.size(7.dp).background(Color.Black, CircleShape))
         }
     }
 }
