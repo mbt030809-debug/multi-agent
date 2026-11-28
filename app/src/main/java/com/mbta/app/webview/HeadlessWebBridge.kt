@@ -877,7 +877,7 @@ class HeadlessWebBridge(
                         var cls = (el.className || '').toString().toLowerCase();
                         var testId = (el.getAttribute && el.getAttribute('data-testid')) || '';
                         var isUser = roleAttr === 'user' || tag === 'user-query' || testId === 'user-message' || cls.indexOf('user-message') !== -1 || cls.indexOf('user-query') !== -1;
-                        var txt = (el.innerText || '').trim();
+                        var txt = (el.innerText || '').trim().replace(/^Claude\s*(응답|said|responded)\s*[:：]\s*/i, '');
                         if (isUser) {
                             txt = txt.replace(/^(?:말씀하신\s*내용|You\s*said)\s*[:：]?\s*\n+/i, '').trim();
                         } else {
@@ -1714,12 +1714,15 @@ class HeadlessWebBridge(
                     var users = queryAllDeep('[data-testid="user-message"]');
                     var assts = queryAllDeep('[data-testid="assistant-message"]');
                     var lastUser = users.length ? users[users.length - 1] : null;
+                    // 중첩된 assistant-message는 바깥쪽 하나만 사용 (같은 글이 두 번 잡히는 것 방지)
+                    assts = assts.filter(function(a) { return !assts.some(function(b) { return b !== a && b.contains(a); }); });
                     var parts = [];
                     for (var ai = 0; ai < assts.length; ai++) {
                         var a = assts[ai];
                         if (lastUser && !(lastUser.compareDocumentPosition(a) & Node.DOCUMENT_POSITION_FOLLOWING)) continue;
-                        var t = (a.innerText || '').trim();
-                        if (t) parts.push(t);
+                        // 화면 낭독용 숨은 머리말("Claude 응답:") 제거, 똑같은 블록은 한 번만
+                        var t = (a.innerText || '').trim().replace(/^Claude\s*(응답|said|responded)\s*[:：]\s*/i, '');
+                        if (t && parts.indexOf(t) < 0) parts.push(t);
                         // 파일 카드/다운로드 링크는 글자만으로는 안 보이므로 [📎 이름](주소) 줄로 덧붙임 (앱이 다운로드 버튼으로 표시)
                         var ls = a.querySelectorAll('a[href]');
                         for (var li = 0; li < ls.length; li++) {
