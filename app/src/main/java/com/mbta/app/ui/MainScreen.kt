@@ -2542,7 +2542,8 @@ private fun ExistingSessionPickerDialog(
     headlessWebBridge: HeadlessWebBridge,
     onDismiss: () -> Unit,
     onPick: (AiConnection, com.mbta.app.webview.ExternalSessionItem) -> Unit,
-    asPanel: Boolean = false
+    asPanel: Boolean = false,
+    panelModifier: Modifier = Modifier.width(380.dp)
 ) {
     val selectable = enabledConnections.filter {
         it.usesHiddenWebBridge() || it.kind == ConnectionKind.REMOTE_CONTROL
@@ -2680,9 +2681,9 @@ private fun ExistingSessionPickerDialog(
             shape = RoundedCornerShape(28.dp),
             color = androidx.compose.material3.AlertDialogDefaults.containerColor,
             tonalElevation = androidx.compose.material3.AlertDialogDefaults.TonalElevation,
-            modifier = Modifier.width(380.dp)
+            modifier = panelModifier
         ) {
-            Column(modifier = Modifier.padding(24.dp)) {
+            Column(modifier = Modifier.padding(20.dp)) {
                 androidx.compose.runtime.CompositionLocalProvider(
                     androidx.compose.material3.LocalTextStyle provides MaterialTheme.typography.headlineSmall
                 ) { titleC() }
@@ -2788,7 +2789,6 @@ private fun NewSessionDialog(
     var maxRounds by remember { mutableIntStateOf(3) }
     var sensitivity by remember { mutableStateOf("medium") }
     var useWorktree by remember { mutableStateOf(false) }
-    val isWide = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp >= 800
     var pickerConn by remember { mutableStateOf<AiConnection?>(null) }
 
     val titleC: @Composable () -> Unit = { Text(if (isOrchMode) "⚡ 새 오케스트레이션 세션" else "새 하위 세션", fontSize = 16.sp, fontWeight = FontWeight.Bold) }
@@ -2882,7 +2882,7 @@ private fun NewSessionDialog(
                                     }
                                     if (conn.usesHiddenWebBridge() || conn.kind == ConnectionKind.REMOTE_CONTROL) {
                                         IconButton(
-                                            onClick = { if (isWide && headlessWebBridge != null) pickerConn = conn else onOpenExisting(conn) },
+                                            onClick = { if (headlessWebBridge != null) pickerConn = conn else onOpenExisting(conn) },
                                             modifier = Modifier.size(28.dp)
                                         ) {
                                             Icon(
@@ -3135,18 +3135,19 @@ private fun NewSessionDialog(
         onDismissRequest = onDismiss,
         properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)
     ) {
+        val pickerOpen = pickerConn != null && headlessWebBridge != null
         Row(
-            modifier = Modifier.padding(16.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            modifier = Modifier.fillMaxWidth().padding(12.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally),
             verticalAlignment = Alignment.Top
         ) {
             androidx.compose.material3.Surface(
                 shape = RoundedCornerShape(28.dp),
                 color = androidx.compose.material3.AlertDialogDefaults.containerColor,
                 tonalElevation = androidx.compose.material3.AlertDialogDefaults.TonalElevation,
-                modifier = Modifier.widthIn(min = 280.dp, max = 420.dp)
+                modifier = if (pickerOpen) Modifier.weight(1f) else Modifier.widthIn(min = 280.dp, max = 420.dp)
             ) {
-                Column(modifier = Modifier.padding(24.dp)) {
+                Column(modifier = Modifier.padding(if (pickerOpen) 18.dp else 24.dp)) {
                     titleC()
                     Spacer(modifier = Modifier.height(16.dp))
                     textC()
@@ -3159,13 +3160,14 @@ private fun NewSessionDialog(
                 }
             }
             val pc = pickerConn
-            if (isWide && pc != null && headlessWebBridge != null) {
+            if (pc != null && headlessWebBridge != null) {
                 ExistingSessionPickerDialog(
                     enabledConnections = listOf(pc),
                     headlessWebBridge = headlessWebBridge,
                     onDismiss = { pickerConn = null },
                     onPick = onPickExisting,
-                    asPanel = true
+                    asPanel = true,
+                    panelModifier = Modifier.weight(1f)
                 )
             }
         }
