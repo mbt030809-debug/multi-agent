@@ -79,6 +79,7 @@ import com.mbta.app.model.defaultEndpointFor
 import com.mbta.app.model.defaultModelFor
 import com.mbta.app.model.displayLabel
 import com.mbta.app.model.isHiddenWebBridge
+import com.mbta.app.model.labelIn
 import com.mbta.app.model.shortLabel
 import com.mbta.app.util.AppUpdater
 import java.util.UUID
@@ -395,7 +396,7 @@ fun SettingsScreen(
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
                                 Text(
-                                    conn.name,
+                                    conn.labelIn(connections),
                                     fontWeight = FontWeight.SemiBold,
                                     fontSize = 14.sp,
                                     maxLines = 1,
@@ -1041,6 +1042,7 @@ private fun ConnectionEditorDialog(
     onSave: (AiConnection) -> Unit
 ) {
     var name by remember { mutableStateOf(initial.name) }
+    var accountName by remember { mutableStateOf(initial.accountName) }
     var apiKey by remember { mutableStateOf(initial.apiKey) }
     var model by remember { mutableStateOf(initial.model) }
     var endpointUrl by remember { mutableStateOf(initial.endpointUrl) }
@@ -1063,6 +1065,13 @@ private fun ConnectionEditorDialog(
                     value = name,
                     onValueChange = { name = it },
                     label = { Text("표시 이름") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = accountName,
+                    onValueChange = { accountName = it },
+                    label = { Text("계정명 (선택 · 계정이 여러 개일 때 구분)") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -1167,6 +1176,7 @@ private fun ConnectionEditorDialog(
                     onSave(
                         initial.copy(
                             name = name.trim().ifEmpty { initial.kind.displayLabel() },
+                            accountName = accountName.trim(),
                             apiKey = apiKey.trim(),
                             model = model.trim(),
                             endpointUrl = endpointUrl.trim().ifEmpty { defaultEndpointFor(initial.kind) },

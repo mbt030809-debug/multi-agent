@@ -104,6 +104,8 @@ import com.mbta.app.model.defaultModelFor
 import com.mbta.app.model.displayLabel
 import com.mbta.app.model.formatTokens
 import com.mbta.app.model.isHiddenWebBridge
+import com.mbta.app.model.labelIn
+import com.mbta.app.model.shortLabel
 import com.mbta.app.model.usesHiddenWebBridge
 import com.mbta.app.network.AiApiClient
 import com.mbta.app.network.GitBridgeClient
@@ -165,6 +167,7 @@ fun MainScreen(
     var editingProject by remember { mutableStateOf<Project?>(null) }
     var showNewSessionDialog by remember { mutableStateOf(false) }
     var showExistingSessionDialog by remember { mutableStateOf(false) }
+    var existingPickerConnId by remember { mutableStateOf<String?>(null) }
     var sessionPendingDelete by remember { mutableStateOf<AgentSession?>(null) }
 
     val sendingMap = remember { mutableStateMapOf<String, Boolean>() }
@@ -2241,8 +2244,9 @@ fun MainScreen(
                 showNewSessionDialog = false
                 showSettings = true
             },
-            onOpenExisting = {
+            onOpenExisting = { conn ->
                 showNewSessionDialog = false
+                existingPickerConnId = conn.id
                 showExistingSessionDialog = true
             },
             onCreate = { title, connId, useWorktree ->
@@ -2331,11 +2335,12 @@ fun MainScreen(
 
     if (showExistingSessionDialog) {
         ExistingSessionPickerDialog(
-            enabledConnections = enabledConnections,
+            enabledConnections = enabledConnections.filter { existingPickerConnId == null || it.id == existingPickerConnId },
             headlessWebBridge = headlessWebBridge,
-            onDismiss = { showExistingSessionDialog = false },
+            onDismiss = { showExistingSessionDialog = false; existingPickerConnId = null },
             onPick = { conn, item ->
                 showExistingSessionDialog = false
+                existingPickerConnId = null
                 val sessId = "sess_${UUID.randomUUID()}"
                 val loadingMsg = ChatMessage(
                     id = "msg_${UUID.randomUUID()}",
@@ -2489,7 +2494,7 @@ private fun ExistingSessionPickerDialog(
                 if (selectable.isEmpty()) {
                     Text("불러올 수 있는 웹/로컬 브릿지 연결이 없습니다.", fontSize = 13.sp)
                 } else {
-                    Row(
+                    if (selectable.size > 1) Row(
                         modifier = Modifier.horizontalScroll(rememberScrollState()),
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
@@ -2611,7 +2616,7 @@ private fun NewSessionDialog(
     defaultIndex: Int,
     onDismiss: () -> Unit,
     onOpenSettings: () -> Unit,
-    onOpenExisting: () -> Unit = {},
+    onOpenExisting: (AiConnection) -> Unit = {},
     onCreate: (title: String, connectionId: String, useWorktree: Boolean) -> Unit,
     onCreateOrchestration: (
         title: String,
@@ -2735,16 +2740,39 @@ private fun NewSessionDialog(
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Text(conn.name, fontWeight = FontWeight.Medium, fontSize = 14.sp)
-                                    Text(conn.kind.displayLabel(), fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
+                                    Text(
+                                        conn.labelIn(enabledConnections),
+                                        fontWeight = FontWeight.Medium,
+                                        fontSize = 14.sp,
+                                        maxLines = 1,
+                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    if (!conn.name.contains(conn.kind.shortLabel(), ignoreCase = true)) {
+                                        Text(
+                                            conn.kind.displayLabel(),
+                                            fontSize = 11.sp,
+                                            maxLines = 1,
+                                            softWrap = false,
+                                            color = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.padding(horizontal = 6.dp)
+                                        )
+                                    }
+                                    if (conn.usesHiddenWebBridge() || conn.kind == ConnectionKind.REMOTE_CONTROL) {
+                                        IconButton(
+                                            onClick = { onOpenExisting(conn) },
+                                            modifier = Modifier.size(28.dp)
+                                        ) {
+                                            Icon(
+                                                Icons.Default.Refresh,
+                                                contentDescription = "이전 세션 불러오기",
+                                                tint = MaterialTheme.colorScheme.primary,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        }
+                                    }
                                 }
                             }
-                        }
-                        OutlinedButton(
-                            onClick = onOpenExisting,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text("기존 외부 세션 불러오기", fontSize = 12.sp)
                         }
                     } else {
                         Text(
