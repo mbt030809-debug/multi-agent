@@ -74,6 +74,11 @@ fun ConnectionKind.displayLabel(): String = when (this) {
     ConnectionKind.REMOTE_CONTROL -> "로컬 브릿지"
 }
 
+/** 연결 종류 배지: Claude Code 웹(claude.ai/code)은 'Remote'가 아니라 '웹'으로 표시 */
+fun AiConnection.kindBadge(): String =
+    if (kind == ConnectionKind.REMOTE_WEB && endpointUrl.contains("claude.ai/code", ignoreCase = true)) "웹"
+    else kind.displayLabel()
+
 /** 연결 표시 이름: "(계정)/(웹)" 접미사를 떼고, 로그인 계정이 있으면 "이름 (계정ID)", 없고 이름/종류가 중복이면 순번 */
 fun AiConnection.labelIn(all: List<AiConnection>): String {
     val base = name.replace(Regex("\\s*\\((?:계정|웹)\\)"), "").trim().ifEmpty { name }
