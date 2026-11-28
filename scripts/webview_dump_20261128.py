@@ -43,7 +43,7 @@ try:
     import websocket
 except ImportError:
     sys.exit("pip install websocket-client 먼저")
-ws = websocket.create_connection(target["webSocketDebuggerUrl"], timeout=10)
+ws = websocket.create_connection(target["webSocketDebuggerUrl"], timeout=10, suppress_origin=True)
 ws.send(json.dumps({"id": 1, "method": "Runtime.evaluate", "params": {"expression": JS, "returnByValue": True}}))
 res = json.loads(ws.recv())
 val = res.get("result", {}).get("result", {}).get("value")
